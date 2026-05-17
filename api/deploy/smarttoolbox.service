@@ -1,0 +1,16 @@
+[Unit]
+Description=SmartToolBox web server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=shields
+WorkingDirectory=/home/shields/smarttoolbox
+ExecStart=/bin/bash -lc 'mkdir -p /home/shields/smarttoolbox/logs && exec /home/shields/.bun/bin/bun run src/index.ts >> /home/shields/smarttoolbox/logs/service.log 2>> /home/shields/smarttoolbox/logs/service-error.log'
+Restart=always
+RestartSec=2
+Environment=NODE_ENV=production
+
+[Install]
+WantedBy=multi-user.target
