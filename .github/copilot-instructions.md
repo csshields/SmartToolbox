@@ -2,7 +2,7 @@
 title: SmartToolbox Project Instructions
 scope: project-wide guidelines and specifications
 status: active
-updated: 2026-05-17
+updated: 2026-08-26
 ---
 
 # SmartToolbox Project
@@ -11,7 +11,7 @@ updated: 2026-05-17
 
 SmartToolbox is a monorepo containing two interconnected projects:
 - **API**: Web server backend with SQLite database running on Raspberry Pi Zero 2
-- **Firmware**: Arduino sketch for Seeed Xiao nRF52840 Sense microcontroller
+- **Firmware**: Arduino sketch for Seeed XIAO ESP32S3 microcontroller
 
 ## Project Structure
 
@@ -28,8 +28,8 @@ smarttoolbox/
 │   ├── package.json              # Node.js dependencies
 │   ├── tsconfig.json             # TypeScript configuration
 │   └── sync.ps1                  # Sync script
-└── firmware/                     # Arduino sketch for Xiao Sense
-    ├── smarttoolbox/             # Seeed Xiao nRF52840 Sense sketch
+└── firmware/                     # Arduino sketch for XIAO ESP32S3
+  ├── smarttoolbox/             # Seeed XIAO ESP32S3 sketch
     │   └── smarttoolbox.ino      # Main controller sketch
     └── README.md                 # Firmware documentation
 ```
@@ -38,8 +38,10 @@ smarttoolbox/
 
 ### System Overview
 - **API Server**: Raspberry Pi Zero 2 running Bun and SQLite
-- **Main Controller**: Seeed Xiao nRF52840 Sense (sensors, camera, microphone, LED control)
-- **Communication**: Xiao Sense ↔ API Server (WiFi/HTTP or BLE over local network)
+- **Main Controller**: Seeed XIAO ESP32S3 (LED control, USB serial, Wi-Fi, and BLE)
+- **Vision Hardware**: Seeed Grove Vision AI Module (V2) + OV5647 camera, connected over I2C using the `Seeed_Arduino_SSCMA` library; on-device WiseEye2 inference is the default (only results, not raw frames, are read over the link).
+- **Transcription**: Self-hosted Whisper server running on a NAS on the local network (see Communication Protocol)
+- **Communication**: XIAO ESP32S3 → API Server over **wired USB serial**. Wi-Fi and BLE are available on the controller but are not used in the MVP.
 
 ### API Project
 - **Host Device**: Raspberry Pi Zero 2
@@ -52,10 +54,10 @@ smarttoolbox/
   - `api/src/db.ts` - Database interface and queries
   - `api/src/index.ts` - Server entry point
 
-### Firmware Project - Xiao Sense
-- **Hardware**: Seeed Xiao nRF52840 Sense
-- **Sensors**: Camera (OV2640), IMU (LSM6DS3), PDM Microphone
-- **Connectivity**: WiFi or BLE 5.0 to Raspberry Pi Zero 2
+### Firmware Project - XIAO ESP32S3
+- **Hardware**: Seeed XIAO ESP32S3 + Grove Vision AI Module (V2) with OV5647 camera
+- **Sensors**: Vision (Grove Vision AI + OV5647); external IMU and microphone hardware are not yet selected
+- **Connectivity**: Wired USB serial to Raspberry Pi Zero 2 (MVP scope; Wi-Fi and BLE are future-only)
 - **Purpose**: Capture sensor data, control LEDs, communicate with API server
 
 ## Development Guidelines
@@ -97,13 +99,13 @@ When working on this project:
 
 ### Firmware
 - [ ] Implement sensor data capture
-- [ ] Establish BLE communication
+- [ ] Establish USB serial communication with the API
 - [ ] Add power management
 - [ ] Test sensor accuracy
 
 ## Notes
 
-- API and firmware should communicate via BLE or HTTP
+- API and firmware communicate via HTTP over WiFi (MVP); BLE is a future consideration only
 - Consider data format compatibility between components
 - Document API endpoints for firmware developers
 
@@ -167,16 +169,31 @@ CREATE TABLE IF NOT EXISTS tools (
 );
 
 -- Drawer information
-CREATE TABLE IF NOT EXISTS drawers (
+-- LED indicators are per ROW, not per drawer: row 1 has 3 drawers sharing a single LED;
+-- rows 2-6 have exactly 1 drawer each with their own LED. If a tool lives in ANY drawer
+-- within a row, that row's single LED lights up.
+CREATE TABLE IF NOT EXISTS rows (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  drawer_id INTEGER UNIQUE NOT NULL,
-  name TEXT,
-  description TEXT,
-  capacity INTEGER,
+  row_number INTEGER UNIQUE NOT NULL,  -- 1-6
+  led_index INTEGER UNIQUE NOT NULL,   -- physical LED strip/position for this row
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS drawers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  drawer_id INTEGER UNIQUE NOT NULL,
+  row_id INTEGER NOT NULL,
+  name TEXT,
+  description TEXT,
+  capacity INTEGER,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (row_id) REFERENCES rows(id)
+);
+
 -- Tool movement history
+-- NOTE: image_url/audio_url are nullable and unused by default for MVP. Raw images/audio
+-- are processed transiently (not persisted to disk or DB) unless a future debug/persist
+-- flag is enabled in `config`. Only identification results and metadata are stored.
 CREATE TABLE IF NOT EXISTS tool_movements (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   tool_id TEXT NOT NULL,
@@ -193,6 +210,9 @@ CREATE TABLE IF NOT EXISTS tool_movements (
 );
 
 -- System configuration
+-- Single source of truth for mutable runtime settings (wake keyword, certainty
+-- thresholds, transcription_service_url, persist_media flag, etc.). Static/deploy-time
+-- settings (PORT, DATABASE_PATH, NODE_ENV, LOG_LEVEL) stay in .env, not this table.
 CREATE TABLE IF NOT EXISTS config (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
@@ -314,10 +334,10 @@ GET    /api/config              - Get system configuration
 
 ## Authentication & Authorization
 
-- [ ] Define authentication strategy (API keys, JWT, etc.)
-- [ ] Implement rate limiting
-- [ ] Add CORS configuration
-- [ ] Secure sensitive endpoints
+**Decision (MVP)**: No authentication. The XIAO ESP32S3 and API server are assumed to be on a trusted local network (home LAN), with no direct internet exposure. Revisit if the API is ever exposed beyond the LAN (e.g., remote dashboard access).
+
+- [ ] Add CORS configuration (only if a browser-based dashboard on a different origin is added)
+- [ ] Revisit auth if network trust model changes
 
 ## Error Handling
 
@@ -357,6 +377,17 @@ cd api
 bun install
 bun run start
 ```
+
+### Raspberry Pi SSH Access
+
+From the Windows development machine, connect to the Pi with:
+```powershell
+ssh -i "$env:USERPROFILE\.ssh\smarttoolbox_pi_ed25519" shields@192.168.50.30
+```
+
+- The Pi user is `shields`; the deploy script uses the same host and dedicated SSH key.
+- If key access has not been installed, run `cd api; .\sync.ps1 -SetupKey` once and enter the Pi password directly in the terminal when prompted.
+- Never store the Pi password or private-key contents in the repository.
 
 ### Production Deployment
 
@@ -415,18 +446,35 @@ bun run start
 
 ## Hardware Platform
 
-**Main Controller**: Seeed Xiao nRF52840 Sense
-- **MCU**: Nordic nRF52840 (ARM Cortex-M4 @ 64MHz)
-- **Memory**: 256KB RAM, 1MB Flash
-- **Connectivity**: BLE 5.0, USB-C
+**Main Controller**: Seeed XIAO ESP32S3
+- **MCU**: Espressif ESP32-S3
+- **Connectivity**: Wi-Fi and BLE are available; the MVP connects to the Pi Zero 2 over **wired USB serial** (USB-C, CDC/ACM), not Wi-Fi
 - **Power**: 3.3V, rechargeable battery support
-- **Built-in Sensors**: OV2640 Camera, LSM6DS3 IMU, PDM Microphone
+- **Built-in Sensors**: None assumed. Vision, IMU, and microphone hardware are external peripherals.
 
-**Extension Board**: Grove Extension Board for Xiao
-- **Purpose**: Expands I/O pins, provides Grove connectors
-- **Display**: Built-in OLED/LCD display module
-- **Use Cases**: User feedback, status display, debugging
-- **Connectivity**: Multiple Grove ports for sensors
+**Vision Hardware**: Seeed Grove Vision AI Module (V2), SKU 101021112, + OV5647 Camera
+- **Connection**: Connects to the XIAO ESP32S3 over I2C; physical expansion-header compatibility must be verified before stacking it.
+- **Onboard MCU**: Himax WiseEye2 (capable of on-device ML inference)
+- **Storage**: 32GB microSD card on the module itself
+- **Identification Method (default)**: On-device inference on the WiseEye2 MCU via a model deployed through **SenseCraft AI** (no-code; supports MobileNet V1/V2, EfficientNet-lite, YOLOv5/v8). Only inference results (label/confidence) are read by the Xiao — Seeed's hardware doesn't support reading both a live frame and results simultaneously over the link. Cloud vision model fallback (e.g., Claude, GPT-4o) remains an option if on-device accuracy is insufficient, but requires pulling raw frames a different way (e.g., the module's own SD card or Type-C port) since they aren't available over the I2C results link.
+- **Xiao ↔ Vision AI Link**: **I2C** (4-pin cable: SCL, SDA, VCC 3.3V, GND), using the `Seeed_Arduino_SSCMA` Arduino library — confirmed via Seeed's Grove Vision AI (V2) documentation
+
+**I2C Expansion**: Grove - I2C Hub (6 Port)
+- **Connection**: Plugs into the Grove Vision AI V2's I2C Grove port.
+- **Connected Devices**: Grove OLED Display 0.96 inch (SSD1315) and Grove 8x8 RGB LED Matrix with Driver.
+- **Constraint**: All attached devices share the I2C bus and must have compatible I2C addresses.
+
+**MVP Feedback Hardware**
+- **OLED**: Shows status and exact drawer labels, such as `1A` and `3`.
+- **8x8 RGB LED Matrix**: Acts as the six-row location indicator; matching rows illuminate on a tool lookup.
+- **Power**: These low-power I2C devices run from the existing Pi/Xiao USB-powered setup; no separate LED-strip supply is required for the MVP.
+
+**Owned, Deferred GPIO Hardware**
+- **Grove PIR Motion Sensor**, SKU 101020020: digital motion output; planned for wake detection.
+- **Grove Red LED Button**, SKU 111020044: planned push-to-talk control and capture-status indicator.
+- **Grove WS2813 RGB LED Strip Waterproof, 30 LEDs/m, 1 m**, SKU 104020108: deferred; it needs a dedicated GPIO data path and an external 5V power supply.
+- **Seeed Studio Expansion Board Base for XIAO with Grove OLED**, SKU 103030356: owned; provides Grove I2C, UART, and A0/D0 ports, plus an onboard OLED, button, and buzzer. Its physical stacking and pin compatibility with the Vision AI V2 must be verified before use.
+- **Constraint**: The Vision AI V2 is stacked on the XIAO expansion header, so these non-I2C components are not yet wired. Do not connect them to the I2C Hub.
 
 **API Server**: Raspberry Pi Zero 2
 - **CPU**: Broadcom BCM2710A1 (ARM Cortex-A53 @ 1GHz, quad-core)
@@ -444,112 +492,120 @@ bun run start
 
 ## Sensors & Peripherals
 
-### Camera (OV2640)
-- **Resolution**: 2MP (1600x1200 max)
-- **Interface**: I2C for control, parallel for data
-- **Use Cases**: Capture images, object detection
-- **Library**: TBD
+### Vision: Grove Vision AI Module (V2) + OV5647 Camera
+- **Resolution**: OV5647, up to 5MP (2592x1944)
+- **Connection**: I2C connection to the XIAO ESP32S3; physical stacking remains to be verified.
+- **Interface**: I2C (SCL, SDA, VCC 3.3V, GND) — confirmed via Seeed documentation
+- **Use Cases**: Tool identification (voice-requested lookup context and drawer-return detection)
+- **Identification Method (default)**: On-device inference on the module's WiseEye2 MCU via a SenseCraft AI-deployed model (send only tool name/confidence to the API). Cloud vision model fallback (e.g., Claude, GPT-4o) if needed — see Feature 3.
+- **Library/SDK**: `Seeed_Arduino_SSCMA` (Arduino library for I2C communication with the module)
 
-### IMU (LSM6DS3)
+### IMU (External, TBD)
 - **Type**: 6-axis (3-axis accelerometer + 3-axis gyroscope)
 - **Interface**: I2C
 - **Data Rate**: Up to 1.6kHz
 - **Use Cases**: Motion detection, orientation tracking
 - **Library**: TBD
 
-### Microphone (PDM)
-- **Type**: Digital PDM microphone
+### Microphone (External, TBD)
+- **Type**: Digital microphone
 - **Interface**: PDM (Pulse Density Modulation)
 - **Sample Rate**: Configurable (8kHz - 16kHz typical)
 - **Use Cases**: Audio recording, sound detection, keyword detection
 - **Library**: TBD
 
-### PIR Motion Sensor (Grove PIR Sensor)
+### PIR Motion Sensor (Grove PIR Sensor, SKU 101020020)
 - **Type**: Passive Infrared Motion Detector
-- **Model**: Grove PIR Motion Sensor (or compatible)
+- **Model**: Grove PIR Motion Sensor
 - **Interface**: Digital GPIO via Grove connector
-- **Connection**: Plugs into Grove Extension Board
+- **Connection**: Deferred pending a GPIO expansion/wiring solution compatible with the stacked Vision AI V2
 - **Use Cases**: Wake mode trigger, activity detection
 - **Trigger**: HIGH signal on motion detection
 - **Detection Range**: Configurable (typically 3-7 meters)
 - **Power**: 3.3V-5V from Grove port
 
-### LED Strips/Arrays
+### Display and Indicators
 
-**Drawer LEDs**:
-- **Type**: Addressable RGB LED strips (e.g., WS2812B/NeoPixel)
-- **Quantity**: One strip per drawer (number TBD)
-- **Interface**: Single-wire data line
-- **Controller**: Xiao Sense (direct control)
-- **Use Cases**: 
-  - Drawer illumination during wake mode
-  - Tool location indication (color-coded by certainty)
-  - Status feedback (returns, errors)
-- **Library**: FastLED or Adafruit_NeoPixel
-- **Power**: External 5V supply (calculate based on LED count)
+**Row Indicator Matrix (MVP)**:
+- **Type**: Grove 8x8 RGB LED Matrix with Driver
+- **Interface**: I2C through the Grove - I2C Hub (6 Port)
+- **Behavior**: Six matrix positions represent rows 1-6. Matching rows light by certainty; row 1 remains a single shared indicator for drawers 1A, 1B, and 1C.
+- **Use Cases**: Row location indication and status feedback.
+
+**OLED Display (MVP)**:
+- **Type**: Grove OLED Display 0.96 inch (SSD1315)
+- **Interface**: I2C through the Grove - I2C Hub (6 Port)
+- **Use Cases**: Status, errors, and exact drawer labels, such as `1A` and `3`.
+
+**WS2813 Strip (Future)**:
+- **Type**: Grove WS2813 RGB LED Strip Waterproof, 30 LEDs/m, 1 m (SKU 104020108)
+- **Interface**: Single-wire GPIO data signal; not I2C
+- **Power**: External regulated 5V supply, sized for up to 1.8A at full white
+- **Status**: Deferred until a compatible GPIO breakout/expansion design is selected.
 
 **Camera Illumination LED**:
 - **Type**: High-brightness white LED or LED ring
 - **Purpose**: Illuminate tools for image capture
 - **Interface**: Digital GPIO with PWM for brightness control
-- **Control**: Direct from Xiao Sense
+- **Control**: Direct from XIAO ESP32S3
 - **Power**: Current-limiting resistor or constant current driver
 
-**Display Module** (on Grove Extension Board):
-- **Type**: OLED or LCD (check Grove board specs)
-- **Interface**: I2C via Grove connector
-- **Use Cases**: 
-  - Display transcribed voice commands
-  - Show system status
-  - Error messages and notifications
-  - Tool search results
-- **Library**: U8g2 (OLED) or LiquidCrystal_I2C (LCD)
 
 ## Pin Mappings
 
-### Xiao nRF52840 Sense Pin Assignments
+### XIAO ESP32S3 Pin Assignments
 ```cpp
-// Built-in peripherals
-#define LED_PIN           13    // Built-in LED
-#define CAMERA_SDA        4     // Camera I2C data (built-in)
-#define CAMERA_SCL        5     // Camera I2C clock (built-in)
-#define IMU_SDA           4     // IMU I2C data (shared with camera)
-#define IMU_SCL           5     // IMU I2C clock (shared with camera)
-#define MIC_PDM_DATA      TBD   // PDM microphone data (built-in)
-#define MIC_PDM_CLK       TBD   // PDM microphone clock (built-in)
+// Confirm pin assignments against the physical XIAO ESP32S3 wiring before use.
+#define LED_PIN           TBD
+#define VISION_I2C_SDA    TBD
+#define VISION_I2C_SCL    TBD
+#define IMU_I2C_SDA       TBD
+#define IMU_I2C_SCL       TBD
+#define MIC_DATA          TBD
+#define MIC_CLK           TBD
 
-// Grove Extension Board connections
+// Grove Extension Board connections (separate from the Grove Vision AI Module)
 #define GROVE_I2C_SDA     TBD   // Grove I2C data (for display, sensors)
 #define GROVE_I2C_SCL     TBD   // Grove I2C clock
 #define PIR_SENSOR_PIN    TBD   // Grove PIR sensor digital input
-#define CAMERA_LED_PIN    TBD   // Camera illumination LED (PWM capable)
 
-// LED Strip Control (multiple strips, one per drawer)
-#define DRAWER_LED_1      TBD   // First drawer LED strip data pin
-#define DRAWER_LED_2      TBD   // Second drawer LED strip data pin
-#define DRAWER_LED_3      TBD   // Third drawer LED strip data pin
-// Add more as needed per drawer count
+// Row Indicator LED Control (one strip per ROW, not per drawer; 6 rows total)
+#define ROW_LED_1         TBD   // Row 1 LED data pin (covers 3 drawers)
+#define ROW_LED_2         TBD   // Row 2 LED data pin
+#define ROW_LED_3         TBD   // Row 3 LED data pin
+#define ROW_LED_4         TBD   // Row 4 LED data pin
+#define ROW_LED_5         TBD   // Row 5 LED data pin
+#define ROW_LED_6         TBD   // Row 6 LED data pin
 
 // Optional Drawer Sensors (hall effect or photointerrupters)
 #define DRAWER_SENSOR_1   TBD   // First drawer open/close sensor
 #define DRAWER_SENSOR_2   TBD   // Second drawer sensor
 #define DRAWER_SENSOR_3   TBD   // Third drawer sensor
+// Add more as needed per drawer count (8 drawers across 6 rows)
 ```
 
 ## Communication Protocol
 
-### Xiao Sense ↔ Raspberry Pi Zero 2 Communication
-- **Method**: HTTP REST API over WiFi (primary) or BLE (alternative)
-- **Network**: Local WiFi network
-- **Protocol**: JSON over HTTPS/HTTP
-- **Endpoints**: See API Endpoints section
+### XIAO ESP32S3 ↔ Raspberry Pi Zero 2 Communication
+- **Method**: Wired **USB serial** (USB-C, CDC/ACM virtual serial port) for MVP. The XIAO also supports Wi-Fi and BLE, but neither is used near-term.
+- **Physical link**: Xiao's USB-C cable plugged into a USB port on the Pi Zero 2 (e.g., appears as `/dev/ttyACM0` on the Pi)
+- **Protocol**: Newline-delimited JSON. Every Xiao request has a unique `id`, `type: "request"`, a supported `endpoint`, and a `body`. The Pi echoes the same `id` in every response. The Bun implementation reads/writes the CDC ACM device directly without a native serial-port addon.
+- **Initial endpoints**:
+  - `device/status`: Xiao reports its firmware version and readiness.
+  - `tools/lookup`: Xiao sends recognized or transcribed text; Pi returns matching drawer labels and row indicators.
+  - `vision/observe`: Xiao sends `drawerLabel`, model version, and a `detections` array of tool-type labels, confidence, quantity, and optional bounding boxes.
+- **Successful response**: `{"id":"req-001","success":true,"body":{...}}`
+- **Error response**: `{"id":"req-001","success":false,"error":{"code":"INVALID_REQUEST","message":"drawer_label is required"}}`
+- **Audio**: Do not embed multi-second WAV data in a JSON line. Push-to-talk audio will use a separate chunked transfer protocol after ordinary serial requests are working.
 - **Connectivity**:
-  - Xiao Sense connects to WiFi network
-  - Discovers Pi Zero 2 API server via mDNS or static IP
-  - Makes HTTP requests for tool queries, returns sensor data
-- **Alternative BLE Mode**:
-  - Service UUID: TBD
-  - Characteristics: Sensor Data (Read/Notify), Commands (Write), Status (Read)
+  - XIAO ESP32S3 writes/reads framed JSON messages over its USB serial connection
+  - Pi Zero 2 process listens on the serial device and dispatches to the same handlers used for the HTTP API
+  - No network discovery needed (mDNS/static IP) since the link is a direct wire, not WiFi
+
+### API Server ↔ Whisper Transcription (NAS)
+- **Method**: HTTP call from the Pi Zero 2 to a self-hosted Whisper server on the local NAS
+- **Example**: `http://192.168.50.10:9000` (Swagger docs at `/docs`) — stored as `transcription_service_url` in the `config` table, not hardcoded
+- **Timeout/Retry**: 5-second timeout, 2 retries (per Feature 2 spec)
 
 ### Data Format
 Define binary or JSON format for sensor data transmission:
@@ -568,7 +624,7 @@ struct SensorPacket {
 - Use deep sleep between readings
 - Wake on sensor interrupt or timer
 - Monitor battery level
-- Optimize BLE connection intervals
+- Optimize WiFi connection/sleep intervals
 - Target: XX hours/days on battery
 
 ## Firmware Architecture
@@ -576,8 +632,8 @@ struct SensorPacket {
 ```cpp
 void setup() {
   // 1. Initialize serial
-  // 2. Initialize sensors (camera, IMU, mic)
-  // 3. Initialize BLE
+  // 2. Initialize sensors (Grove Vision AI, IMU, mic)
+  // 3. Initialize WiFi
   // 4. Configure power management
   // 5. Run self-test
 }
@@ -586,7 +642,7 @@ void loop() {
   // 1. Check for sensor events
   // 2. Capture data if triggered
   // 3. Process data (compression, filtering)
-  // 4. Transmit via BLE or queue
+  // 4. Transmit via HTTP or queue
   // 5. Enter low power state
 }
 ```
@@ -608,7 +664,7 @@ void loop() {
 ## Development Workflow
 
 1. Test individual sensors first
-2. Add BLE communication
+2. Add USB serial communication
 3. Integrate with API server
 4. Optimize power consumption
 5. Field testing
@@ -617,8 +673,8 @@ void loop() {
 
 Add to Arduino Library Manager:
 - [ ] FastLED or Adafruit_NeoPixel (LED control)
-- [ ] HTTPClient or WiFi library (for API communication)
-- [ ] ArduinoJson (JSON parsing for API responses)
+- [ ] ArduinoJson (JSON parsing/encoding of messages sent over USB serial)
+- [ ] Seeed_Arduino_SSCMA (I2C communication with the Grove Vision AI Module V2)
 - [ ] Add others as needed
 
 ## Feature Specifications
@@ -628,16 +684,15 @@ Add to Arduino Library Manager:
 **Purpose**: Automatically activate the toolbox when motion is detected, providing illumination and readying the camera for tool identification.
 
 **Hardware Requirements**:
-- PIR motion sensor
-- Drawer LED strips (addressable RGB)
-- Camera LED strips
+- PIR motion sensor (deferred until GPIO expansion is available)
+- 8x8 RGB LED matrix (MVP row indication)
+- OLED display (MVP status display)
 
 **Behavior**:
 1. **Idle State**: System in low-power mode, only PIR sensor active
 2. **Motion Detection**: PIR sensor triggers interrupt
 3. **Wake Activation**:
-   - Turn on drawer LED strips (white light for visibility)
-   - Turn on camera LED strips (adequate lighting for image capture)
+  - Show ready status on the OLED and matrix
    - Power up camera module
    - Initialize microphone for keyword detection
    - Start activity timer
@@ -652,8 +707,8 @@ Add to Arduino Library Manager:
 
 **Power Considerations**:
 - Use PIR interrupt to wake from deep sleep
-- Implement gradual LED brightness (fade in) to avoid power spikes
-- Monitor current draw to prevent brownouts
+- The OLED and matrix operate from the existing low-power I2C setup
+- Revisit power budgeting when the deferred WS2813 strip is added
 
 ---
 
@@ -662,9 +717,10 @@ Add to Arduino Library Manager:
 **Purpose**: Allow users to request tool locations via voice commands, with visual feedback via color-coded LED indicators.
 
 **Hardware Requirements**:
-- PDM microphone
-- Drawer LED strips (addressable RGB)
-- Network connectivity (WiFi or BLE to API)
+- External microphone module
+- 8x8 RGB LED matrix (one position per row; 6 rows total)
+- OLED display for exact drawer labels
+- USB serial connectivity to the API (see Communication Protocol)
 
 **Workflow**:
 
@@ -679,11 +735,8 @@ Add to Arduino Library Manager:
    - Buffer audio in RAM before transmission
 
 3. **Audio-to-Text Conversion**:
-   - Send audio to **configurable** transcription service:
-     - **Option A**: Local Whisper server (HTTP endpoint)
-     - **Option B**: Cloud service (OpenAI Whisper API, Google Speech-to-Text, etc.)
-     - **Option C**: Azure Cognitive Services
-   - Configuration stored in API database or local config file
+   - **Decision**: Self-hosted Whisper server running on a NAS on the local network (not on the Pi Zero 2 — it doesn't have the RAM to run Whisper itself)
+   - Example: `http://192.168.50.10:9000` (Swagger docs at `/docs`); stored as `transcription_service_url` in the `config` table so it can change without a redeploy
    - Include timeout and retry logic (5-second timeout, 2 retries)
 
 4. **API Request**:
@@ -707,34 +760,35 @@ Add to Arduino Library Manager:
      "message": "Tool not found"
    }
    ```
-   - **Tool Identified**:
+   - **Tool Identified** (`row_number` is what actually drives the LED; `drawer_id` is the specific drawer for logging):
    ```json
    {
      "success": true,
      "found": true,
      "tool_name": "Phillips Screwdriver",
      "drawers": [
-       { "drawer_id": 3, "certainty": 95 },
-       { "drawer_id": 7, "certainty": 60 },
-       { "drawer_id": 12, "certainty": 25 }
+       { "drawer_id": 3, "row_number": 1, "certainty": 95 },
+       { "drawer_id": 7, "row_number": 4, "certainty": 60 },
+       { "drawer_id": 12, "row_number": 6, "certainty": 25 }
      ]
    }
    ```
+   - If multiple drawers within the **same row** match (relevant for row 1's 3 drawers), the API collapses them to a single entry using the highest certainty for that row.
 
 6. **Visual Feedback**:
    - **Unknown Tool**: 
-     - Flash all drawer LEDs **red** 3 times
-     - Display "UNKNOWN" on optional display module
+     - Flash all row positions on the matrix **red** 3 times
+     - Display "UNKNOWN" on the OLED
      - Play error tone (optional buzzer)
    
    - **Tool Found**: 
-     - Light up drawer LEDs based on certainty:
+     - Light up each matching row's matrix position based on certainty:
        - **High certainty (80-100%)**: **Solid Green**
        - **Medium certainty (40-79%)**: **Solid Orange**
        - **Low certainty (10-39%)**: **Solid Blue** (or Purple/Cyan as alternative)
        - **Very low certainty (<10%)**: Do not illuminate
-     - Keep LEDs lit for **30 seconds** or until drawer is opened
-     - Brightness proportional to certainty (higher = brighter)
+     - Show exact drawer labels on the OLED, such as `1A, 3`
+     - Keep indicators lit for **30 seconds** or until a new interaction
 
 7. **User Feedback**:
    - Optional: Play confirmation beep when keyword detected
@@ -762,8 +816,8 @@ Add to Arduino Library Manager:
 **Purpose**: Automatically detect when tools are returned to drawers and log the event for inventory tracking.
 
 **Hardware Requirements**:
-- Camera module (OV2640)
-- Drawer LED strips (for feedback)
+- Grove Vision AI Module (V2) + OV5647 camera
+- Row indicator LEDs (for feedback)
 - Optional: Hall effect sensors or photointerrupters per drawer (for drawer open/close detection)
 
 **Workflow**:
@@ -788,7 +842,7 @@ Add to Arduino Library Manager:
    ```
 
 3. **API Processing**:
-   - API uses computer vision (OpenCV, TensorFlow, or cloud API) to identify tool
+   - **Default**: Identification happens on-device on the Grove Vision AI Module's WiseEye2 MCU (SenseCraft AI-deployed model), which sends only the tool name/confidence to the API — raw images do not leave the device. Cloud vision fallback (e.g., Claude, GPT-4o) remains an option if on-device accuracy proves insufficient.
    - Compare with inventory database
    - Detect if tool is new, returning, or duplicate
    - Response format:
@@ -806,13 +860,13 @@ Add to Arduino Library Manager:
 
 4. **Visual Feedback**:
    - **Successful Return**: 
-     - Flash drawer LED **green** 2 times
+     - Flash the drawer's row LED **green** 2 times
      - Log event to database
    - **New Tool Detected**: 
-     - Flash drawer LED **blue** 3 times
+     - Flash the drawer's row LED **blue** 3 times
      - Prompt user for tool name (via app or display)
    - **Unknown Object**: 
-     - Flash drawer LED **yellow** once
+     - Flash the drawer's row LED **yellow** once
      - Log for manual review
    - **Identification Failure**: 
      - No LED change
@@ -880,8 +934,8 @@ const unsigned long WAKE_TIMEOUT = 600000; // 10 minutes in ms
 void setup() {
   // 1. Initialize serial (115200 baud)
   // 2. Initialize sensors (camera, IMU, mic, PIR)
-  // 3. Initialize LED strips (drawer LEDs, camera LEDs)
-  // 4. Initialize network (WiFi or BLE)
+  // 3. Initialize LED strips (row LEDs, camera LEDs)
+  // 4. Initialize network (WiFi)
   // 5. Load configuration from EEPROM/flash
   // 6. Configure interrupts (PIR motion detection)
   // 7. Run self-test (verify all hardware)
@@ -959,10 +1013,7 @@ void loop() {
     lastActivityTime = millis();
   }
 }
-```3 (IMU)
-- [ ] Seeed Arduino Camera (OV2640)
-- [ ] ArduinoBLE or Nordic BLE library
-- [ ] Add others as needed
+```
 
 ---
 
@@ -971,8 +1022,8 @@ void loop() {
 ## Data Flow
 
 ```
-Firmware (Xiao Sense)
-  ↓ [WiFi/HTTP or BLE]
+Firmware (XIAO ESP32S3)
+  ↓ [USB serial]
 API Server (Bun on Raspberry Pi Zero 2)
   ↓ [SQLite]
 Database (Storage in api/data/)
@@ -981,10 +1032,18 @@ Client Applications (Web Dashboard, Mobile App, etc.)
 ```
 
 **Communication Paths**:
-1. **Xiao Sense → Pi Zero 2**: Tool queries, images, audio, telemetry (HTTP/WiFi)
-2. **Pi Zero 2 → Xiao Sense**: Tool locations, commands, configuration (HTTP response)
-3. **Xiao Sense**: Controls LEDs directly based on API responses
+1. **XIAO ESP32S3 → Pi Zero 2**: Tool queries, images, audio, telemetry (USB serial)
+2. **Pi Zero 2 → XIAO ESP32S3**: Tool locations, commands, configuration (USB serial response)
+3. **XIAO ESP32S3**: Controls LEDs directly based on API responses
 4. **Web Clients → Pi Zero 2**: Dashboard access, manual tool management (HTTP)
+
+### Row-Aware Inventory Lookup
+
+- A drawer has an exact display `label` (such as `1A`, `1B`, `1C`, or `3`) and a `row_number`.
+- The Pi keeps the latest observation for each detected tool type and drawer, including quantity, confidence, model version, and timestamp.
+- `GET /api/tools/lookup?query=needle-nose%20pliers` returns exact `drawers` for the OLED and a `rows` list collapsed by `row_number` for the matrix. When several drawers in one row match, the row takes the highest available confidence.
+- `POST /api/vision/observations` accepts a `drawerId`, `modelVersion`, and `detections` array. Each detection contains `label`, `confidence` (0-100), and optional `quantity`.
+- Tool identity is by type, not by individual physical instance. Multiple detections of a type in one drawer are represented by quantity.
 
 ## Message Format Standards
 
@@ -1014,13 +1073,12 @@ Use consistent data formats across both projects:
 ## Phase 2: Core Features
 - [ ] Implement sensor data storage endpoints
 - [ ] Add IMU data capture in firmware
-- [ ] Test BLE communication
-- [ ] Implement data transmission pipeline
+- [ ] Establish Grove Vision AI ↔ Xiao link over I2C (`Seeed_Arduino_SSCMA`)
+- [ ] Implement USB serial data transmission pipeline
 
 ## Phase 3: Advanced Features
-- [ ] Add camera capture and image storage
+- [ ] Add tool identification via on-device SenseCraft AI model (cloud vision fallback if needed)
 - [ ] Implement microphone recording
-- [ ] Add authentication to API
 - [ ] Optimize power consumption
 
 ## Phase 4: Polish

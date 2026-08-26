@@ -130,6 +130,57 @@
             margin-bottom: 30px;
         }
 
+        .settings-section {
+            background: rgba(255, 255, 255, 0.14);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+            border-radius: 24px;
+            padding: 24px;
+            backdrop-filter: blur(18px);
+            box-shadow: 0 24px 50px rgba(0, 0, 0, 0.22);
+            margin-bottom: 30px;
+            color: white;
+        }
+
+        .settings-grid {
+            display: grid;
+            grid-template-columns: repeat(2, minmax(0, 1fr));
+            gap: 16px;
+            margin-top: 18px;
+        }
+
+        .settings-field {
+            display: grid;
+            gap: 8px;
+        }
+
+        .settings-field label {
+            font-weight: 700;
+        }
+
+        .settings-field input,
+        .settings-field select {
+            width: 100%;
+            padding: 12px 14px;
+            border: 1px solid rgba(16, 24, 40, 0.12);
+            border-radius: 12px;
+            background: white;
+            color: #1f2937;
+            font: inherit;
+        }
+
+        .settings-actions {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+            flex-wrap: wrap;
+            margin-top: 18px;
+        }
+
+        .settings-hint {
+            color: rgba(255, 255, 255, 0.85);
+            line-height: 1.5;
+        }
+
         .inventory-header {
             display: flex;
             justify-content: space-between;
@@ -330,7 +381,8 @@
             .inventory-header,
             .logs-toolbar,
             .drawer-create,
-            .tool-form-row {
+            .tool-form-row,
+            .settings-grid {
                 grid-template-columns: 1fr;
             }
 
@@ -377,6 +429,37 @@
             <div id="drawerGrid" class="drawer-grid"></div>
         </section>
 
+        <section class="settings-section">
+            <div class="inventory-header">
+                <div>
+                    <h2>Transcription Settings</h2>
+                    <p>Choose where push-to-talk audio is transcribed. API keys remain on the Pi and are never shown here.</p>
+                </div>
+            </div>
+
+            <form id="transcriptionSettingsForm">
+                <div class="settings-grid">
+                    <div class="settings-field">
+                        <label for="transcriptionProvider">Provider</label>
+                        <select id="transcriptionProvider" name="provider">
+                            <option value="nas_whisper">NAS Whisper</option>
+                            <option value="openai">OpenAI</option>
+                        </select>
+                    </div>
+                    <div id="nasUrlField" class="settings-field">
+                        <label for="nasUrl">NAS Whisper URL</label>
+                        <input id="nasUrl" name="nasUrl" type="url" placeholder="http://192.168.50.10:9000" required>
+                    </div>
+                </div>
+                <p id="transcriptionHint" class="settings-hint"></p>
+                <div class="settings-actions">
+                    <button class="btn btn-primary" type="submit">Save Settings</button>
+                    <button id="testTranscriptionButton" class="btn btn-secondary" type="button">Test Connection</button>
+                </div>
+            </form>
+            <div id="transcriptionStatus" class="inventory-status" aria-live="polite"></div>
+        </section>
+
         <section class="logs-section">
             <div class="logs-toolbar">
                 <div>
@@ -403,6 +486,13 @@
         const logsStatus = document.getElementById('logsStatus');
         const requestGridWrapper = document.getElementById('requestGridWrapper');
         const refreshLogsButton = document.getElementById('refreshLogsButton');
+        const transcriptionSettingsForm = document.getElementById('transcriptionSettingsForm');
+        const transcriptionProvider = document.getElementById('transcriptionProvider');
+        const nasUrl = document.getElementById('nasUrl');
+        const nasUrlField = document.getElementById('nasUrlField');
+        const transcriptionHint = document.getElementById('transcriptionHint');
+        const transcriptionStatus = document.getElementById('transcriptionStatus');
+        const testTranscriptionButton = document.getElementById('testTranscriptionButton');
 
         function setInventoryStatus(message, type = '') {
             inventoryStatus.textContent = message;
@@ -421,6 +511,39 @@
         function setLogsStatus(message, type = '') {
             logsStatus.textContent = message;
             logsStatus.className = `inventory-status ${type}`.trim();
+        }
+
+        function setTranscriptionStatus(message, type = '') {
+            transcriptionStatus.textContent = message;
+            transcriptionStatus.className = `inventory-status ${type}`.trim();
+        }
+
+        function updateTranscriptionFields(openaiApiKeyConfigured = false) {
+            const usesNas = transcriptionProvider.value === 'nas_whisper';
+            nasUrlField.hidden = !usesNas;
+            nasUrl.required = usesNas;
+            transcriptionHint.textContent = usesNas
+                ? 'The Pi sends audio to the configured NAS Whisper service.'
+                : openaiApiKeyConfigured
+                    ? 'OpenAI is configured on the Pi. Its API key is not exposed to this page.'
+                    : 'OpenAI requires OPENAI_API_KEY to be configured on the Pi.';
+        }
+
+        async function loadTranscriptionSettings() {
+            try {
+                const response = await fetch('/api/settings/transcription');
+                if (!response.ok) {
+                    throw new Error('Unable to load transcription settings.');
+                }
+
+                const data = await response.json();
+                const settings = data.settings;
+                transcriptionProvider.value = settings.provider;
+                nasUrl.value = settings.nasUrl;
+                updateTranscriptionFields(settings.openaiApiKeyConfigured);
+            } catch (error) {
+                setTranscriptionStatus(error.message, 'error');
+            }
         }
 
         function renderLogs(logs) {
@@ -590,6 +713,52 @@
             loadLogs();
         });
 
+        transcriptionProvider.addEventListener('change', () => updateTranscriptionFields());
+
+        transcriptionSettingsForm.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const payload = { provider: transcriptionProvider.value, nasUrl: nasUrl.value };
+
+            try {
+                const response = await fetch('/api/settings/transcription', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.error || 'Unable to save transcription settings.');
+                }
+
+                transcriptionProvider.value = data.settings.provider;
+                nasUrl.value = data.settings.nasUrl;
+                updateTranscriptionFields(data.settings.openaiApiKeyConfigured);
+                setTranscriptionStatus('Transcription settings saved.', 'success');
+                await loadLogs();
+            } catch (error) {
+                setTranscriptionStatus(error.message, 'error');
+            }
+        });
+
+        testTranscriptionButton.addEventListener('click', async () => {
+            try {
+                const response = await fetch('/api/settings/transcription/test', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ provider: transcriptionProvider.value, nasUrl: nasUrl.value })
+                });
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.error || 'Unable to test transcription provider.');
+                }
+
+                setTranscriptionStatus(data.message, 'success');
+                await loadLogs();
+            } catch (error) {
+                setTranscriptionStatus(error.message, 'error');
+            }
+        });
+
         // Check API health
         fetch('/health')
             .then(r => r.json())
@@ -598,6 +767,7 @@
 
         loadInventory();
         loadLogs();
+        loadTranscriptionSettings();
     </script>
 </body>
 </html>

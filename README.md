@@ -1,6 +1,6 @@
 # SmartToolbox
 
-A monorepo project combining a web API server with Arduino firmware for the Seeed Xiao nRF52840 Sense microcontroller.
+A monorepo project combining a web API server with Arduino firmware for the Seeed XIAO ESP32S3 microcontroller.
 
 ## Project Structure
 
@@ -13,7 +13,7 @@ smarttoolbox/
 │   ├── deploy/            # Deployment configurations
 │   └── scripts/           # Build and utility scripts
 │
-└── firmware/              # Arduino project (Seeed Xiao Sense)
+└── firmware/              # Arduino project (Seeed XIAO ESP32S3)
     ├── smarttoolbox/      # Main sketch folder
     │   └── smarttoolbox.ino
     └── README.md          # Firmware-specific documentation
@@ -25,18 +25,19 @@ smarttoolbox/
 
 ```bash
 cd api
-npm install
-npm run dev
+bun install
+bun run start
 ```
 
-See [api/README.md](api/README.md) for detailed API documentation (if available).
+On the Pi, the production service opens the connected XIAO at `/dev/ttyACM0` by default. Its log is at `~/smarttoolbox/logs/service.log`.
 
 ### Firmware
 
 1. Open `firmware/smarttoolbox/smarttoolbox.ino` in Arduino IDE 2.0+
-2. Install Seeed nRF52 Boards from Board Manager
-3. Select **Tools > Board > Seeed XIAO nRF52840 Sense**
+2. Install `esp32` by Espressif Systems from Board Manager
+3. Select **Tools > Board > esp32 > XIAO_ESP32S3**
 4. Upload to your device
+5. Connect the XIAO to the Pi, then press `RST` to send its `device/status` boot request
 
 See [firmware/README.md](firmware/README.md) for detailed firmware documentation.
 
@@ -44,7 +45,21 @@ See [firmware/README.md](firmware/README.md) for detailed firmware documentation
 
 - **API**: RESTful server with SQLite database for data storage and retrieval
 - **Firmware**: Captures sensor data from camera, IMU, and microphone
-- **Communication**: BLE or HTTP between firmware and API
+- **Communication**: Wired USB serial between firmware and API for the MVP
+
+## USB Serial Check
+
+The initial XIAO-to-Pi handshake uses newline-delimited JSON. After the Pi service is running and the XIAO is connected, press `RST` on the XIAO. A successful request appears in the Pi log:
+
+```text
+[serial] request id=boot-1 endpoint=device/status
+```
+
+If the XIAO is unplugged and reconnected while the service is running, restart the service before resetting the XIAO because the current serial transport does not reconnect automatically:
+
+```bash
+sudo systemctl restart smarttoolbox
+```
 
 ## Development
 
@@ -62,13 +77,12 @@ This project uses GitHub Copilot with custom instructions. The AI assistant will
 - **Server**: Express.js or similar
 
 ### Firmware
-- **Hardware**: Seeed Xiao nRF52840 Sense
-- **MCU**: Nordic nRF52840 (ARM Cortex-M4 @ 64MHz)
-- **Connectivity**: Bluetooth Low Energy (BLE 5.0)
+- **Hardware**: Seeed XIAO ESP32S3
+- **MCU**: Espressif ESP32-S3
+- **Connectivity**: USB serial to the Pi for the MVP; Wi-Fi and BLE are available for future use
 - **Sensors**: 
-  - OV2640 Camera (2MP)
-  - LSM6DS3 IMU (6-axis)
-  - PDM Microphone
+  - Grove Vision AI Module V2 with OV5647 camera
+  - Additional sensors to be connected externally as needed
 
 ## Contributing
 

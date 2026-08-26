@@ -1,34 +1,26 @@
 /**
- * SmartToolbox - Seeed Xiao Sense Firmware
+ * SmartToolbox - Seeed XIAO ESP32S3 Firmware
  * 
- * Hardware: Seeed Xiao nRF52840 Sense
- * Features: Camera, IMU, Microphone, BLE
+ * Hardware: Seeed XIAO ESP32S3
+ * Features: Grove Vision AI, IMU, Microphone, USB serial
  * 
  * Project: SmartToolbox
  * Date: May 17, 2026
  */
 
+#if defined(ARDUINO_ARCH_NRF52)
+#include <Adafruit_TinyUSB.h>
+#endif
+
 void setup() {
-  // Initialize serial communication
   Serial.begin(115200);
   while (!Serial) {
     delay(10);
   }
-  
-  Serial.println("SmartToolbox Initializing...");
-  
-  // TODO: Initialize sensors
-  // - Camera (OV2640)
-  // - IMU (LSM6DS3)
-  // - Microphone (PDM)
-  // - BLE
-  
-  Serial.println("SmartToolbox Ready!");
+
+  Serial.println("{\"id\":\"boot-1\",\"type\":\"request\",\"endpoint\":\"device/status\",\"body\":{\"firmwareVersion\":\"0.1.0\"}}");
 }
 
 void loop() {
-  // Main program loop
-  // TODO: Implement main functionality
-  
-  delay(100);
+  // TODO: Process Pi responses and initialize sensors.
 }

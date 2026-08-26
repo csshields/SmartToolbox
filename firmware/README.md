@@ -1,16 +1,19 @@
 # SmartToolbox Firmware
 
-Arduino firmware for the Seeed Xiao nRF52840 Sense microcontroller.
+Arduino firmware for the Seeed XIAO ESP32S3 microcontroller.
 
 ## Hardware
 
-- **Board**: Seeed Xiao nRF52840 Sense
-- **Processor**: Nordic nRF52840 (ARM Cortex-M4)
+- **Board**: Seeed XIAO ESP32S3
+- **Processor**: Espressif ESP32-S3
 - **Sensors**:
-  - Camera: OV2640 (2MP)
-  - IMU: LSM6DS3 (6-axis accelerometer + gyroscope)
-  - Microphone: PDM microphone
-- **Connectivity**: Bluetooth Low Energy (BLE 5.0)
+  - Vision: Grove Vision AI Module V2 (SKU 101021112) with OV5647 camera; on-device SenseCraft AI inference over I2C
+  - Additional IMU and microphone hardware: not yet selected
+- **Connectivity**: USB serial to Raspberry Pi Zero 2
+- **I2C topology**: Vision AI V2 Grove port -> Grove I2C Hub (6 Port) -> Grove OLED Display 0.96 inch (SSD1315) and Grove 8x8 RGB LED Matrix with Driver
+- **MVP feedback**: Matrix highlights matching rows; OLED shows exact drawer labels such as `1A` and `3`.
+- **Deferred GPIO parts**: Grove PIR Motion Sensor (SKU 101020020), Grove Red LED Button (SKU 111020044), and Grove WS2813 RGB LED Strip (SKU 104020108). They must not connect to the I2C Hub; their wiring awaits a GPIO expansion solution.
+- **Owned expansion option**: Seeed Studio Expansion Board Base for XIAO with Grove OLED (SKU 103030356). Its compatibility with the Vision AI V2 stack must be verified before using it for GPIO expansion.
 
 ## Setup
 
@@ -23,20 +26,56 @@ Arduino firmware for the Seeed Xiao nRF52840 Sense microcontroller.
      ```
      https://files.seeedstudio.com/arduino/package_seeeduino_boards_index.json
      ```
-3. Install "Seeed nRF52 Boards" from Board Manager
-4. Select **Tools > Board > Seeed nRF52 Boards > Seeed XIAO nRF52840 Sense**
+3. Install `esp32` by Espressif Systems from Board Manager
+4. Select **Tools > Board > esp32 > XIAO_ESP32S3**
 
 ### Libraries
 
 Required libraries (install via Library Manager):
-- TBD - Add libraries as needed for camera, sensors, BLE
+- `Seeed_Arduino_SSCMA` for Grove Vision AI V2 communication
+- `ArduinoJson` for USB serial messages
+- `U8g2` for the OLED
+- Grove 8x8 RGB LED Matrix library
 
 ## Flashing
 
 1. Open `smarttoolbox/smarttoolbox.ino` in Arduino IDE
-2. Connect Seeed Xiao Sense via USB-C
+2. Connect the Seeed XIAO ESP32S3 via USB-C
 3. Select the correct COM port under Tools > Port
 4. Click Upload
+
+The tested Windows command-line upload uses the ESP32 core's XIAO target. Replace `COM6` with the port assigned to the XIAO:
+
+```powershell
+C:\arduino\arduino-cli.exe compile --fqbn esp32:esp32:XIAO_ESP32S3 C:\code\smarttoolbox\firmware\smarttoolbox
+C:\arduino\arduino-cli.exe upload --fqbn esp32:esp32:XIAO_ESP32S3 --port COM6 C:\code\smarttoolbox\firmware\smarttoolbox
+```
+
+## USB Serial Handshake
+
+Connect the flashed XIAO to the Raspberry Pi over USB-C. The Pi detects it as `/dev/ttyACM0`, and the `smarttoolbox` systemd service opens that device automatically. On boot, the sketch sends this newline-delimited request:
+
+```json
+{"id":"boot-1","type":"request","endpoint":"device/status","body":{"firmwareVersion":"0.1.0"}}
+```
+
+Press `RST` after connecting and verify the Pi received it:
+
+```bash
+tail -f ~/smarttoolbox/logs/service.log
+```
+
+Expected output:
+
+```text
+[serial] request id=boot-1 endpoint=device/status
+```
+
+If the XIAO is disconnected after the service has opened the device, restart the service after reconnecting it:
+
+```bash
+sudo systemctl restart smarttoolbox
+```
 
 ## Project Structure
 
@@ -57,5 +96,6 @@ firmware/
 
 - [ ] Implement camera capture
 - [ ] Implement IMU data reading
-- [ ] Implement BLE communication with API server
+- [x] Send the `device/status` USB serial boot request to the API server
+- [ ] Parse USB serial responses and send tool lookup requests
 - [ ] Add power management features
