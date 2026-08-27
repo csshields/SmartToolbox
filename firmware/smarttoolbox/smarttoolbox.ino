@@ -2,14 +2,21 @@
  * SmartToolbox - Seeed XIAO ESP32S3 Firmware
  *
  * Touching a mapped pad sends a tools/lookup request to the Pi over USB
- * serial and blinks the result: N slow blinks = row number, 3 fast blinks =
- * not found, 1 long blink = error or timeout. No matrix/OLED yet, so the
- * onboard LED stands in for both.
+ * serial and reports the result two ways: the onboard LED blinks N slow for
+ * the row number, 3 fast for not found, 1 long for error or timeout, and the
+ * OLED names the tool and its exact drawer label. The 8x8 matrix is not wired
+ * yet, so the LED stands in for the row indicator.
  */
 
 #include <ArduinoJson.h>
 #include <Wire.h>
 #include <U8g2lib.h>
+
+// Single source of truth for the version this build reports. Rewritten by
+// api/scripts/release-firmware.ps1 on release, and compared against the Pi's
+// drop folder to decide whether an OTA update is available - keep the exact
+// `#define FIRMWARE_VERSION "x.y.z"` shape so the script can find it.
+#define FIRMWARE_VERSION "0.3.0"
 
 const int LED_PIN = LED_BUILTIN; // Active-low: LOW = on, HIGH = off.
 const int LED_ON = LOW;
@@ -112,7 +119,7 @@ void setup() {
     touchBaseline[pinIndex] = total / 20;
   }
 
-  Serial.println("{\"id\":\"boot-1\",\"type\":\"request\",\"endpoint\":\"device/status\",\"body\":{\"firmwareVersion\":\"0.2.0\"}}");
+  Serial.println("{\"id\":\"boot-1\",\"type\":\"request\",\"endpoint\":\"device/status\",\"body\":{\"firmwareVersion\":\"" FIRMWARE_VERSION "\"}}");
 
   showStatus("SmartToolbox", "Ready", "Touch a pad");
 }

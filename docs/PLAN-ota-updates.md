@@ -77,8 +77,16 @@ XIAO
   device cannot strand itself), and 503 when `DEVICE_KEY` is unset.
 - Version comparison is numeric, not lexical - `0.10.0` correctly sorts above `0.9.0`.
 
-Still to build: the `api/scripts/` release helper that bumps the version and copies a
-freshly compiled `.bin` into the drop folder, and the whole firmware side below.
+- `api/scripts/release-firmware.ps1` - **built 2026-08-27.** Stamps
+  `#define FIRMWARE_VERSION` into the sketch, compiles, drops the binary as
+  `smarttoolbox-<version>.bin`, and with `-Push` scps it to the Pi using the same
+  deploy key as `sync.ps1`. It owns both the stamped version and the file name so
+  they cannot drift apart. Verified: 0.3.0 built and pushed, sha256 identical on
+  both ends.
+
+Still to build: the whole firmware side below. Note the endpoint is committed but not
+yet deployed - `/api/firmware/latest` returns 404 on the Pi until the next `sync.ps1`,
+and 503 after that until `DEVICE_KEY` is set in the systemd unit.
 - Add `api/scripts/` helper (the directory already exists, currently empty) to bump
   the version and copy a freshly compiled `.bin` into place - this replaces the manual
   `arduino-cli upload` step for iteration.

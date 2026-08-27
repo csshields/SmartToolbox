@@ -521,6 +521,33 @@ The server starts without a XIAO attached: `SERIAL_DEVICE` is unset off Linux, s
 serial listener is skipped and only HTTP runs. The dashboard is then at
 `http://localhost:3000`.
 
+### Releasing firmware for OTA
+
+**Status: Partial** - the release path works; the device cannot pull yet (see Feature 4
+in Firmware Specifications).
+
+`api/scripts/release-firmware.ps1` replaces the manual `arduino-cli upload` trip to the
+device. It owns both the version stamped into the sketch and the name of the built
+file, because the device decides whether to update by comparing the two - letting a
+human edit either one alone is how they drift apart.
+
+```powershell
+cd api\scripts
+.\release-firmware.ps1 -Version 0.3.0          # stamp, compile, drop locally
+.\release-firmware.ps1 -Version 0.3.0 -Push    # also copy it to the Pi
+.\release-firmware.ps1 -Version 0.3.0 -Force   # overwrite an existing version
+```
+
+1. Rewrites `#define FIRMWARE_VERSION "x.y.z"` in `firmware/smarttoolbox/smarttoolbox.ino`.
+   That exact line shape is the anchor - do not reformat it.
+2. Compiles for `esp32:esp32:XIAO_ESP32S3` into a temp build directory.
+3. Copies the result to `api/firmware/smarttoolbox-<version>.bin` (gitignored).
+4. With `-Push`, `scp`s it to `~/smarttoolbox/firmware/` on the Pi using the same
+   deploy key as `sync.ps1`.
+
+It refuses to overwrite an existing version without `-Force`, and warns if a newer
+image is already in the drop folder, since devices would keep pulling that one instead.
+
 ### Syncing to the Pi from Windows
 
 `api/sync.ps1` is the deploy path. It is tracked in git and resolves all paths from its
