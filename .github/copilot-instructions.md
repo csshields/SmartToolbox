@@ -867,10 +867,64 @@ void loop() {
 
 ## Debugging & Testing
 
-- Serial output at 115200 baud
-- Add verbose mode for debugging
-- Implement self-test routines
-- Log error codes for troubleshooting
+**Status: Implemented** - the notes below are from bringing the touch-to-lookup path
+up on real hardware on 2026-08-27, not from a checklist.
+
+- Serial output at 115200 baud.
+
+### Where the logs actually are
+
+The service does **not** log to the journal. `smarttoolbox.service` redirects both
+streams to files, so `journalctl -u smarttoolbox` shows only systemd's own start/stop
+lines and looks misleadingly empty:
+
+```bash
+tail -f ~/smarttoolbox/logs/service.log         # requests, responses, device debug
+tail -f ~/smarttoolbox/logs/service-error.log   # serial errors only
+```
+
+`service-error.log` has **no timestamps**. Check `ls -l --time-style=full-iso` on it
+before believing an error is current - a stale EACCES from an earlier unplug reads
+exactly like a live one, and will send you after the wrong problem.
+
+### Telling which side of the serial link is broken
+
+The link fails one side at a time, and a half-open link looks healthy from the Pi.
+`[serial] request id=req-N` followed by `[serial] response written id=req-N` only
+proves the Pi's *write* succeeded; it says nothing about whether the XIAO received it.
+When the device reports a timeout but the Pi log looks clean, check the link itself:
+
+```bash
+sudo lsof /dev/ttyACM0        # want both an FD ending in r and one ending in w
+stty -F /dev/ttyACM0 -a       # want raw mode: -echo, -icanon, -opost
+```
+
+A read FD with no write FD means responses are being dropped. `echo` being on means
+the device is receiving its own transmissions back - see Communication Protocol.
+
+To prove the device's receive path independently of touch hardware, write a bench
+command straight to it and watch for a resulting request in the log:
+
+```bash
+printf "lookup Claw Hammer\n" > /dev/ttyACM0
+```
+
+That command is ignored while the firmware is mid-lookup or mid-blink, so send it a
+few times spaced a few seconds apart before concluding the receive path is dead.
+
+### Reading the device directly from Windows
+
+`arduino-cli monitor` exits immediately when its output is not a terminal, so it
+cannot be captured to a file. Read the port with PowerShell instead:
+
+```powershell
+$p = New-Object System.IO.Ports.SerialPort 'COM6',115200,'None',8,'One'
+$p.DtrEnable = $true; $p.ReadTimeout = 500; $p.Open()
+```
+
+Note that the Windows API never starts the serial listener (`SERIAL_DEVICE` is unset
+off Linux), so a lookup sent while the XIAO is on the laptop always times out. That is
+correct behavior, not a fault - the round trip can only be tested against the Pi.
 
 ## Development Workflow
 

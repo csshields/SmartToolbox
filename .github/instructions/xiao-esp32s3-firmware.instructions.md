@@ -21,6 +21,19 @@ description: "Firmware guidance for the Seeed XIAO ESP32S3, including onboard LE
 - Reference readings on D0, once calibrated correctly: **~18,300 idle, ~31,400 while touched** - a ~70% rise, so a trigger ratio of 1.15x baseline has wide margin.
 - `touchInterruptSetThresholdDirection()` does **not** exist on the S3 - the core guards it with `#if SOC_TOUCH_SENSOR_VERSION == 1`, so it is ESP32-only. There is no direction to flip; the direction is fixed by the silicon.
 - Use USB serial at 115200 baud for diagnostics and upload. The board may disconnect and re-enumerate briefly during reset or upload.
+- **Never wait unbounded on `while (!Serial)`.** The XIAO is routinely powered up before the Pi service opens the port, and an unbounded wait hangs the sketch inside `setup()` before anything runs - no output, no touch, no display, indistinguishable from a dead board. Bound it: `while (!Serial && millis() - start < 3000)`.
+- The Grove OLED is a **SSD1315**, which is SSD1306-compatible. `U8G2_SSD1306_128X64_NONAME_F_HW_I2C oled(U8G2_R0, U8X8_PIN_NONE)` with `Wire.begin()` drives it. `oled.begin()` returns a bool - guard on it, and print the result, or a missing display is silent.
+- A full U8g2 buffer push (`sendBuffer()`) costs roughly 10ms over I2C. Call it on state changes only; every loop starves the serial poll.
+
+## Building and flashing
+
+```
+arduino-cli compile --upload -p COM<n> --fqbn esp32:esp32:XIAO_ESP32S3 firmware/smarttoolbox
+```
+
+`arduino-cli board list` identifies the XIAO only as a generic "ESP32 Family Device"
+with two candidate FQBNs, so pass `--fqbn` explicitly. The COM port moves between
+sessions; compare the list with the board unplugged to identify it.
 - Before debugging Pi serial protocol, prove the board independently with GPIO21 off at boot, touch-controlled LED output, and serial touch-state output.
 
 ## Reference
