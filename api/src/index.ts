@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { addToolToDrawer, assignToolToDrawer, createDrawer, findDrawerByLabel, findToolDrawer, findToolLocations, getTranscriptionSettings, listDrawers, listRequestLogs, recordDrawerObservation, recordRequestLog, saveTranscriptionSettings } from "./db";
 import { parseSerialRequest, serialError, serialSuccess, serializeSerialResponse, type SerialRequest, type SerialResponse } from "./serialProtocol";
 import { startSerialTransport } from "./serialTransport";
+import { FIRMWARE_DIR, findLatestFirmware, isUpdateAvailable } from "./firmware";
 
 const port = Number(Bun.env.PORT ?? 3000);
 
@@ -392,6 +393,52 @@ serve({
         const message = error instanceof Error ? error.message : 'Unable to look up tool.';
         return errorResponse(message);
       }
+    }
+
+    // Unlike every other endpoint here, this one can overwrite the device's
+    // firmware, so the spec's "trusted home LAN, no auth" stance is not enough.
+    // It fails closed: with no DEVICE_KEY configured it serves nothing at all.
+    if (pathname === '/api/firmware/latest' && req.method === 'GET') {
+      const expectedKey = Bun.env.DEVICE_KEY;
+
+      if (!expectedKey) {
+        console.warn('[firmware] DEVICE_KEY is not set - refusing to serve firmware');
+        return jsonResponse({ error: 'Firmware updates are not configured.' }, { status: 503 });
+      }
+
+      if (req.headers.get('x-device-key') !== expectedKey) {
+        writeRequestLog({
+          method: req.method,
+          path: pathname,
+          statusCode: 401,
+          result: 'Firmware update rejected',
+          details: 'invalid device key',
+        });
+        return jsonResponse({ error: 'Invalid device key.' }, { status: 401 });
+      }
+
+      const currentVersion = url.searchParams.get('currentVersion') ?? '';
+      const latest = findLatestFirmware(join(process.cwd(), FIRMWARE_DIR));
+
+      if (!latest || !isUpdateAvailable(latest, currentVersion)) {
+        return new Response(null, { status: 204 });
+      }
+
+      writeRequestLog({
+        method: req.method,
+        path: pathname,
+        statusCode: 200,
+        result: 'Firmware served',
+        details: `${currentVersion || 'unknown'} -> ${latest.version}`,
+      });
+
+      return new Response(Bun.file(latest.path), {
+        headers: {
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': String(latest.size),
+          'X-Firmware-Version': latest.version,
+        },
+      });
     }
 
     if (pathname === '/api/vision/observations' && req.method === 'POST') {

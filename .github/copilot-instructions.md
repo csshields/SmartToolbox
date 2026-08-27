@@ -331,6 +331,7 @@ framework; Hono is a dependency but is not currently used for routing.
 | GET | `/api/tools/lookup?query=` | **Primary lookup.** Returns exact drawers plus rows collapsed by certainty |
 | POST | `/api/tools/assign` | Move a tool to a drawer by name |
 | POST | `/api/vision/observations` | Record camera detections for a drawer |
+| GET | `/api/firmware/latest?currentVersion=` | **OTA update check.** Requires an `X-Device-Key` header. 200 streams the newer `.bin`, 204 means already current, 401 rejects a bad key, 503 means `DEVICE_KEY` is unconfigured |
 | GET | `/api/logs?limit=` | Recent request log (default 50, capped at 200) |
 | GET | `/api/settings/transcription` | Current transcription provider settings |
 | PUT | `/api/settings/transcription` | Save provider and NAS URL |
@@ -496,6 +497,7 @@ redeploy and can be edited from the dashboard.
 | `PORT` | `3000` | `index.ts` |
 | `SERIAL_DEVICE` | `/dev/ttyACM0` on Linux, otherwise unset | `index.ts`. When unset, the serial listener does not start - this is why the server runs fine on Windows with no XIAO attached |
 | `OPENAI_API_KEY` | unset | Optional OpenAI transcription fallback |
+| `DEVICE_KEY` | unset | Shared secret the XIAO sends as `X-Device-Key` on OTA update checks. **Fails closed**: while unset, `/api/firmware/latest` returns 503 and serves nothing. Must match `SECRET_DEVICE_KEY` in `firmware/arduino_secrets.h` |
 | `NODE_ENV` | unset | Set to `production` by the systemd unit |
 
 **Runtime settings** (`config` table): `transcription_provider`,

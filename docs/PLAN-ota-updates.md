@@ -61,12 +61,24 @@ XIAO
   -> verifies, marks it bootable, reboots
 ```
 
-### Pi side (new)
+### Pi side — **built 2026-08-27**
 
-- `api/deploy/firmware/` - drop compiled `.bin` files here, named by version
-  (`smarttoolbox-0.2.0.bin`). Not database-backed; a folder is enough for one device.
-- `GET /api/firmware/latest?currentVersion=X` - compares against the newest file in
-  that folder, checks the device key header, returns 204 or streams the binary.
+- ~~`api/deploy/firmware/`~~ → **`<cwd>/firmware/`** (`~/smarttoolbox/firmware/` on the
+  Pi). Changed from the original plan: `sync.ps1` copies only `src`, `public`,
+  `scripts`, and the config files, so nothing under `deploy/` ever reaches the Pi.
+  The new location mirrors `data/` and `logs/`, and is gitignored - firmware images
+  do not belong in the repo. Files are named `smarttoolbox-<major>.<minor>.<patch>.bin`;
+  anything else in the folder is ignored rather than treated as an error.
+- `GET /api/firmware/latest?currentVersion=X` - implemented in `api/src/index.ts`,
+  with the version and file scanning logic in `api/src/firmware.ts` (unit tested in
+  `firmware.test.ts`). Verified end to end against a running server: 401 for a missing
+  or wrong key, 200 with byte-identical binary for an older reported version, 204 when
+  already current or newer, 200 for an unparseable version (treated as out of date so a
+  device cannot strand itself), and 503 when `DEVICE_KEY` is unset.
+- Version comparison is numeric, not lexical - `0.10.0` correctly sorts above `0.9.0`.
+
+Still to build: the `api/scripts/` release helper that bumps the version and copies a
+freshly compiled `.bin` into the drop folder, and the whole firmware side below.
 - Add `api/scripts/` helper (the directory already exists, currently empty) to bump
   the version and copy a freshly compiled `.bin` into place - this replaces the manual
   `arduino-cli upload` step for iteration.
