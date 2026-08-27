@@ -500,6 +500,13 @@ redeploy and can be edited from the dashboard.
 | `DEVICE_KEY` | unset | Shared secret the XIAO sends as `X-Device-Key` on OTA update checks. **Fails closed**: while unset, `/api/firmware/latest` returns 503 and serves nothing. Must match `SECRET_DEVICE_KEY` in `firmware/arduino_secrets.h` |
 | `NODE_ENV` | unset | Set to `production` by the systemd unit |
 
+On the Pi these come from `~/smarttoolbox/.env`, loaded by the systemd unit via
+`EnvironmentFile=-` (the `-` keeps the service starting when the file is absent).
+Secrets go there rather than in `Environment=` lines, because
+`api/deploy/smarttoolbox.service` is tracked in git. The file is gitignored and
+`sync.ps1` never copies it, so it survives redeploys; `api/deploy/.env.example` is the
+tracked template. Editing it needs `sudo systemctl restart smarttoolbox` to take effect.
+
 **Runtime settings** (`config` table): `transcription_provider`,
 `transcription_nas_url`.
 

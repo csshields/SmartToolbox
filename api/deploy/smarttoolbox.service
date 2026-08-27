@@ -11,6 +11,11 @@ ExecStart=/bin/bash -lc 'mkdir -p /home/shields/smarttoolbox/logs && exec /home/
 Restart=always
 RestartSec=2
 Environment=NODE_ENV=production
+# Secrets live outside the repo: this unit file is tracked in git, so anything
+# put in an Environment= line here gets committed. The leading '-' means the
+# service still starts when the file is absent - the OTA endpoint fails closed
+# on its own rather than taking the whole server down with it.
+EnvironmentFile=-/home/shields/smarttoolbox/.env
 
 [Install]
 WantedBy=multi-user.target
