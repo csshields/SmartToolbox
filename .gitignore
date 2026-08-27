@@ -28,7 +28,7 @@ Thumbs.db
 .deploy.env
 
 # Real Wi-Fi and device credentials. The .example.h template is tracked instead.
-firmware/arduino_secrets.h
+firmware/smarttoolbox/arduino_secrets.h
 
 # Compiled firmware images dropped for OTA. Created at runtime on the Pi.
 api/firmware/

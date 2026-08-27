@@ -11,12 +11,16 @@
 #include <ArduinoJson.h>
 #include <Wire.h>
 #include <U8g2lib.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <Update.h>
+#include "arduino_secrets.h"
 
 // Single source of truth for the version this build reports. Rewritten by
 // api/scripts/release-firmware.ps1 on release, and compared against the Pi's
 // drop folder to decide whether an OTA update is available - keep the exact
 // `#define FIRMWARE_VERSION "x.y.z"` shape so the script can find it.
-#define FIRMWARE_VERSION "0.3.0"
+#define FIRMWARE_VERSION "0.4.0"
 
 const int LED_PIN = LED_BUILTIN; // Active-low: LOW = on, HIGH = off.
 const int LED_ON = LOW;
@@ -51,6 +55,14 @@ const char* TOUCH_TOOL_NAMES[TOUCH_PIN_COUNT] = {
 
 const uint16_t RESPONSE_TIMEOUT_MS = 2000;
 
+// Wi-Fi is used for OTA updates only, and only during setup(). USB serial stays
+// the link for everything else, so the radio is switched off before loop() runs
+// rather than left associated for the device's whole uptime.
+#define OTA_ENABLED 1
+const char* PI_HOST = "192.168.50.30";
+const uint16_t PI_PORT = 3000;
+const uint32_t WIFI_CONNECT_TIMEOUT_MS = 25000;
+
 uint8_t consecutiveTouched = 0;
 uint8_t consecutiveReleased = 0;
 bool wasTouched = false;
@@ -82,6 +94,178 @@ void showStatus(const char* title, const String& line2, const String& line3) {
   oled.sendBuffer();
 }
 
+#if OTA_ENABLED
+// Returns true only when an update was written and the device is about to
+// reboot into it. Every failure path returns false and leaves the running
+// firmware untouched: the ESP32 writes to the inactive OTA slot and only marks
+// it bootable after Update.end() verifies the image, so a refused, corrupted,
+// or interrupted download costs a boot delay, not the device.
+bool checkForFirmwareUpdate() {
+  if (strlen(SECRET_SSID) == 0) {
+    return false; // No credentials configured - not an error, just nothing to do.
+  }
+
+  showStatus("Update check", "Joining Wi-Fi", SECRET_SSID);
+
+  // Plain-text OTA progress on the protocol wire. The Pi ignores lines that are
+  // not JSON and logs them as [serial-debug], and without this the whole update
+  // path is only observable on a 128x64 screen.
+  Serial.print("OTA joining SSID=");
+  Serial.println(SECRET_SSID);
+
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect(false, true); // Clear any stored association before scanning.
+  delay(100);
+
+  // Scan before connecting: an SSID that does not appear here is either 5GHz
+  // (invisible to this radio), out of range, or spelled differently than the
+  // secrets file thinks. That distinction is invisible from the status code.
+  const int found = WiFi.scanNetworks();
+  Serial.print("OTA scan found ");
+  Serial.println(found);
+  for (int i = 0; i < found; i++) {
+    Serial.print("OTA   ssid=\"");
+    Serial.print(WiFi.SSID(i));
+    Serial.print("\" rssi=");
+    Serial.print(WiFi.RSSI(i));
+    Serial.print(" ch=");
+    Serial.print(WiFi.channel(i));
+    Serial.print(" enc=");
+    Serial.println(WiFi.encryptionType(i));
+  }
+  WiFi.scanDelete();
+
+  // Re-issue begin() rather than waiting out one attempt. A single association
+  // that stalls in WL_IDLE_STATUS never recovers on its own, and on a weak link
+  // the first attempt frequently does exactly that.
+  const uint32_t startedAt = millis();
+  uint32_t lastAttempt = 0;
+  int attempts = 0;
+
+  while (WiFi.status() != WL_CONNECTED && millis() - startedAt < WIFI_CONNECT_TIMEOUT_MS) {
+    if (lastAttempt == 0 || millis() - lastAttempt > 5000) {
+      attempts++;
+      Serial.print("OTA connect attempt ");
+      Serial.print(attempts);
+      Serial.print(" status=");
+      Serial.println(WiFi.status());
+      WiFi.begin(SECRET_SSID, SECRET_OPTIONAL_PASS);
+      lastAttempt = millis();
+    }
+    delay(200);
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    // Status codes: 1=no SSID found, 4=connect failed (usually a bad password),
+    // 6=disconnected. 1 with a correct name normally means the radio cannot see
+    // the network at all - the XIAO is 2.4GHz only.
+    Serial.print("OTA wifi failed status=");
+    Serial.print(WiFi.status());
+    Serial.print(" visible networks=");
+    Serial.println(WiFi.scanNetworks());
+
+    showStatus("Update check", "No Wi-Fi", "status " + String(WiFi.status()));
+    WiFi.disconnect(true, true);
+    WiFi.mode(WIFI_OFF);
+    delay(1500);
+    return false;
+  }
+
+  Serial.print("OTA wifi ok ip=");
+  Serial.println(WiFi.localIP());
+
+  HTTPClient http;
+  String url = "http://" + String(PI_HOST) + ":" + String(PI_PORT) +
+               "/api/firmware/latest?currentVersion=" + FIRMWARE_VERSION;
+
+  http.begin(url);
+  http.addHeader("X-Device-Key", SECRET_DEVICE_KEY);
+
+  // HTTPClient discards response headers unless they are requested up front.
+  const char* wantedHeaders[] = {"X-Firmware-Version"};
+  http.collectHeaders(wantedHeaders, 1);
+
+  const int status = http.GET();
+
+  Serial.print("OTA GET ");
+  Serial.print(url);
+  Serial.print(" -> ");
+  Serial.println(status);
+
+  if (status == 204) {
+    showStatus("Up to date", "v" FIRMWARE_VERSION, "");
+    http.end();
+    WiFi.disconnect(true, true);
+    WiFi.mode(WIFI_OFF);
+    return false;
+  }
+
+  if (status != 200) {
+    // 401 means the device key disagrees with the Pi; 503 means the Pi has no
+    // key configured. Both are worth showing rather than silently skipping.
+    showStatus("Update failed", "HTTP " + String(status), "");
+    http.end();
+    WiFi.disconnect(true, true);
+    WiFi.mode(WIFI_OFF);
+    delay(2000);
+    return false;
+  }
+
+  const int contentLength = http.getSize();
+  const String newVersion = http.header("X-Firmware-Version");
+
+  if (contentLength <= 0 || !Update.begin(contentLength)) {
+    showStatus("Update failed", "No space", String(contentLength));
+    http.end();
+    WiFi.disconnect(true, true);
+    WiFi.mode(WIFI_OFF);
+    delay(2000);
+    return false;
+  }
+
+  showStatus("Updating", "v" FIRMWARE_VERSION " -> " + newVersion, "0%");
+
+  Update.onProgress([](size_t done, size_t total) {
+    // Redrawing on every chunk would spend more time on I2C than on the flash
+    // write, so only redraw when the whole-number percentage changes.
+    static int lastPercent = -1;
+    const int percent = total > 0 ? (int)((done * 100) / total) : 0;
+    if (percent != lastPercent) {
+      lastPercent = percent;
+      showStatus("Updating", "Writing image", String(percent) + "%");
+    }
+  });
+
+  Serial.print("OTA writing ");
+  Serial.print(contentLength);
+  Serial.print(" bytes for v");
+  Serial.println(newVersion);
+
+  const size_t written = Update.writeStream(http.getStream());
+  http.end();
+
+  Serial.print("OTA wrote ");
+  Serial.println(written);
+
+  if (written != (size_t)contentLength || !Update.end(true)) {
+    Serial.print("OTA failed: ");
+    Serial.println(Update.errorString());
+    showStatus("Update failed", "Keeping v" FIRMWARE_VERSION, String(Update.errorString()));
+    Update.abort();
+    WiFi.disconnect(true, true);
+    WiFi.mode(WIFI_OFF);
+    delay(3000);
+    return false;
+  }
+
+  showStatus("Updated", "Now v" + newVersion, "Rebooting");
+  delay(1500);
+  WiFi.disconnect(true, true);
+  ESP.restart();
+  return true; // Not reached - restart() does not return.
+}
+#endif
+
 void setup() {
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LED_OFF);
@@ -97,6 +281,14 @@ void setup() {
 
   Wire.begin();
   oledReady = oled.begin();
+  showStatus("SmartToolbox", "Starting up", "v" FIRMWARE_VERSION);
+
+#if OTA_ENABLED
+  // Before touch calibration: if an update is waiting there is no point
+  // spending half a second calibrating pads we are about to reboot away from.
+  checkForFirmwareUpdate();
+#endif
+
   showStatus("SmartToolbox", "Starting up", "Calibrating touch");
 
   for (size_t pinIndex = 0; pinIndex < TOUCH_PIN_COUNT; pinIndex++) {

@@ -1,8 +1,20 @@
 ---
 title: Plan of Attack - Wireless (OTA) Firmware Updates
 scope: implementation plan, written 2026-08-27
-status: active
+status: complete
 ---
+
+> **Done 2026-08-27.** The device pulled `smarttoolbox-0.4.0.bin` (1,046,256 bytes)
+> from the Pi over Wi-Fi, verified it, rebooted into it, and reported the new version
+> on its next check. The "pull from the Pi" option below is what was built.
+>
+> One thing the plan did not anticipate: the XIAO cannot use Wi-Fi at all without its
+> external antenna attached. Without it the radio sees the network at roughly -85 dBm
+> and never completes an association, while reporting a status code that looks like a
+> credentials problem. That cost more time than the OTA code itself.
+>
+> Not tested: recovery from a transfer interrupted mid-write. The dual-partition
+> mechanism makes it safe in principle, but the path was never deliberately exercised.
 
 # Plan: OTA Firmware Updates for the XIAO
 

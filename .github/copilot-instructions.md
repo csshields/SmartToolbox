@@ -63,7 +63,7 @@ smarttoolbox/
 - **Main Controller**: Seeed XIAO ESP32S3 (LED control, USB serial, Wi-Fi, and BLE)
 - **Vision Hardware**: Seeed Grove Vision AI Module (V2) + OV5647 camera, **connected** - stacked on the XIAO expansion header (not a 4-pin Grove cable), talking I2C via the `Seeed_Arduino_SSCMA` library. On-device WiseEye2 inference is the default (only results, not raw frames, are read over the link). **No SenseCraft model is deployed yet**, so the link is live but returns nothing useful.
 - **Transcription**: Self-hosted Whisper server running on a NAS on the local network (see Communication Protocol)
-- **Communication**: XIAO ESP32S3 → API Server over **wired USB serial**. Wi-Fi and BLE are available on the controller but are not used in the MVP.
+- **Communication**: XIAO ESP32S3 → API Server over **wired USB serial** for all normal operation. Wi-Fi is used *only* for OTA firmware updates, during `setup()`, and the radio is switched off before `loop()` runs. BLE is unused.
 
 ### Hardware Bring-Up Status
 
@@ -73,7 +73,8 @@ Updated 2026-08-27. This table is the single place to check what is physically w
 |---|---|---|
 | XIAO ESP32S3 standalone | Verified | LED (GPIO21, active-low) and touch pads confirmed on hardware |
 | USB serial XIAO to Pi | Verified | `device/status` boot request reaches the Pi service |
-| Touch-triggered `tools/lookup` | Partial | Touch fires the request on hardware (D0 reads ~18.3k idle, ~31.4k touched). The blink-back half is untested - it needs the Pi, since the serial listener only starts on Linux |
+| Touch-triggered `tools/lookup` | Verified | Full round trip on hardware: touch, request, response, LED blink, drawer label on the OLED |
+| Wi-Fi OTA updates | Verified | Device pulled and installed 0.4.0 from the Pi over Wi-Fi. **Requires the external antenna** - without it the radio sees ~-85 dBm and cannot associate |
 | Grove Vision AI V2 link | Connected | Stacked on the expansion header; I2C link up |
 | SenseCraft model | Not deployed | **Blocks Feature 3.** Nothing to detect until a model is trained and flashed |
 | OLED (Grove SSD1315 0.96") | Verified | On the I2C connector, GPIO5/GPIO6. Driven with U8g2 (`U8G2_SSD1306_128X64_NONAME_F_HW_I2C`); the SSD1315 is SSD1306-compatible. Shows lookup status and the exact drawer label |
@@ -175,7 +176,7 @@ When working on this project:
 - [x] Send real `tools/lookup` requests from a touch pad, blinking the row number back
 - [x] Connect Grove Vision AI V2 over I2C
 - [ ] **Next: Deploy a SenseCraft model** so `vision/observe` carries real labels
-- [ ] **Planned: Implement Wi-Fi OTA firmware updates** (see Feature 4 in Firmware Specifications)
+- [x] Implement Wi-Fi OTA firmware updates (see Feature 4 in Firmware Specifications)
 - [ ] Wire the I2C hub, OLED, and 8x8 matrix
 - [ ] Select microphone hardware
 - [ ] Add power management
@@ -530,8 +531,8 @@ serial listener is skipped and only HTTP runs. The dashboard is then at
 
 ### Releasing firmware for OTA
 
-**Status: Partial** - the release path works; the device cannot pull yet (see Feature 4
-in Firmware Specifications).
+**Status: Implemented** - the device pulls and installs these images over Wi-Fi (see
+Feature 4 in Firmware Specifications).
 
 `api/scripts/release-firmware.ps1` replaces the manual `arduino-cli upload` trip to the
 device. It owns both the version stamped into the sketch and the name of the built
@@ -823,7 +824,7 @@ Features 1 and 3 stay blocked until one is chosen.
 ## Communication Protocol
 
 ### XIAO ESP32S3 ↔ Raspberry Pi Zero 2 Communication
-- **Method**: Wired **USB serial** (USB-C, CDC/ACM virtual serial port) for MVP. The XIAO also supports Wi-Fi and BLE, but neither is used near-term.
+- **Method**: Wired **USB serial** (USB-C, CDC/ACM virtual serial port) for all request traffic. Wi-Fi carries OTA firmware updates only, during `setup()`; BLE is unused.
 - **Physical link**: Xiao's USB-C cable plugged into a USB port on the Pi Zero 2 (e.g., appears as `/dev/ttyACM0` on the Pi)
 - **Protocol**: Newline-delimited JSON. Every Xiao request has a unique `id`, `type: "request"`, a supported `endpoint`, and a `body`. The Pi echoes the same `id` in every response. The Bun implementation reads/writes the CDC ACM device directly without a native serial-port addon.
 - **The tty must be in raw mode.** Linux enumerates a ttyACM in *cooked* mode with echo on, which silently breaks the link in both directions: everything the XIAO transmits is echoed back into its own receive buffer, and `onlcr` rewrites outgoing newlines. The symptom is one-way traffic - the Pi logs `request` and `response written` normally while the XIAO times out having received nothing. `configureRawMode` in `api/src/serialTransport.ts` shells out to `stty -F <device> raw -echo` on every connect, because the settings reset each time the device re-enumerates on replug or reset.
@@ -1235,9 +1236,27 @@ endpoint both accept and store detections today.
 
 ### Feature 4: Firmware OTA Updates (Wi-Fi Over-The-Air)
 
-**Status: Planned** - Design complete; implementation to begin Phase 1 (estimated 3-4 weeks).
-This feature enables wireless firmware updates via Wi-Fi, eliminating manual USB cable 
-management after initial deployment.
+**Status: Implemented** - working end to end as of 2026-08-27. The device pulled
+`smarttoolbox-0.4.0.bin` (1,046,256 bytes) from the Pi over Wi-Fi, verified it, rebooted
+into it, and reported `currentVersion=0.4.0` on the next check. No cable involved.
+
+The design below describes a broader system (AP-mode provisioning, rollback tracking,
+a `firmware_updates` table). What is actually built is deliberately smaller:
+
+- `GET /api/firmware/latest?currentVersion=X` on the Pi, guarded by `X-Device-Key`.
+- A drop folder at `~/smarttoolbox/firmware/`, filled by `api/scripts/release-firmware.ps1`.
+- A check in the firmware's `setup()` only. Wi-Fi is joined, the check runs, and the
+  radio is switched off again before `loop()` starts - USB serial remains the link for
+  all normal operation.
+- No AP-mode provisioning and no update history table. Credentials come from
+  `arduino_secrets.h` at compile time.
+
+**Untested:** recovery from a transfer interrupted mid-write. The mechanism is sound -
+the ESP32 writes to the inactive OTA slot and `Update.end(true)` only marks it bootable
+after verifying the image - but that path has not been deliberately exercised.
+
+**Hardware requirement:** the external antenna must be attached. See
+`.github/instructions/xiao-esp32s3-firmware.instructions.md`.
 
 **Purpose**: Enable secure, remote firmware updates for the XIAO ESP32S3 without requiring 
 physical access or manual re-flashing.
