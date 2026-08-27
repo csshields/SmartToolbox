@@ -329,6 +329,8 @@ framework; Hono is a dependency but is not currently used for routing.
 | GET | `/api/drawers` | All drawers with their tools and tool counts |
 | POST | `/api/drawers` | Create a drawer (`name`, optional `label`, `rowNumber`) |
 | POST | `/api/drawers/:id/tools` | Add or update a tool in a drawer (upsert on name) |
+| DELETE | `/api/drawers/:id` | Delete a drawer. **Cascades** to its tools *and* its `drawer_observations` history. 404 if the id does not exist |
+| DELETE | `/api/drawers/:id/tools/:toolId` | Delete one tool. Scoped by drawer, so a mismatched pair is a 404 rather than deleting a tool in another drawer |
 | GET | `/api/tools/lookup?query=` | **Primary lookup.** Returns exact drawers plus rows collapsed by certainty |
 | POST | `/api/tools/assign` | Move a tool to a drawer by name |
 | POST | `/api/vision/observations` | Record camera detections for a drawer |
@@ -446,9 +448,13 @@ is usable at all while the firmware is unfinished. Four panels:
 | Panel | Backed by |
 |---|---|
 | Inventory Overview | `GET /api/drawers` - counts and summary |
-| Toolbox Inventory | `GET /api/drawers`, `POST /api/drawers`, `POST /api/drawers/:id/tools` |
+| Toolbox Inventory | `GET /api/drawers`, `POST /api/drawers`, `POST /api/drawers/:id/tools`, `DELETE /api/drawers/:id`, `DELETE /api/drawers/:id/tools/:toolId` |
 | Transcription Settings | `GET`/`PUT /api/settings/transcription`, `POST .../test` |
 | Recent Requests | `GET /api/logs?limit=40` |
+
+Deletes sit behind a `confirm()`. The drawer dialog names the tool count and says
+that the observation history goes too, because `drawer_observations` cascades on
+`drawer_id` as well and losing camera history is not what "delete drawer" sounds like.
 
 It does not call `/api/tools/lookup`, `/api/tools/assign`, or
 `/api/vision/observations` - those exist for the firmware.

@@ -1,12 +1,12 @@
 ---
 title: Plan of Attack - Next Four Features
 scope: implementation plan, written 2026-08-27
-status: partially complete - Features 1 and 2 are done; 3 and 4 are not started
+status: partially complete - Features 1, 2 and 3 are done; 4 is not started
 ---
 
-> **Features 1 and 2 shipped 2026-08-27.** Read the sections below as history, not as
-> work outstanding. Features 3 (delete endpoints) and 4 (dashboard search) are still
-> accurate descriptions of unstarted work.
+> **Features 1, 2 and 3 shipped 2026-08-27.** Read those sections below as history,
+> not as work outstanding. Feature 4 (dashboard search) is still an accurate
+> description of unstarted work.
 >
 > Feature 1 (serial reconnect) needed a follow-up the plan did not anticipate: the
 > reconnect worked, but the tty came up in cooked mode with echo, so the device

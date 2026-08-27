@@ -1,6 +1,6 @@
 import { serve } from "bun";
 import { join } from "node:path";
-import { addToolToDrawer, assignToolToDrawer, createDrawer, findDrawerByLabel, findToolDrawer, findToolLocations, getTranscriptionSettings, listDrawers, listRequestLogs, recordDrawerObservation, recordRequestLog, saveTranscriptionSettings } from "./db";
+import { addToolToDrawer, assignToolToDrawer, createDrawer, deleteDrawer, deleteTool, findDrawerByLabel, findToolDrawer, findToolLocations, getTranscriptionSettings, listDrawers, listRequestLogs, recordDrawerObservation, recordRequestLog, saveTranscriptionSettings } from "./db";
 import { parseSerialRequest, serialError, serialSuccess, serializeSerialResponse, type SerialRequest, type SerialResponse } from "./serialProtocol";
 import { startSerialTransport } from "./serialTransport";
 import { FIRMWARE_DIR, findLatestFirmware, isUpdateAvailable } from "./firmware";
@@ -530,6 +530,50 @@ serve({
         });
         return errorResponse(message, status);
       }
+    }
+
+    // Both of these sit after the exact-string /api/drawers checks above so
+    // they cannot shadow them. The tool route is matched first: /drawers/1
+    // would otherwise never be reached for /drawers/1/tools/2.
+    const deleteToolMatch = pathname.match(/^\/api\/drawers\/(\d+)\/tools\/(\d+)$/);
+
+    if (deleteToolMatch && req.method === 'DELETE') {
+      const drawerId = Number(deleteToolMatch[1]);
+      const toolId = Number(deleteToolMatch[2]);
+      const removed = deleteTool(drawerId, toolId);
+
+      writeRequestLog({
+        method: req.method,
+        path: pathname,
+        drawerNumber: drawerId,
+        statusCode: removed ? 200 : 404,
+        result: removed ? 'Tool deleted' : 'Tool not found',
+        details: `tool ${toolId}`,
+      });
+
+      return removed
+        ? jsonResponse({ success: true })
+        : jsonResponse({ error: 'Tool not found.' }, { status: 404 });
+    }
+
+    const deleteDrawerMatch = pathname.match(/^\/api\/drawers\/(\d+)$/);
+
+    if (deleteDrawerMatch && req.method === 'DELETE') {
+      const drawerId = Number(deleteDrawerMatch[1]);
+      const removed = deleteDrawer(drawerId);
+
+      writeRequestLog({
+        method: req.method,
+        path: pathname,
+        drawerNumber: drawerId,
+        statusCode: removed ? 200 : 404,
+        result: removed ? 'Drawer deleted' : 'Drawer not found',
+        details: removed ? 'tools and observations cascaded' : '',
+      });
+
+      return removed
+        ? jsonResponse({ success: true })
+        : jsonResponse({ error: 'Drawer not found.' }, { status: 404 });
     }
 
     const toolRouteMatch = pathname.match(/^\/api\/drawers\/(\d+)\/tools$/);

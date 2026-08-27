@@ -162,6 +162,16 @@ const insertDrawer = database.query(`
   VALUES (?1, ?2, ?3)
 `);
 
+const deleteDrawerById = database.query(`
+  DELETE FROM drawers
+  WHERE id = ?1
+`);
+
+const deleteToolByDrawerAndId = database.query(`
+  DELETE FROM tools
+  WHERE drawer_id = ?1 AND id = ?2
+`);
+
 const upsertTool = database.query(`
   INSERT INTO tools (drawer_id, name, quantity, notes)
   VALUES (?1, ?2, ?3, ?4)
@@ -320,6 +330,20 @@ export function createDrawer(name: string, location?: { label?: string; rowNumbe
 
     throw error;
   }
+}
+
+// Returns whether a row was actually removed, so the route can answer 404
+// rather than reporting success for an id that was never there. The cascade is
+// wider than the drawer: tools and drawer_observations both reference drawers
+// with ON DELETE CASCADE, so this destroys the drawer's observation history too.
+export function deleteDrawer(drawerId: number) {
+  return deleteDrawerById.run(drawerId).changes > 0;
+}
+
+// Scoped by drawer as well as tool id, so a mismatched pair is a 404 instead of
+// silently deleting a tool that belongs to a different drawer.
+export function deleteTool(drawerId: number, toolId: number) {
+  return deleteToolByDrawerAndId.run(drawerId, toolId).changes > 0;
 }
 
 export function addToolToDrawer(drawerId: number, tool: { name: string; quantity?: number; notes?: string }) {
