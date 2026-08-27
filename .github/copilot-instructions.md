@@ -78,7 +78,7 @@ Updated 2026-08-27. This table is the single place to check what is physically w
 | Grove Vision AI V2 link | Connected | Stacked on the expansion header; I2C link up |
 | SenseCraft model | Not deployed | **Blocks Feature 3.** Nothing to detect until a model is trained and flashed |
 | OLED (Grove SSD1315 0.96") | Verified | On the I2C connector, GPIO5/GPIO6. Driven with U8g2 (`U8G2_SSD1306_128X64_NONAME_F_HW_I2C`); the SSD1315 is SSD1306-compatible. Shows lookup status and the exact drawer label |
-| Grove I2C Hub + 8x8 matrix | Not wired | Blocks the row-indicator half of Feature 2. The OLED covers drawer labels in the meantime |
+| Grove I2C Hub + 8x8 matrix | Not wired | Firmware support is written but **has never run**: `matrixReady` comes from a VID check and everything no-ops without it. Blocks the row-indicator half of Feature 2. See `docs/PLAN-matrix-eyes.md` for the first-power-up checklist |
 | Microphone | Not selected | **Blocks Feature 2.** No part chosen |
 | PIR motion sensor | Deferred | **Blocks Feature 1.** Needs GPIO the Vision AI V2 stack now occupies |
 
@@ -1012,7 +1012,11 @@ Add to Arduino Library Manager:
       Needed for Feature 3.
 - [x] U8g2 (2.35.30) - the SSD1315 OLED. In use by `firmware/smarttoolbox/smarttoolbox.ino`
       for lookup status. The OLED is on the I2C connector directly; the hub is not needed for it.
-- [ ] Grove 8x8 RGB LED Matrix driver library. Needed once the I2C hub is wired.
+- [x] `Seeed_RGB_Led_Matrix` (1.0.0) - the Grove 8x8 RGB matrix. In use by
+      `firmware/smarttoolbox/smarttoolbox.ino` for the row indicator and the idle face.
+      The driver is frame-based, not pixel-addressed: `displayFrames` takes 64 bytes,
+      one **palette index** per pixel, and blank is `0xFF` - zeroing the buffer lights
+      the panel red.
 - [ ] FastLED or Adafruit_NeoPixel - **not needed.** These are for the deferred WS2813
       strip only; the matrix is I2C and does not use them.
 

@@ -2,15 +2,19 @@
  * SmartToolbox - Seeed XIAO ESP32S3 Firmware
  *
  * Touching a mapped pad sends a tools/lookup request to the Pi over USB
- * serial and reports the result two ways: the onboard LED blinks N slow for
- * the row number, 3 fast for not found, 1 long for error or timeout, and the
- * OLED names the tool and its exact drawer label. The 8x8 matrix is not wired
- * yet, so the LED stands in for the row indicator.
+ * serial and reports the result three ways: the onboard LED blinks N slow for
+ * the row number, 3 fast for not found, 1 long for error or timeout; the OLED
+ * names the tool and its exact drawer label; and the 8x8 matrix lights the
+ * matching row, showing idle "eyes" the rest of the time.
+ *
+ * The matrix is NOT WIRED YET. Its code is inert until the VID check passes,
+ * and none of it has run on hardware - see docs/PLAN-matrix-eyes.md.
  */
 
 #include <ArduinoJson.h>
 #include <Wire.h>
 #include <U8g2lib.h>
+#include "grove_two_rgb_led_matrix.h"
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <Update.h>
@@ -30,6 +34,26 @@ const int LED_OFF = HIGH;
 // so the NONAME constructor drives it - same one the PIR bring-up sketch used.
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C oled(U8G2_R0, U8X8_PIN_NONE);
 bool oledReady = false;
+
+// Grove 8x8 RGB matrix, on the same I2C bus. NOT WIRED YET - matrixReady stays
+// false and every matrix call below returns early, so the box behaves exactly
+// as it does without one. None of this is hardware-verified; see
+// docs/PLAN-matrix-eyes.md for what to check on first power-up.
+GroveTwoRGBLedMatrixClass matrix;
+bool matrixReady = false;
+
+// One byte per pixel, and the byte is a palette index rather than RGB. Note
+// black is 0xFF: clearing this buffer with zeroes lights the whole panel red.
+const uint8_t MATRIX_WIDTH = 8;
+const uint8_t MATRIX_HEIGHT = 8;
+uint8_t matrixFrame[MATRIX_WIDTH * MATRIX_HEIGHT];
+bool matrixFrameDirty = false;
+
+// Toolbox row N lights matrix row y = N, leaving y=0 and y=7 as blank margins so
+// the six indicators sit centred. Six positions for eight rows is the spec's
+// Physical Layout rule: row 1 is one shared indicator for drawers 1A/1B/1C.
+const uint8_t MATRIX_FIRST_ROW_Y = 1;
+const uint8_t MATRIX_LAST_ROW_Y = 6;
 
 // GPIO5/GPIO6 are deliberately absent: they are the I2C bus (SDA/SCL) the OLED
 // runs on, so touch-reading them would fight the display.
@@ -80,6 +104,137 @@ uint16_t blinkOnMs = 0;
 uint16_t blinkOffMs = 0;
 bool blinkLedOn = false;
 uint32_t blinkPhaseStart = 0;
+
+// --- Matrix -----------------------------------------------------------------
+// The idle face and a lookup result are mutually exclusive, so they can share
+// pixels. Results are what the box is for; the face is what it does the rest of
+// the time.
+enum MatrixMode { MATRIX_EYES, MATRIX_RESULT };
+
+MatrixMode matrixMode = MATRIX_EYES;
+uint32_t matrixResultUntil = 0;
+uint32_t matrixNextBlinkAt = 0;
+uint32_t matrixEyesClosedUntil = 0;
+bool matrixEyesClosed = false;
+
+const uint16_t MATRIX_RESULT_HOLD_MS = 4000;
+const uint16_t MATRIX_BLINK_CLOSED_MS = 130;
+
+void matrixClear() {
+  memset(matrixFrame, black, sizeof(matrixFrame));
+  matrixFrameDirty = true;
+}
+
+void matrixSetPixel(uint8_t x, uint8_t y, uint8_t color) {
+  if (x >= MATRIX_WIDTH || y >= MATRIX_HEIGHT) {
+    return;
+  }
+  const size_t index = (size_t)y * MATRIX_WIDTH + x;
+  if (matrixFrame[index] != color) {
+    matrixFrame[index] = color;
+    matrixFrameDirty = true;
+  }
+}
+
+void matrixFillRow(uint8_t y, uint8_t color) {
+  for (uint8_t x = 0; x < MATRIX_WIDTH; x++) {
+    matrixSetPixel(x, y, color);
+  }
+}
+
+// forever_flag keeps the panel showing the frame without further writes, so this
+// only needs to run when something actually changed.
+void matrixPush() {
+  if (!matrixReady || !matrixFrameDirty) {
+    return;
+  }
+  matrix.displayFrames(matrixFrame, 1000, true, 1);
+  matrixFrameDirty = false;
+}
+
+void drawEyes(bool closed) {
+  matrixClear();
+
+  // Two 2x2 eyes; a blink collapses each to its lower row so it reads as a lid
+  // coming down rather than the display simply switching off.
+  const uint8_t eyeColumns[] = {1, 5};
+  for (uint8_t eye = 0; eye < 2; eye++) {
+    const uint8_t x = eyeColumns[eye];
+    if (!closed) {
+      matrixSetPixel(x, 2, cyan);
+      matrixSetPixel(x + 1, 2, cyan);
+    }
+    matrixSetPixel(x, 3, cyan);
+    matrixSetPixel(x + 1, 3, cyan);
+  }
+}
+
+void scheduleNextBlink() {
+  matrixNextBlinkAt = millis() + random(2000, 6000);
+}
+
+// Certainty is null for any tool the camera has never seen, which is currently
+// every tool in the box - so null gets its own colour rather than a fallback.
+uint8_t certaintyColor(bool hasCertainty, int certainty) {
+  if (!hasCertainty) {
+    return white;
+  }
+  return certainty >= 75 ? green : orange;
+}
+
+void showMatrixRow(int rowNumber, bool hasCertainty, int certainty) {
+  matrixClear();
+  const uint8_t y = (uint8_t)rowNumber;
+  if (y >= MATRIX_FIRST_ROW_Y && y <= MATRIX_LAST_ROW_Y) {
+    matrixFillRow(y, certaintyColor(hasCertainty, certainty));
+  }
+  matrixMode = MATRIX_RESULT;
+  matrixResultUntil = millis() + MATRIX_RESULT_HOLD_MS;
+  matrixPush();
+}
+
+void showMatrixAlert(uint8_t color) {
+  matrixClear();
+  for (uint8_t y = MATRIX_FIRST_ROW_Y; y <= MATRIX_LAST_ROW_Y; y++) {
+    matrixFillRow(y, color);
+  }
+  matrixMode = MATRIX_RESULT;
+  matrixResultUntil = millis() + MATRIX_RESULT_HOLD_MS;
+  matrixPush();
+}
+
+void updateMatrix() {
+  if (!matrixReady) {
+    return;
+  }
+
+  if (matrixMode == MATRIX_RESULT) {
+    if (millis() >= matrixResultUntil) {
+      matrixMode = MATRIX_EYES;
+      matrixEyesClosed = false;
+      drawEyes(false);
+      // Reset the timer on the way back so the face does not blink the instant
+      // it returns.
+      scheduleNextBlink();
+      matrixPush();
+    }
+    return;
+  }
+
+  if (matrixEyesClosed) {
+    if (millis() >= matrixEyesClosedUntil) {
+      matrixEyesClosed = false;
+      drawEyes(false);
+      scheduleNextBlink();
+    }
+  } else if (millis() >= matrixNextBlinkAt) {
+    matrixEyesClosed = true;
+    matrixEyesClosedUntil = millis() + MATRIX_BLINK_CLOSED_MS;
+    drawEyes(true);
+  }
+
+  matrixPush();
+}
 
 // Called only on state changes: a full 1KB buffer push over I2C costs ~10ms,
 // which would starve the serial poll if it ran every loop.
@@ -284,6 +439,21 @@ void setup() {
   oledReady = oled.begin();
   showStatus("SmartToolbox", "Starting up", "v" FIRMWARE_VERSION);
 
+  // Presence check before the OTA block, so the face is up during the update
+  // check rather than leaving the panel undefined for the Wi-Fi timeout.
+  matrix.scanGroveTwoRGBLedMatrixI2CAddress();
+  matrixReady = matrix.getDeviceVID() == GROVE_TWO_RGB_LED_MATRIX_VID;
+  Serial.print("Matrix ready=");
+  Serial.println(matrixReady ? 1 : 0);
+
+  if (matrixReady) {
+    matrix.stopDisplay();
+    randomSeed(esp_random()); // Blink intervals are randomised; without this every boot blinks identically.
+    drawEyes(false);
+    scheduleNextBlink();
+    matrixPush();
+  }
+
 #if OTA_ENABLED
   // Before touch calibration: if an update is waiting there is no point
   // spending half a second calibrating pads we are about to reboot away from.
@@ -322,6 +492,7 @@ void loop() {
   pollSerialResponses();
   pollResponseTimeout();
   updateBlinkPlan();
+  updateMatrix();
 }
 
 uint32_t lastTouchScanValue0 = 0; // Shared with the debug print below - no extra reads.
@@ -474,6 +645,7 @@ void handleIncomingLine(const String& line) {
   if (!success) {
     showStatus("Error", pendingToolName, doc["error"]["code"] | "lookup failed");
     startBlinkPlan(1, 1000, 1000); // Long blink: error.
+    showMatrixAlert(red);
     return;
   }
 
@@ -481,6 +653,7 @@ void handleIncomingLine(const String& line) {
   if (!found) {
     showStatus("Not found", pendingToolName, "");
     startBlinkPlan(3, 150, 150); // Fast blinks: not found.
+    showMatrixAlert(red);
     return;
   }
 
@@ -491,6 +664,11 @@ void handleIncomingLine(const String& line) {
   // in the spec, where row 1 spans drawers 1A/1B/1C.
   const char* drawerLabel = doc["body"]["drawers"][0]["label"] | "";
   showStatus("Found", pendingToolName, "Row " + String(rowNumber) + "  Drawer " + drawerLabel);
+
+  // certainty is null for a tool the camera has never observed - distinguish
+  // "no reading" from a low reading rather than collapsing both to a number.
+  JsonVariant certainty = doc["body"]["rows"][0]["certainty"];
+  showMatrixRow(rowNumber, !certainty.isNull(), certainty | 0);
 
   if (rowNumber > 0) {
     startBlinkPlan(rowNumber, 500, 500); // Slow blinks: row number.
@@ -508,6 +686,7 @@ void pollResponseTimeout() {
     awaitingResponse = false;
     showStatus("No response", pendingToolName, "Is the Pi service up?");
     startBlinkPlan(1, 1000, 1000); // Long blink: timeout.
+    showMatrixAlert(red);
   }
 }
 
