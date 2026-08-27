@@ -24,7 +24,7 @@
 // api/scripts/release-firmware.ps1 on release, and compared against the Pi's
 // drop folder to decide whether an OTA update is available - keep the exact
 // `#define FIRMWARE_VERSION "x.y.z"` shape so the script can find it.
-#define FIRMWARE_VERSION "0.5.0"
+#define FIRMWARE_VERSION "0.8.0"
 
 const int LED_PIN = LED_BUILTIN; // Active-low: LOW = on, HIGH = off.
 const int LED_ON = LOW;
@@ -54,6 +54,14 @@ bool matrixFrameDirty = false;
 // Physical Layout rule: row 1 is one shared indicator for drawers 1A/1B/1C.
 const uint8_t MATRIX_FIRST_ROW_Y = 1;
 const uint8_t MATRIX_LAST_ROW_Y = 6;
+
+// Orientation is stored on the matrix itself and survives power cycles, so
+// without setting it explicitly the panel renders at whatever rotation it was
+// last left in - which differs between boards and after any stray write. Set it
+// every boot so "row 1" always means the same physical row. Rotate this if the
+// eyes and the row indicator do not sit the way up the built-in displayNumber()
+// output does.
+const orientation_type_t MATRIX_ORIENTATION = DISPLAY_ROTATE_0;
 
 // GPIO5/GPIO6 are deliberately absent: they are the I2C bus (SDA/SCL) the OLED
 // runs on, so touch-reading them would fight the display.
@@ -156,7 +164,10 @@ void matrixPush() {
 // white), so the idle face can never be mistaken for a lookup answer.
 const uint8_t EYE_COLOR = purple;
 
-void drawEyes(bool closed) {
+// The face occupies y=2..5, which leaves y=0..1 and y=6..7 clear. Nothing
+// depends on that, but it keeps the face off the outermost rows so it does not
+// look cropped against the bezel.
+void drawFace(bool eyesClosed) {
   matrixClear();
 
   // Two 2x2 eyes; a blink collapses each to its lower row so it reads as a lid
@@ -164,12 +175,21 @@ void drawEyes(bool closed) {
   const uint8_t eyeColumns[] = {1, 5};
   for (uint8_t eye = 0; eye < 2; eye++) {
     const uint8_t x = eyeColumns[eye];
-    if (!closed) {
+    if (!eyesClosed) {
       matrixSetPixel(x, 2, EYE_COLOR);
       matrixSetPixel(x + 1, 2, EYE_COLOR);
     }
     matrixSetPixel(x, 3, EYE_COLOR);
     matrixSetPixel(x + 1, 3, EYE_COLOR);
+  }
+
+  // Smile: the corners sit one row higher than the middle, which is what makes
+  // it read as a smile rather than a straight line. The mouth stays put during
+  // a blink - only the eyes move.
+  matrixSetPixel(1, 4, EYE_COLOR);
+  matrixSetPixel(6, 4, EYE_COLOR);
+  for (uint8_t x = 2; x <= 5; x++) {
+    matrixSetPixel(x, 5, EYE_COLOR);
   }
 }
 
@@ -216,7 +236,7 @@ void updateMatrix() {
     if (millis() >= matrixResultUntil) {
       matrixMode = MATRIX_EYES;
       matrixEyesClosed = false;
-      drawEyes(false);
+      drawFace(false);
       // Reset the timer on the way back so the face does not blink the instant
       // it returns.
       scheduleNextBlink();
@@ -228,13 +248,13 @@ void updateMatrix() {
   if (matrixEyesClosed) {
     if (millis() >= matrixEyesClosedUntil) {
       matrixEyesClosed = false;
-      drawEyes(false);
+      drawFace(false);
       scheduleNextBlink();
     }
   } else if (millis() >= matrixNextBlinkAt) {
     matrixEyesClosed = true;
     matrixEyesClosedUntil = millis() + MATRIX_BLINK_CLOSED_MS;
-    drawEyes(true);
+    drawFace(true);
   }
 
   matrixPush();
@@ -452,8 +472,9 @@ void setup() {
 
   if (matrixReady) {
     matrix.stopDisplay();
+    matrix.setDisplayOrientation(MATRIX_ORIENTATION);
     randomSeed(esp_random()); // Blink intervals are randomised; without this every boot blinks identically.
-    drawEyes(false);
+    drawFace(false);
     scheduleNextBlink();
     matrixPush();
   }
