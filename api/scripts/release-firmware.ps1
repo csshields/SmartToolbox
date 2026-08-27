@@ -73,10 +73,16 @@ if (Test-Path $dropDir) {
 
 Write-Host "Stamping FIRMWARE_VERSION $Version into the sketch..."
 $source = [System.IO.File]::ReadAllText($sketchFile)
-$pattern = '(?m)^#define\s+FIRMWARE_VERSION\s+"[^"]*"$'
+# Deliberately not anchored to end-of-line. A '$' here matches before the \n but
+# after the \r of a CRLF file, so the match silently fails the moment an editor
+# saves with Windows line endings - and consuming the \r to fix that would
+# rewrite the line ending and leave the file mixed. The leading ^ plus the
+# literal directive is specific enough on its own.
+$pattern = '(?m)^[ \t]*#define[ \t]+FIRMWARE_VERSION[ \t]+"[^"]*"'
+$matchCount = ([regex]::Matches($source, $pattern)).Count
 
-if ($source -notmatch $pattern) {
-	throw "Could not find a '#define FIRMWARE_VERSION `"x.y.z`"' line in $sketchFile"
+if ($matchCount -ne 1) {
+	throw "Expected exactly one '#define FIRMWARE_VERSION `"x.y.z`"' line in $sketchFile, found $matchCount"
 }
 
 $updated = [regex]::Replace($source, $pattern, "#define FIRMWARE_VERSION `"$Version`"")

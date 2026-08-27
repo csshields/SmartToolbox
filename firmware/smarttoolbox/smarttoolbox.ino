@@ -20,7 +20,7 @@
 // api/scripts/release-firmware.ps1 on release, and compared against the Pi's
 // drop folder to decide whether an OTA update is available - keep the exact
 // `#define FIRMWARE_VERSION "x.y.z"` shape so the script can find it.
-#define FIRMWARE_VERSION "0.4.0"
+#define FIRMWARE_VERSION "0.5.0"
 
 const int LED_PIN = LED_BUILTIN; // Active-low: LOW = on, HIGH = off.
 const int LED_ON = LOW;
@@ -43,9 +43,10 @@ uint32_t touchBaseline[TOUCH_PIN_COUNT];
 const float TOUCH_TRIGGER_RATIO = 1.15f;
 
 // Prints per-scan touch readings so the ratio above can be tuned on hardware.
-// Set to 0 once the pads are trusted - the API tolerates these lines but they
-// still share the wire with the protocol.
-#define TOUCH_DEBUG 1
+// Off now that D0 is trusted: at ~3 lines/second these drowned the Pi's log,
+// where the only interesting entries are real requests. Turn it back on when
+// bringing up a new pad, then turn it off again.
+#define TOUCH_DEBUG 0
 
 // Parallel to TOUCH_PINS. Only pad D0 is mapped for now; add entries as more
 // tools are seeded. Unmapped pads are never scanned.
