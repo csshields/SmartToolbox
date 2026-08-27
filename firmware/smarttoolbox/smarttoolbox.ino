@@ -152,6 +152,10 @@ void matrixPush() {
   matrixFrameDirty = false;
 }
 
+// Purple is deliberately not in the result palette (red / orange / green /
+// white), so the idle face can never be mistaken for a lookup answer.
+const uint8_t EYE_COLOR = purple;
+
 void drawEyes(bool closed) {
   matrixClear();
 
@@ -161,11 +165,11 @@ void drawEyes(bool closed) {
   for (uint8_t eye = 0; eye < 2; eye++) {
     const uint8_t x = eyeColumns[eye];
     if (!closed) {
-      matrixSetPixel(x, 2, cyan);
-      matrixSetPixel(x + 1, 2, cyan);
+      matrixSetPixel(x, 2, EYE_COLOR);
+      matrixSetPixel(x + 1, 2, EYE_COLOR);
     }
-    matrixSetPixel(x, 3, cyan);
-    matrixSetPixel(x + 1, 3, cyan);
+    matrixSetPixel(x, 3, EYE_COLOR);
+    matrixSetPixel(x + 1, 3, EYE_COLOR);
   }
 }
 

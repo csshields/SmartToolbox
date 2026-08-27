@@ -35,7 +35,7 @@ Required libraries (install via Library Manager):
 - `Seeed_Arduino_SSCMA` for Grove Vision AI V2 communication
 - `ArduinoJson` for USB serial messages
 - `U8g2` for the OLED
-- Grove 8x8 RGB LED Matrix library
+- `Seeed_RGB_Led_Matrix` for the Grove 8x8 RGB matrix (row indicator and idle face)
 
 `WiFi`, `HTTPClient`, and `Update` ship with the ESP32 core - no install needed.
 

@@ -34,7 +34,8 @@ like:
   `displayFrames(uint8_t* buffer, uint16_t duration, bool forever, uint8_t frames)`,
   where one frame is **64 bytes - one byte per pixel**.
 - That byte is a **palette index, not RGB**: `red = 0x00`, `orange = 0x12`,
-  `yellow = 0x18`, `green = 0x52`, `cyan = 0x7f`, `white = 0xfe`, **`black = 0xff`**.
+  `yellow = 0x18`, `green = 0x52`, `cyan = 0x7f`, `purple = 0xc3`, `white = 0xfe`,
+  **`black = 0xff`**.
   Clearing with `memset(buffer, 0, 64)` lights the whole panel **red**; blank is
   `0xff`.
 - Every display call takes a duration and a `forever_flag`. With `forever_flag = true`
@@ -67,6 +68,12 @@ centre the block, and the arithmetic stays trivial.
 
 The eyes sit at y=2..3, inside that range. That is **not** a conflict: the idle face
 and a lookup result are mutually exclusive modes, never drawn together.
+
+## Eye colour
+
+Purple (`0xc3`). Chosen because it is **not** in the result palette - red, orange,
+green, and white all mean something specific during a lookup, so an idle face in any
+of them could be misread as an answer the box is still showing.
 
 ## Certainty colours
 
