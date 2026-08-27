@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { createReadStream, createWriteStream } from "node:fs";
 import type { Readable, Writable } from "node:stream";
 import type { SerialResponse } from "./serialProtocol";
@@ -17,7 +18,24 @@ export class SerialLineBuffer {
 // eventually, and an idle retry at the 5s ceiling costs nothing.
 const DEFAULT_RETRY_DELAYS_MS = [500, 1000, 2000, 4000, 5000];
 
+// The kernel hands out a freshly enumerated ttyACM in cooked mode with echo on.
+// That is a terminal configuration, and it breaks a machine protocol two ways:
+// every byte the device sends is echoed straight back into its own receive
+// buffer, and onlcr rewrites outgoing newlines. Raw mode is the fix, and it has
+// to be reapplied on every connect - the settings reset when the device
+// re-enumerates on replug or reset.
+function configureRawMode(devicePath: string) {
+  const result = spawnSync("stty", ["-F", devicePath, "raw", "-echo"], { encoding: "utf8" });
+
+  if (result.status !== 0) {
+    const detail = (result.stderr || result.error?.message || "unknown error").trim();
+    console.warn(`[serial] could not set raw mode on ${devicePath}: ${detail}`);
+  }
+}
+
 function openRealStreams(devicePath: string) {
+  configureRawMode(devicePath);
+
   return {
     input: createReadStream(devicePath),
     output: createWriteStream(devicePath, { flags: "a" }),
@@ -125,14 +143,26 @@ export function startSerialTransport(options: {
           continue; // Not a request (debug chatter) - nothing to reply to.
         }
 
-        output.write(options.serializeResponse(response), (error) => {
-          if (error) {
-            options.onError(`Serial output error: ${error.message}`);
-            return;
-          }
+        // A failed write means the device is gone or the write half was never
+        // usable - reconnect rather than log. Without this the transport sits
+        // half-open: the read side keeps delivering requests and every reply is
+        // dropped, which looks healthy in the log but answers nothing.
+        try {
+          output.write(options.serializeResponse(response), (error) => {
+            if (error) {
+              options.onError(`Serial output error: ${error.message}`);
+              scheduleReconnect(myGeneration);
+              return;
+            }
 
-          options.onResponseWritten?.(response);
-        });
+            options.onResponseWritten?.(response);
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          options.onError(`Serial output error: ${message}`);
+          scheduleReconnect(myGeneration);
+          return;
+        }
       }
     });
 

@@ -790,6 +790,7 @@ Features 1 and 3 stay blocked until one is chosen.
 - **Method**: Wired **USB serial** (USB-C, CDC/ACM virtual serial port) for MVP. The XIAO also supports Wi-Fi and BLE, but neither is used near-term.
 - **Physical link**: Xiao's USB-C cable plugged into a USB port on the Pi Zero 2 (e.g., appears as `/dev/ttyACM0` on the Pi)
 - **Protocol**: Newline-delimited JSON. Every Xiao request has a unique `id`, `type: "request"`, a supported `endpoint`, and a `body`. The Pi echoes the same `id` in every response. The Bun implementation reads/writes the CDC ACM device directly without a native serial-port addon.
+- **The tty must be in raw mode.** Linux enumerates a ttyACM in *cooked* mode with echo on, which silently breaks the link in both directions: everything the XIAO transmits is echoed back into its own receive buffer, and `onlcr` rewrites outgoing newlines. The symptom is one-way traffic - the Pi logs `request` and `response written` normally while the XIAO times out having received nothing. `configureRawMode` in `api/src/serialTransport.ts` shells out to `stty -F <device> raw -echo` on every connect, because the settings reset each time the device re-enumerates on replug or reset.
 - **Initial endpoints**:
   - `device/status`: Xiao reports its firmware version and readiness.
   - `tools/lookup`: Xiao sends recognized or transcribed text; Pi returns matching drawer labels and row indicators.

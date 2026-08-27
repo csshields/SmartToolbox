@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { PassThrough } from "node:stream";
+import { PassThrough, Writable } from "node:stream";
 import { SerialLineBuffer, startSerialTransport } from "./serialTransport";
 import type { SerialResponse } from "./serialProtocol";
 
@@ -112,6 +112,69 @@ test("skips a null response but keeps processing the rest of the chunk", async (
 
   expect(handled).toEqual(["debug text", '{"id":"req-1"}', "more debug"]);
   expect(written).toEqual(["id"]);
+
+  transport.close();
+});
+
+// A device that is readable but not writable is a real failure mode, not a
+// theoretical one: on the Pi the read stream reopened after a replug while the
+// write stream did not, so every reply was dropped while the log looked healthy.
+test("reconnects when a response write fails", async () => {
+  const first = {
+    input: new PassThrough(),
+    output: new Writable({
+      write(_chunk, _encoding, callback) {
+        callback(new Error("EACCES: permission denied"));
+      },
+    }),
+  };
+  const second = fakeStreamPair();
+  const openedPairs = [first, second];
+  let openCalls = 0;
+  const errors: string[] = [];
+
+  const transport = startSerialTransport({
+    devicePath: "/fake/device",
+    handleLine: async () => ackResponse("id"),
+    serializeResponse: () => "reply\n",
+    onError: (message) => errors.push(message),
+    openStreams: () => openedPairs[openCalls++]!,
+    retryDelaysMs: [1, 1],
+  });
+
+  first.input.write('{"id":"req-1"}\n');
+  await wait(30);
+
+  expect(errors.some((message) => message.includes("EACCES"))).toBe(true);
+  expect(openCalls).toBe(2);
+
+  transport.close();
+});
+
+test("reconnects when a response write throws synchronously", async () => {
+  const first = fakeStreamPair();
+  first.output.write = () => {
+    throw new Error("EACCES: permission denied");
+  };
+  const second = fakeStreamPair();
+  const openedPairs = [first, second];
+  let openCalls = 0;
+  const errors: string[] = [];
+
+  const transport = startSerialTransport({
+    devicePath: "/fake/device",
+    handleLine: async () => ackResponse("id"),
+    serializeResponse: () => "reply\n",
+    onError: (message) => errors.push(message),
+    openStreams: () => openedPairs[openCalls++]!,
+    retryDelaysMs: [1, 1],
+  });
+
+  first.input.write('{"id":"req-1"}\n');
+  await wait(30);
+
+  expect(errors.some((message) => message.includes("EACCES"))).toBe(true);
+  expect(openCalls).toBe(2);
 
   transport.close();
 });
