@@ -90,6 +90,32 @@ test("resets the line buffer across a reconnect", async () => {
   transport.close();
 });
 
+test("skips a null response but keeps processing the rest of the chunk", async () => {
+  const pairs = [fakeStreamPair()];
+  const handled: string[] = [];
+  const written: string[] = [];
+
+  const transport = startSerialTransport({
+    devicePath: "/fake/device",
+    handleLine: async (line) => {
+      handled.push(line);
+      return line.startsWith("{") ? ackResponse("id") : null;
+    },
+    serializeResponse: (response) => `${response.id}\n`,
+    onResponseWritten: (response) => written.push(response.id ?? ""),
+    onError: () => {},
+    openStreams: () => pairs[0],
+  });
+
+  pairs[0].input.write('debug text\n{"id":"req-1"}\nmore debug\n');
+  await wait(10);
+
+  expect(handled).toEqual(["debug text", '{"id":"req-1"}', "more debug"]);
+  expect(written).toEqual(["id"]);
+
+  transport.close();
+});
+
 test("close() cancels a pending reconnect", async () => {
   const pairs = [fakeStreamPair(), fakeStreamPair()];
   let openCalls = 0;

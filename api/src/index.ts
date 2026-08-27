@@ -155,7 +155,16 @@ async function handleSerialRequest(request: SerialRequest): Promise<SerialRespon
   }
 }
 
-async function handleSerialLine(line: string): Promise<SerialResponse> {
+async function handleSerialLine(line: string): Promise<SerialResponse | null> {
+  // The firmware also prints plain-text debug output on this wire; ignore
+  // anything that isn't a JSON object instead of answering it with an error.
+  if (!line.trim().startsWith("{")) {
+    // Surfaced rather than dropped so the sketch's TOUCH_DEBUG output is readable
+    // from the Pi's journal; set TOUCH_DEBUG to 0 in the sketch to quiet it.
+    console.log(`[serial-debug] ${line}`);
+    return null;
+  }
+
   try {
     const request = parseSerialRequest(line);
     console.log(`[serial] request id=${request.id} endpoint=${request.endpoint}`);

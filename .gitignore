@@ -26,3 +26,6 @@ Thumbs.db
 
 # Deploy-time secrets, if any are ever added. sync.ps1 itself is tracked.
 .deploy.env
+
+# Real Wi-Fi and device credentials. The .example.h template is tracked instead.
+firmware/arduino_secrets.h

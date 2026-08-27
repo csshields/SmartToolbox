@@ -13,11 +13,8 @@ export class SerialLineBuffer {
   }
 }
 
-// Backoff schedule for reconnect attempts: grows to 5s and then holds there.
-// Retries are unlimited by design - the XIAO is local hardware that is always
-// expected to come back (unplug, reset, reflash), never a remote service that
-// might be down for good. At the 5s ceiling, an idle retry loop costs one
-// failed open per 5 seconds, so there is no reason to ever stop trying.
+// Grows to 5s and holds. Retries are unlimited - the XIAO always comes back
+// eventually, and an idle retry at the 5s ceiling costs nothing.
 const DEFAULT_RETRY_DELAYS_MS = [500, 1000, 2000, 4000, 5000];
 
 function openRealStreams(devicePath: string) {
@@ -29,7 +26,7 @@ function openRealStreams(devicePath: string) {
 
 export function startSerialTransport(options: {
   devicePath: string;
-  handleLine: (line: string) => Promise<SerialResponse>;
+  handleLine: (line: string) => Promise<SerialResponse | null>;
   serializeResponse: (response: SerialResponse) => string;
   onError: (message: string) => void;
   onResponseWritten?: (response: SerialResponse) => void;
@@ -42,10 +39,8 @@ export function startSerialTransport(options: {
   const retryDelays = options.retryDelaysMs ?? DEFAULT_RETRY_DELAYS_MS;
 
   let stopped = false;
-  // Bumped on every teardown so events from a torn-down connection (a 'close'
-  // that fires after 'error' already triggered a reconnect, or a handleLine
-  // that resolves after we've already moved on) are recognized as stale and
-  // ignored, instead of triggering a second, redundant reconnect cycle.
+  // Bumped on every teardown so stale events from a torn-down connection
+  // (a late 'close', a handleLine that resolves after we've moved on) get ignored.
   let generation = 0;
   let retryAttempt = 0;
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
@@ -59,10 +54,8 @@ export function startSerialTransport(options: {
   }
 
   function teardown(input: Readable | null, output: Writable | null) {
-    // A stream can have an 'error' emission already queued (e.g. someone else
-    // called destroy(err) on it) at the moment we decide to stop caring about
-    // it. Node treats an 'error' event with no listener as fatal, so swap in a
-    // no-op before removing the real listeners rather than leaving a gap.
+    // A queued 'error' emission with no listener is fatal in Node, so swap in
+    // a no-op before removing the real listeners rather than leaving a gap.
     input?.removeAllListeners();
     input?.on("error", () => {});
     output?.removeAllListeners();
@@ -124,7 +117,12 @@ export function startSerialTransport(options: {
         const response = await options.handleLine(line);
 
         if (myGeneration !== generation) {
+          // Connection was torn down mid-await - abandon the rest of this chunk too.
           return;
+        }
+
+        if (response === null) {
+          continue; // Not a request (debug chatter) - nothing to reply to.
         }
 
         output.write(options.serializeResponse(response), (error) => {

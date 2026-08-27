@@ -73,9 +73,11 @@ Updated 2026-08-27. This table is the single place to check what is physically w
 |---|---|---|
 | XIAO ESP32S3 standalone | Verified | LED (GPIO21, active-low) and touch pads confirmed on hardware |
 | USB serial XIAO to Pi | Verified | `device/status` boot request reaches the Pi service |
+| Touch-triggered `tools/lookup` | Partial | Touch fires the request on hardware (D0 reads ~18.3k idle, ~31.4k touched). The blink-back half is untested - it needs the Pi, since the serial listener only starts on Linux |
 | Grove Vision AI V2 link | Connected | Stacked on the expansion header; I2C link up |
 | SenseCraft model | Not deployed | **Blocks Feature 3.** Nothing to detect until a model is trained and flashed |
-| Grove I2C Hub + OLED + 8x8 matrix | Not wired | Blocks the visual feedback half of Feature 2 |
+| OLED (Grove SSD1315 0.96") | Verified | On the I2C connector, GPIO5/GPIO6. Driven with U8g2 (`U8G2_SSD1306_128X64_NONAME_F_HW_I2C`); the SSD1315 is SSD1306-compatible. Shows lookup status and the exact drawer label |
+| Grove I2C Hub + 8x8 matrix | Not wired | Blocks the row-indicator half of Feature 2. The OLED covers drawer labels in the meantime |
 | Microphone | Not selected | **Blocks Feature 2.** No part chosen |
 | PIR motion sensor | Deferred | **Blocks Feature 1.** Needs GPIO the Vision AI V2 stack now occupies |
 
@@ -133,7 +135,9 @@ above; the physical box is what fixes it at 6 rows and 8 drawers.
 - Use TypeScript strict mode for API project
 - Follow async/await patterns for database operations
 - Use clear, descriptive variable and function names
-- Add comments for complex logic
+- Comment only the non-obvious why (a hidden constraint, a subtle invariant), never
+  the what. Keep each comment to 1-2 lines - if it needs more, put the reasoning in
+  the commit message or this spec instead.
 
 ### Database
 - All database code should go in `api/src/db.ts`
@@ -168,6 +172,7 @@ When working on this project:
 ### Firmware
 - [x] Establish USB serial communication with the API (`device/status` handshake)
 - [x] Verify XIAO bring-up independently (LED + touch)
+- [x] Send real `tools/lookup` requests from a touch pad, blinking the row number back
 - [x] Connect Grove Vision AI V2 over I2C
 - [ ] **Next: Deploy a SenseCraft model** so `vision/observe` carries real labels
 - [ ] **Planned: Implement Wi-Fi OTA firmware updates** (see Feature 4 in Firmware Specifications)
@@ -877,11 +882,12 @@ void loop() {
 ## Libraries Required
 
 Add to Arduino Library Manager:
-- [ ] ArduinoJson - encoding and parsing the NDJSON serial messages. Needed as soon as
-      the sketch sends anything beyond the hardcoded boot request string.
+- [x] ArduinoJson (7.4.3) - encoding and parsing the NDJSON serial messages. In use by
+      `firmware/smarttoolbox/smarttoolbox.ino` for the `tools/lookup` request and response.
 - [ ] Seeed_Arduino_SSCMA - I2C communication with the Grove Vision AI Module V2.
       Needed for Feature 3.
-- [ ] U8g2 - the SSD1315 OLED. Needed once the I2C hub is wired.
+- [x] U8g2 (2.35.30) - the SSD1315 OLED. In use by `firmware/smarttoolbox/smarttoolbox.ino`
+      for lookup status. The OLED is on the I2C connector directly; the hub is not needed for it.
 - [ ] Grove 8x8 RGB LED Matrix driver library. Needed once the I2C hub is wired.
 - [ ] FastLED or Adafruit_NeoPixel - **not needed.** These are for the deferred WS2813
       strip only; the matrix is I2C and does not use them.
@@ -932,6 +938,12 @@ are not wired. The wake-word and Whisper pipeline below is design only; none of 
 been built or tested. The API half of the flow does exist and works today via
 `GET /api/tools/lookup` and the `tools/lookup` serial endpoint, so the lookup can be
 exercised from the dashboard without any of this.
+
+A **bench harness** for the request half now exists in the firmware: a touch pad (or
+the `lookup <tool name>` serial command) stands in for the microphone and drives the
+real `tools/lookup` round trip, blinking the row number on the onboard LED because the
+matrix is not wired. It is a stand-in for the voice flow, not a step toward it - the
+wake word, Whisper, and matrix work below are all still unstarted.
 
 **Purpose**: Allow users to request tool locations via voice commands, with visual feedback via color-coded LED indicators.
 
@@ -1489,6 +1501,7 @@ Use consistent data formats across both projects:
 - [x] Establish the Grove Vision AI to XIAO link over I2C (`Seeed_Arduino_SSCMA`)
 - [x] Build the management dashboard
 - [x] Serial reconnect (`api/src/serialTransport.ts` retries with backoff up to 5s, unlimited attempts)
+- [x] Make the firmware send real `tools/lookup` requests (touch pad bench harness)
 - [ ] **Next: deploy a SenseCraft model** so observations carry real labels
 - [ ] Wire the I2C hub, OLED, and 8x8 matrix
 - [ ] Make the firmware send real `vision/observe` requests
