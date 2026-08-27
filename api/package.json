@@ -1,6 +1,7 @@
 {
     "scripts": {
-        "start": "bun run src/index.ts"
+        "start": "bun run src/index.ts",
+        "test": "bun test"
     },
     "dependencies": {
         "hono": "^4.12.10"

@@ -55,10 +55,11 @@ The initial XIAO-to-Pi handshake uses newline-delimited JSON. After the Pi servi
 [serial] request id=boot-1 endpoint=device/status
 ```
 
-If the XIAO is unplugged and reconnected while the service is running, restart the service before resetting the XIAO because the current serial transport does not reconnect automatically:
+If the XIAO is unplugged, reset, or reflashed while the service is running, the serial transport reconnects automatically with a growing backoff (starting at 500ms, capped at 5s) - no service restart needed. Reconnects are logged:
 
-```bash
-sudo systemctl restart smarttoolbox
+```text
+[serial] disconnected, retrying in 500ms
+[serial] connected on /dev/ttyACM0
 ```
 
 ## Development

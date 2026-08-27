@@ -536,6 +536,9 @@ if (serialDevice) {
     handleLine: handleSerialLine,
     serializeResponse: serializeSerialResponse,
     onError: (message) => console.error(`[serial] ${message}`),
+    onResponseWritten: (response) => console.log(`[serial] response written id=${response.id}`),
+    onConnect: () => console.log(`[serial] connected on ${serialDevice}`),
+    onDisconnect: (retryDelayMs) => console.log(`[serial] disconnected, retrying in ${retryDelayMs}ms`),
   });
   console.log(`Serial service listening on ${serialDevice}`);
 }
