@@ -949,6 +949,23 @@ printf "lookup Claw Hammer\n" > /dev/ttyACM0
 That command is ignored while the firmware is mid-lookup or mid-blink, so send it a
 few times spaced a few seconds apart before concluding the receive path is dead.
 
+### Verifying a secret is really untracked
+
+`git check-ignore -v <path>` is **not** a reliable check on its own. It exits 0 when
+*any* pattern matches, including a negation like `!.env.example`, so a file that is
+very much trackable can look ignored. Ask the question that actually matters instead:
+
+```bash
+git add --dry-run <path>       # "The following paths are ignored" = safe
+git ls-files --error-unmatch <path>   # errors = not tracked
+git log --all -p | grep -F '<the secret>'   # nothing = never committed
+```
+
+The last one is the only check that covers history. Untracking a file with
+`git rm --cached` stops future commits but does nothing about the ones already made -
+if a real secret was ever committed, it stays in history until the history is rewritten,
+and it should be rotated rather than trusted.
+
 ### Reading the device directly from Windows
 
 `arduino-cli monitor` exits immediately when its output is not a terminal, so it

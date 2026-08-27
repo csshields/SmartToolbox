@@ -22,6 +22,7 @@ description: "Firmware guidance for the Seeed XIAO ESP32S3, including onboard LE
 - `touchInterruptSetThresholdDirection()` does **not** exist on the S3 - the core guards it with `#if SOC_TOUCH_SENSOR_VERSION == 1`, so it is ESP32-only. There is no direction to flip; the direction is fixed by the silicon.
 - **Wi-Fi needs the external antenna.** The XIAO ESP32S3 has no usable onboard antenna; Seeed ships a small 2.4GHz antenna that clips onto the U.FL/IPEX socket near the USB-C port. Without it the radio sees networks at roughly -85 dBm and cannot hold an association - `WiFi.status()` cycles 6 (disconnected) then sits at 0 (idle) rather than reaching 4 (auth failed), which reads like a credentials problem but is not one. Scan first and check RSSI before suspecting the password.
 - Use USB serial at 115200 baud for diagnostics and upload. The board may disconnect and re-enumerate briefly during reset or upload.
+- Before debugging the Pi serial protocol, prove the board independently: GPIO21 off at boot, touch-controlled LED output, and serial touch-state output.
 - **Never wait unbounded on `while (!Serial)`.** The XIAO is routinely powered up before the Pi service opens the port, and an unbounded wait hangs the sketch inside `setup()` before anything runs - no output, no touch, no display, indistinguishable from a dead board. Bound it: `while (!Serial && millis() - start < 3000)`.
 - The Grove OLED is a **SSD1315**, which is SSD1306-compatible. `U8G2_SSD1306_128X64_NONAME_F_HW_I2C oled(U8G2_R0, U8X8_PIN_NONE)` with `Wire.begin()` drives it. `oled.begin()` returns a bool - guard on it, and print the result, or a missing display is silent.
 - A full U8g2 buffer push (`sendBuffer()`) costs roughly 10ms over I2C. Call it on state changes only; every loop starves the serial poll.
@@ -35,7 +36,49 @@ arduino-cli compile --upload -p COM<n> --fqbn esp32:esp32:XIAO_ESP32S3 firmware/
 `arduino-cli board list` identifies the XIAO only as a generic "ESP32 Family Device"
 with two candidate FQBNs, so pass `--fqbn` explicitly. The COM port moves between
 sessions; compare the list with the board unplugged to identify it.
-- Before debugging Pi serial protocol, prove the board independently with GPIO21 off at boot, touch-controlled LED output, and serial touch-state output.
+
+### Resetting the board without reflashing
+
+Some tests need a clean boot but must *not* reflash - checking that an OTA update is
+picked up, for instance, where flashing over USB would install the new build directly
+and prove nothing. Pulse RTS, which drives `EN` on the USB-Serial-JTAG bridge:
+
+```powershell
+$p = New-Object System.IO.Ports.SerialPort 'COM6',115200,'None',8,'One'
+$p.Open()
+$p.DtrEnable = $false; $p.RtsEnable = $true
+Start-Sleep -Milliseconds 200
+$p.RtsEnable = $false; $p.DtrEnable = $true
+```
+
+A successful reset prints `rst:0x15 (USB_UART_CHIP_RESET)` from the ROM bootloader.
+Toggling DTR alone does **not** reset the board. After an OTA install the device
+restarts itself, which shows as `rst:0xc (RTC_SW_CPU_RST)` - a useful way to confirm
+the reboot came from `ESP.restart()` and not from something else.
+
+### Testing an OTA update end to end
+
+1. Note the version the device currently reports in its boot handshake.
+2. `.\release-firmware.ps1 -Version <higher> -Push` from `api/scripts`.
+3. Reset the board with the RTS pulse above - **not** by reflashing.
+4. Watch for `OTA GET ... -> 200`, `OTA writing N bytes`, `OTA wrote N` (the two counts
+   must match), then `rst:0xc`.
+5. Confirm the next boot reports the new version and gets `-> 204`.
+
+Step 5 is the actual proof. Steps 3 and 4 only show that bytes moved.
+
+### HTTPClient discards response headers
+
+`http.header("X-Firmware-Version")` returns an empty string unless the header was
+requested *before* the request is sent:
+
+```cpp
+const char* wantedHeaders[] = {"X-Firmware-Version"};
+http.collectHeaders(wantedHeaders, 1);
+```
+
+It fails silently, not loudly - the update still installs, it just cannot name the
+version it installed.
 
 ## Reference
 
