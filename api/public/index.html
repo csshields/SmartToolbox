@@ -667,7 +667,15 @@
         async function handleToolDelete(event) {
             const { drawerId, toolId, toolName } = event.currentTarget.dataset;
 
-            if (!confirm(`Delete "${toolName}"?\n\nThis removes the tool from this drawer.`)) {
+            const warning = [
+                `Delete "${toolName}"?`,
+                '',
+                'This removes the tool from this drawer, along with any observation',
+                'history the camera recorded for it here.',
+                'This cannot be undone.',
+            ].join('\n');
+
+            if (!confirm(warning)) {
                 return;
             }
 

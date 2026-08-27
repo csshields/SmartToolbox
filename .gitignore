@@ -32,3 +32,10 @@ firmware/smarttoolbox/arduino_secrets.h
 
 # Compiled firmware images dropped for OTA. Created at runtime on the Pi.
 api/firmware/
+
+# Editor settings: machine-specific absolute paths and a pinned COM port.
+.vscode/
+
+# Reference screenshots. Like the datasheets above, these stay out of the repo.
+docs/*.png
+docs/*.PNG

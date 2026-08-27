@@ -330,7 +330,7 @@ framework; Hono is a dependency but is not currently used for routing.
 | POST | `/api/drawers` | Create a drawer (`name`, optional `label`, `rowNumber`) |
 | POST | `/api/drawers/:id/tools` | Add or update a tool in a drawer (upsert on name) |
 | DELETE | `/api/drawers/:id` | Delete a drawer. **Cascades** to its tools *and* its `drawer_observations` history. 404 if the id does not exist |
-| DELETE | `/api/drawers/:id/tools/:toolId` | Delete one tool. Scoped by drawer, so a mismatched pair is a 404 rather than deleting a tool in another drawer |
+| DELETE | `/api/drawers/:id/tools/:toolId` | Delete one tool **and its observations** for that drawer, in one transaction. Scoped by drawer, so a mismatched pair is a 404 rather than deleting a tool in another drawer |
 | GET | `/api/tools/lookup?query=` | **Primary lookup.** Returns exact drawers plus rows collapsed by certainty |
 | POST | `/api/tools/assign` | Move a tool to a drawer by name |
 | POST | `/api/vision/observations` | Record camera detections for a drawer |
@@ -387,7 +387,7 @@ POST   /api/tools/identify-return  - Identify tool from image (return detection)
 GET    /api/tools/:id              - Get tool details
 GET    /api/tools/search           - Search tools by name/category
 PUT    /api/tools/:id              - Update tool information
-DELETE /api/tools/:id              - Remove tool from inventory
+                                     (DELETE of a tool is built - see HTTP Endpoints)
 GET    /api/config                 - Get system configuration
 POST   /api/config/keyword         - Update wake keyword
 ```
@@ -451,6 +451,15 @@ is usable at all while the firmware is unfinished. Four panels:
 | Toolbox Inventory | `GET /api/drawers`, `POST /api/drawers`, `POST /api/drawers/:id/tools`, `DELETE /api/drawers/:id`, `DELETE /api/drawers/:id/tools/:toolId` |
 | Transcription Settings | `GET`/`PUT /api/settings/transcription`, `POST .../test` |
 | Recent Requests | `GET /api/logs?limit=40` |
+
+**Deleting a tool must also delete its observations.** `selectCanonicalToolName`
+UNIONs `drawer_observations`, and `selectToolLocations` matches on `tool.id IS NOT
+NULL OR observation.drawer_id IS NOT NULL`, so a leftover observation keeps a deleted
+tool answering `tools/lookup` at full confidence while the dashboard shows the drawer
+empty - the device would keep pointing at a tool the user believes is gone, with
+nothing in the UI revealing it. `deleteTool` handles both in one transaction; deleting
+a drawer was never affected, since observations cascade on `drawer_id`. Guarded by
+`api/src/db.test.ts`.
 
 Deletes sit behind a `confirm()`. The drawer dialog names the tool count and says
 that the observation history goes too, because `drawer_observations` cascades on

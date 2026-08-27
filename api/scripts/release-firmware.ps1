@@ -128,9 +128,19 @@ if ($Push) {
 		throw "Could not create the remote drop folder (exit code $LASTEXITCODE)"
 	}
 
-	scp @sshOptions $targetPath "${PiHost}:~/smarttoolbox/firmware/$targetName"
+	# Upload under a temporary name, then rename. The endpoint scans the folder
+	# by file name, so copying straight to the final name publishes a truncated
+	# image the moment scp creates it: a device polling mid-transfer would get a
+	# partial binary advertised with an honest Content-Length, and only the
+	# post-write verification would catch it. mv within one filesystem is atomic.
+	scp @sshOptions $targetPath "${PiHost}:~/smarttoolbox/firmware/$targetName.tmp"
 	if ($LASTEXITCODE -ne 0) {
 		throw "scp failed with exit code $LASTEXITCODE"
+	}
+
+	ssh @sshOptions $PiHost "mv ~/smarttoolbox/firmware/$targetName.tmp ~/smarttoolbox/firmware/$targetName"
+	if ($LASTEXITCODE -ne 0) {
+		throw "Could not publish the uploaded image (exit code $LASTEXITCODE)"
 	}
 
 	Write-Host "$targetName is now available on the Pi." -ForegroundColor Green

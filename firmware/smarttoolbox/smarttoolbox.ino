@@ -163,7 +163,7 @@ bool checkForFirmwareUpdate() {
     Serial.print("OTA wifi failed status=");
     Serial.print(WiFi.status());
     Serial.print(" visible networks=");
-    Serial.println(WiFi.scanNetworks());
+    Serial.println(found); // Reuse the scan above; rescanning here costs seconds.
 
     showStatus("Update check", "No Wi-Fi", "status " + String(WiFi.status()));
     WiFi.disconnect(true, true);
@@ -381,7 +381,10 @@ void pollTouch() {
     consecutiveReleased++;
   }
 
-  const bool isTouched = consecutiveTouched >= 2;
+  // Debounce both edges. Press needs 2 consecutive readings; release needs 2 as
+  // well, so a single noisy sub-threshold sample mid-touch cannot end the press
+  // and re-arm the next one.
+  const bool isTouched = wasTouched ? consecutiveReleased < 2 : consecutiveTouched >= 2;
   if (isTouched && !wasTouched) {
     onTouchStart(touchedPinIndex);
   }
@@ -489,7 +492,15 @@ void handleIncomingLine(const String& line) {
   const char* drawerLabel = doc["body"]["drawers"][0]["label"] | "";
   showStatus("Found", pendingToolName, "Row " + String(rowNumber) + "  Drawer " + drawerLabel);
 
-  startBlinkPlan(rowNumber > 0 ? rowNumber : 1, 500, 500); // Slow blinks: row number.
+  if (rowNumber > 0) {
+    startBlinkPlan(rowNumber, 500, 500); // Slow blinks: row number.
+  } else {
+    // Found, but in a drawer with no row assigned. Falling back to one slow
+    // blink would be told apart from the error's single long blink only by its
+    // duration, so use the not-found pattern instead: the LED cannot express
+    // "somewhere unknown", and the OLED is already showing the drawer label.
+    startBlinkPlan(3, 150, 150);
+  }
 }
 
 void pollResponseTimeout() {

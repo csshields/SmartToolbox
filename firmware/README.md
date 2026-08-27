@@ -37,6 +37,8 @@ Required libraries (install via Library Manager):
 - `U8g2` for the OLED
 - Grove 8x8 RGB LED Matrix library
 
+`WiFi`, `HTTPClient`, and `Update` ship with the ESP32 core - no install needed.
+
 ## Flashing
 
 1. Open `smarttoolbox/smarttoolbox.ino` in Arduino IDE
@@ -56,7 +58,7 @@ C:\arduino\arduino-cli.exe upload --fqbn esp32:esp32:XIAO_ESP32S3 --port COM6 C:
 Connect the flashed XIAO to the Raspberry Pi over USB-C. The Pi detects it as `/dev/ttyACM0`, and the `smarttoolbox` systemd service opens that device automatically. On boot, the sketch sends this newline-delimited request:
 
 ```json
-{"id":"boot-1","type":"request","endpoint":"device/status","body":{"firmwareVersion":"0.1.0"}}
+{"id":"boot-1","type":"request","endpoint":"device/status","body":{"firmwareVersion":"0.5.0"}}
 ```
 
 Press `RST` after connecting and verify the Pi received it:
@@ -71,20 +73,30 @@ Expected output:
 [serial] request id=boot-1 endpoint=device/status
 ```
 
-If the XIAO is disconnected after the service has opened the device, restart the service after reconnecting it:
-
-```bash
-sudo systemctl restart smarttoolbox
-```
+If the XIAO is unplugged, reset, or reflashed, the serial transport reconnects on its own with a growing backoff capped at 5s - no service restart needed. Reconnects are logged as `[serial] disconnected, retrying in Nms` followed by `[serial] connected`.
 
 ## Project Structure
 
 ```
 firmware/
-├── smarttoolbox/           # Main Arduino sketch
-│   └── smarttoolbox.ino    # Main program file
-└── README.md               # This file
+├── smarttoolbox/
+│   ├── smarttoolbox.ino            # The firmware
+│   ├── arduino_secrets.example.h   # Template - copy to arduino_secrets.h
+│   └── arduino_secrets.h           # Wi-Fi and device key (gitignored)
+└── README.md                       # This file
 ```
+
+`arduino_secrets.h` must live beside the sketch: Arduino resolves `#include "..."`
+from the sketch folder only.
+
+### Arduino Cloud leftovers
+
+`Untitled_apr15a.ino`, `motion_ino.ino`, `thingProperties.h`, `sketch.json`, and
+`ReadMe.adoc` sit in `firmware/` and are **history, not live code**. They came from
+an early Arduino Cloud project and nothing builds or references them.
+`motion_ino.ino` is the one worth keeping for now: it is the PIR + OLED bring-up
+sketch, and its `U8G2_SSD1306_128X64_NONAME_F_HW_I2C` constructor is where the
+working OLED setup came from. The rest can be deleted whenever you like.
 
 ## Development Notes
 
@@ -94,8 +106,10 @@ firmware/
 
 ## TODO
 
+- [x] Send the `device/status` USB serial boot request to the API server
+- [x] Parse USB serial responses and send tool lookup requests
+- [x] Wi-Fi OTA updates (see Releasing firmware in the spec)
+- [ ] Map the remaining touch pads to seeded tools
 - [ ] Implement camera capture
 - [ ] Implement IMU data reading
-- [x] Send the `device/status` USB serial boot request to the API server
-- [ ] Parse USB serial responses and send tool lookup requests
 - [ ] Add power management features

@@ -532,9 +532,8 @@ serve({
       }
     }
 
-    // Both of these sit after the exact-string /api/drawers checks above so
-    // they cannot shadow them. The tool route is matched first: /drawers/1
-    // would otherwise never be reached for /drawers/1/tools/2.
+    // Both patterns are fully anchored, so neither can match /api/drawers nor
+    // each other's paths and the ordering here carries no meaning.
     const deleteToolMatch = pathname.match(/^\/api\/drawers\/(\d+)\/tools\/(\d+)$/);
 
     if (deleteToolMatch && req.method === 'DELETE') {

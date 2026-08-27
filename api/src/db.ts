@@ -167,9 +167,20 @@ const deleteDrawerById = database.query(`
   WHERE id = ?1
 `);
 
+const selectToolByDrawerAndId = database.query(`
+  SELECT name
+  FROM tools
+  WHERE drawer_id = ?1 AND id = ?2
+`);
+
 const deleteToolByDrawerAndId = database.query(`
   DELETE FROM tools
   WHERE drawer_id = ?1 AND id = ?2
+`);
+
+const deleteObservationsForTool = database.query(`
+  DELETE FROM drawer_observations
+  WHERE drawer_id = ?1 AND tool_name = ?2 COLLATE NOCASE
 `);
 
 const upsertTool = database.query(`
@@ -340,10 +351,30 @@ export function deleteDrawer(drawerId: number) {
   return deleteDrawerById.run(drawerId).changes > 0;
 }
 
+// Deletes the tool's observations along with the tool row. Without this the
+// tool stays findable: selectCanonicalToolName UNIONs drawer_observations, and
+// selectToolLocations matches on `tool.id IS NOT NULL OR observation.drawer_id
+// IS NOT NULL`. An orphaned observation therefore keeps answering tools/lookup
+// with full confidence while the dashboard shows the drawer as empty - the
+// device would keep pointing at a tool the user believes they deleted, forever.
+// Deleting a drawer never had this problem: observations cascade on drawer_id.
+//
 // Scoped by drawer as well as tool id, so a mismatched pair is a 404 instead of
 // silently deleting a tool that belongs to a different drawer.
+const deleteToolAndObservations = database.transaction((drawerId: number, toolId: number, toolName: string) => {
+  deleteToolByDrawerAndId.run(drawerId, toolId);
+  deleteObservationsForTool.run(drawerId, toolName);
+});
+
 export function deleteTool(drawerId: number, toolId: number) {
-  return deleteToolByDrawerAndId.run(drawerId, toolId).changes > 0;
+  const tool = selectToolByDrawerAndId.get(drawerId, toolId) as { name: string } | null;
+
+  if (!tool) {
+    return false;
+  }
+
+  deleteToolAndObservations(drawerId, toolId, tool.name);
+  return true;
 }
 
 export function addToolToDrawer(drawerId: number, tool: { name: string; quantity?: number; notes?: string }) {
