@@ -1,8 +1,24 @@
 ---
 title: Plan of Attack - Next Four Features
 scope: implementation plan, written 2026-08-27
-status: active
+status: partially complete - Features 1 and 2 are done; 3 and 4 are not started
 ---
+
+> **Features 1 and 2 shipped 2026-08-27.** Read the sections below as history, not as
+> work outstanding. Features 3 (delete endpoints) and 4 (dashboard search) are still
+> accurate descriptions of unstarted work.
+>
+> Feature 1 (serial reconnect) needed a follow-up the plan did not anticipate: the
+> reconnect worked, but the tty came up in cooked mode with echo, so the device
+> received nothing back. See Communication Protocol in the spec.
+>
+> Feature 2 (touch-triggered lookup) took three hardware bugs beyond what is described
+> here - the S3's touch readings rise rather than fall, scanning all nine pads froze the
+> peripheral, and the startup baseline averaged unusable boot readings. All three are
+> recorded in `.github/instructions/xiao-esp32s3-firmware.instructions.md`.
+>
+> Also built the same day, and not part of this plan: Wi-Fi OTA updates, see
+> `PLAN-ota-updates.md`.
 
 # Plan of Attack
 
