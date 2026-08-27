@@ -2,34 +2,56 @@
 title: SmartToolbox Project Instructions
 scope: project-wide guidelines and specifications
 status: active
-updated: 2026-08-26
+updated: 2026-08-27
 ---
 
 # SmartToolbox Project
 
+## Document Conventions
+
+This file mixes what is built with what is designed but not yet built. Every major
+section carries a status line so the difference is never ambiguous:
+
+- **Status: Implemented** - the code exists and runs. File references point at it.
+- **Status: Partial** - some of it runs; the section says which part.
+- **Status: Planned** - designed here, not written yet.
+- **Status: Blocked** - planned, and something concrete is in the way. The blocker is named.
+
+When a section's status changes, update the line in the same commit as the code.
+
 ## Project Overview
 
-SmartToolbox is a monorepo containing two interconnected projects:
-- **API**: Web server backend with SQLite database running on Raspberry Pi Zero 2
-- **Firmware**: Arduino sketch for Seeed XIAO ESP32S3 microcontroller
+SmartToolbox is a monorepo containing three parts:
+- **API**: Bun web server and SQLite database running on a Raspberry Pi Zero 2
+- **Firmware**: Arduino sketch for the Seeed XIAO ESP32S3 microcontroller
+- **Dashboard**: a single-page web UI served by the API, used to manage drawers and tools
 
 ## Project Structure
 
 ```
 smarttoolbox/
 ├── .github/
-│   └── copilot-instructions.md  # This file - AI instructions and project spec
+│   ├── copilot-instructions.md   # This file - AI instructions and project spec
+│   ├── instructions/             # Scoped guidance applied by file glob
+│   │   └── xiao-esp32s3-firmware.instructions.md
+│   └── skills/                   # Specialized knowledge modules
+├── docs/
+│   └── SOURCES.md                # Vendor datasheet index (PDFs are gitignored)
 ├── api/                          # Web server and database (runs on Pi Zero 2)
 │   ├── src/                      # TypeScript source code
-│   ├── data/                     # SQLite database files
-│   ├── public/                   # Static web assets
-│   ├── deploy/                   # Deployment configurations
+│   │   ├── index.ts              # Server entry point, HTTP + serial routing
+│   │   ├── db.ts                 # SQLite schema and all queries
+│   │   ├── serialProtocol.ts     # NDJSON request/response framing
+│   │   └── serialTransport.ts    # Reads and writes the CDC ACM device
+│   ├── data/                     # SQLite database files (gitignored)
+│   ├── public/                   # Dashboard single-page app
+│   ├── deploy/                   # smarttoolbox.service systemd unit
 │   ├── scripts/                  # Build and utility scripts
-│   ├── package.json              # Node.js dependencies
+│   ├── package.json              # Dependencies
 │   ├── tsconfig.json             # TypeScript configuration
-│   └── sync.ps1                  # Sync script
+│   └── sync.ps1                  # Deploy script (Windows -> Pi)
 └── firmware/                     # Arduino sketch for XIAO ESP32S3
-  ├── smarttoolbox/             # Seeed XIAO ESP32S3 sketch
+    ├── smarttoolbox/             # Seeed XIAO ESP32S3 sketch
     │   └── smarttoolbox.ino      # Main controller sketch
     └── README.md                 # Firmware documentation
 ```
@@ -39,9 +61,23 @@ smarttoolbox/
 ### System Overview
 - **API Server**: Raspberry Pi Zero 2 running Bun and SQLite
 - **Main Controller**: Seeed XIAO ESP32S3 (LED control, USB serial, Wi-Fi, and BLE)
-- **Vision Hardware**: Seeed Grove Vision AI Module (V2) + OV5647 camera, connected over I2C using the `Seeed_Arduino_SSCMA` library; on-device WiseEye2 inference is the default (only results, not raw frames, are read over the link).
+- **Vision Hardware**: Seeed Grove Vision AI Module (V2) + OV5647 camera, **connected** - stacked on the XIAO expansion header (not a 4-pin Grove cable), talking I2C via the `Seeed_Arduino_SSCMA` library. On-device WiseEye2 inference is the default (only results, not raw frames, are read over the link). **No SenseCraft model is deployed yet**, so the link is live but returns nothing useful.
 - **Transcription**: Self-hosted Whisper server running on a NAS on the local network (see Communication Protocol)
 - **Communication**: XIAO ESP32S3 → API Server over **wired USB serial**. Wi-Fi and BLE are available on the controller but are not used in the MVP.
+
+### Hardware Bring-Up Status
+
+Updated 2026-08-27. This table is the single place to check what is physically working.
+
+| Component | Status | Notes |
+|---|---|---|
+| XIAO ESP32S3 standalone | Verified | LED (GPIO21, active-low) and touch pads confirmed on hardware |
+| USB serial XIAO to Pi | Verified | `device/status` boot request reaches the Pi service |
+| Grove Vision AI V2 link | Connected | Stacked on the expansion header; I2C link up |
+| SenseCraft model | Not deployed | **Blocks Feature 3.** Nothing to detect until a model is trained and flashed |
+| Grove I2C Hub + OLED + 8x8 matrix | Not wired | Blocks the visual feedback half of Feature 2 |
+| Microphone | Not selected | **Blocks Feature 2.** No part chosen |
+| PIR motion sensor | Deferred | **Blocks Feature 1.** Needs GPIO the Vision AI V2 stack now occupies |
 
 ### API Project
 - **Host Device**: Raspberry Pi Zero 2
@@ -59,6 +95,37 @@ smarttoolbox/
 - **Sensors**: Vision (Grove Vision AI + OV5647); external IMU and microphone hardware are not yet selected
 - **Connectivity**: Wired USB serial to Raspberry Pi Zero 2 (MVP scope; Wi-Fi and BLE are future-only)
 - **Purpose**: Capture sensor data, control LEDs, communicate with API server
+
+## Physical Layout
+
+**Status: Implemented** - this is the real toolbox, not an example.
+
+Six rows, eight drawers. Row 1 is split into three drawers that share one indicator;
+rows 2-6 are a single drawer each.
+
+```
+Row 1 | 1A | 1B | 1C |   <- one shared LED / matrix position
+Row 2 |       2       |
+Row 3 |       3       |
+Row 4 |       4       |
+Row 5 |       5       |
+Row 6 |       6       |
+```
+
+This drives two rules that appear throughout this document:
+
+1. **Indicators are per row, not per drawer.** There are 6 indicator positions for 8
+   drawers. If a tool is in any drawer of a row, that row lights.
+2. **The OLED disambiguates what the matrix cannot.** The matrix can only say "row 1";
+   the OLED shows the exact label, such as `1A`.
+
+When several drawers in one row match a lookup, the API collapses them into a single
+row entry carrying the highest confidence of the group (`findToolLocations` in
+`api/src/db.ts`).
+
+Rows and drawers are stored as data, not hardcoded: a drawer row carries a `label`
+(`1A`, `3`) and a nullable `row_number`. The schema permits layouts other than the one
+above; the physical box is what fixes it at 6 rows and 8 drawers.
 
 ## Development Guidelines
 
@@ -92,29 +159,40 @@ When working on this project:
 ## Current Goals
 
 ### API
-- [ ] Define database schema
-- [ ] Implement RESTful endpoints
-- [ ] Add authentication/authorization
-- [ ] Deploy configuration
+- [x] Define database schema (`api/src/db.ts`)
+- [x] Implement drawer, tool, lookup, and observation endpoints
+- [x] Deploy configuration (systemd unit + `api/sync.ps1`)
+- [ ] Reconcile remaining planned endpoints (see API Endpoints)
+- [ ] Authentication - deliberately deferred, see Authentication & Authorization
 
 ### Firmware
-- [ ] Implement sensor data capture
-- [ ] Establish USB serial communication with the API
+- [x] Establish USB serial communication with the API (`device/status` handshake)
+- [x] Verify XIAO bring-up independently (LED + touch)
+- [x] Connect Grove Vision AI V2 over I2C
+- [ ] **Next: Deploy a SenseCraft model** so `vision/observe` carries real labels
+- [ ] **Planned: Implement Wi-Fi OTA firmware updates** (see Feature 4 in Firmware Specifications)
+- [ ] Wire the I2C hub, OLED, and 8x8 matrix
+- [ ] Select microphone hardware
 - [ ] Add power management
-- [ ] Test sensor accuracy
 
 ## Notes
 
-- API and firmware communicate via HTTP over WiFi (MVP); BLE is a future consideration only
-- Consider data format compatibility between components
-- Document API endpoints for firmware developers
+- API and firmware communicate over **wired USB serial** for the MVP, using
+  newline-delimited JSON. Wi-Fi and BLE are available on the XIAO but unused; revisit
+  only if the wire becomes a real constraint.
+- Keep data formats consistent between components - see Message Format Standards.
+- Document API endpoints for firmware developers.
 
 ## Future Considerations
 
-- Add web dashboard for monitoring
-- Implement over-the-air (OTA) firmware updates
 - Add data visualization features
+- Per-instance tool tracking (checkout history, missing-tool alerts) - see Tool Identity
 - Consider cloud deployment options
+- Implement power management and deep sleep optimization
+
+The web dashboard is no longer a future item; it is built and served today. See
+Dashboard under API Project Specifications. Wi-Fi OTA firmware updates are now
+planned; see **Firmware OTA Updates** under Firmware Project Specifications.
 
 ---
 
@@ -130,185 +208,205 @@ When working on this project:
 
 ## Database Schema
 
-### Tables
+**Status: Implemented** - the block below is what `api/src/db.ts` actually creates at
+startup. It is the authority; if this section and the code disagree, the code wins and
+this section is stale.
 
-Define your database tables here. Example structure:
+### Tool Identity
+
+Tools are tracked **by type and quantity, not as individual physical instances.**
+"Three Phillips screwdrivers in drawer 1A", never "screwdriver #2 is in 1A". There is
+no per-tool checkout state, no `tool_id`, and no movement history. Per-instance
+tracking is a Future Consideration, not a current gap to be filled in.
+
+### Implemented Tables
 
 ```sql
--- Sensor data storage
-CREATE TABLE IF NOT EXISTS sensors (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  device_id TEXT NOT NULL,
-  timestamp INTEGER NOT NULL,
-  sensor_type TEXT NOT NULL,
-  data BLOB,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
--- Event logging
-CREATE TABLE IF NOT EXISTS events (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  event_type TEXT NOT NULL,
-  payload TEXT,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
--- Tool inventory
-CREATE TABLE IF NOT EXISTS tools (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  tool_id TEXT UNIQUE NOT NULL,
-  name TEXT NOT NULL,
-  category TEXT,
-  description TEXT,
-  image_url TEXT,
-  current_drawer_id INTEGER,
-  last_seen INTEGER,  -- Unix timestamp
-  status TEXT DEFAULT 'available',  -- available, checked_out, missing
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
--- Drawer information
--- LED indicators are per ROW, not per drawer: row 1 has 3 drawers sharing a single LED;
--- rows 2-6 have exactly 1 drawer each with their own LED. If a tool lives in ANY drawer
--- within a row, that row's single LED lights up.
-CREATE TABLE IF NOT EXISTS rows (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  row_number INTEGER UNIQUE NOT NULL,  -- 1-6
-  led_index INTEGER UNIQUE NOT NULL,   -- physical LED strip/position for this row
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-
+-- Drawers. `label` is what the OLED shows (1A, 3); `row_number` drives the matrix.
 CREATE TABLE IF NOT EXISTS drawers (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  drawer_id INTEGER UNIQUE NOT NULL,
-  row_id INTEGER NOT NULL,
-  name TEXT,
-  description TEXT,
-  capacity INTEGER,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (row_id) REFERENCES rows(id)
+  name TEXT NOT NULL UNIQUE,
+  label TEXT,
+  row_number INTEGER,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- Tool movement history
--- NOTE: image_url/audio_url are nullable and unused by default for MVP. Raw images/audio
--- are processed transiently (not persisted to disk or DB) unless a future debug/persist
--- flag is enabled in `config`. Only identification results and metadata are stored.
-CREATE TABLE IF NOT EXISTS tool_movements (
+-- Known contents of a drawer, entered by hand via the dashboard.
+-- One row per (drawer, tool type); quantity carries the count.
+CREATE TABLE IF NOT EXISTS tools (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  tool_id TEXT NOT NULL,
-  drawer_id INTEGER,
-  event_type TEXT NOT NULL,  -- checked_out, returned, moved
-  timestamp INTEGER NOT NULL,
-  confidence INTEGER,  -- 0-100 for identification confidence
-  image_url TEXT,
-  audio_url TEXT,
-  query_text TEXT,
-  device_id TEXT,
-  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (tool_id) REFERENCES tools(tool_id)
+  drawer_id INTEGER NOT NULL,
+  name TEXT NOT NULL,
+  quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity >= 1),
+  notes TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(drawer_id) REFERENCES drawers(id) ON DELETE CASCADE
 );
 
--- System configuration
--- Single source of truth for mutable runtime settings (wake keyword, certainty
--- thresholds, transcription_service_url, persist_media flag, etc.). Static/deploy-time
--- settings (PORT, DATABASE_PATH, NODE_ENV, LOG_LEVEL) stay in .env, not this table.
+-- What the camera reported. Append-only; the newest row per (drawer, tool) wins.
+-- Distinct from `tools`: `tools` is intent, `drawer_observations` is evidence.
+CREATE TABLE IF NOT EXISTS drawer_observations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  drawer_id INTEGER NOT NULL,
+  tool_name TEXT NOT NULL,
+  quantity INTEGER NOT NULL CHECK (quantity >= 1),
+  confidence INTEGER NOT NULL CHECK (confidence >= 0 AND confidence <= 100),
+  model_version TEXT NOT NULL DEFAULT '',
+  observed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(drawer_id) REFERENCES drawers(id) ON DELETE CASCADE
+);
+
+-- Every API request, for the dashboard's Recent Requests panel.
+CREATE TABLE IF NOT EXISTS request_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  method TEXT NOT NULL,
+  path TEXT NOT NULL,
+  tool TEXT NOT NULL DEFAULT '',
+  drawer_number INTEGER,
+  status_code INTEGER NOT NULL,
+  result TEXT NOT NULL,
+  details TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Mutable runtime settings. Deploy-time settings stay in the environment.
 CREATE TABLE IF NOT EXISTS config (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
-  description TEXT,
-  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
--- Indexes for performance
-CREATE INDEX IF NOT EXISTS idx_tools_drawer ON tools(current_drawer_id);
-CREATE INDEX IF NOT EXISTS idx_tools_status ON tools(status);
-CREATE INDEX IF NOT EXISTS idx_movements_tool ON tool_movements(tool_id);
-CREATE INDEX IF NOT EXISTS idx_movements_timestamp ON tool_movements(timestamp);
-CREATE INDEX IF NOT EXISTS idx_sensors_device_timestamp ON sensors(device_id, timestamp);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tools_drawer_name ON tools(drawer_id, name);
+CREATE INDEX IF NOT EXISTS idx_request_logs_created_at ON request_logs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_observations_tool_drawer
+  ON drawer_observations(tool_name, drawer_id, id DESC);
 ```
 
+Config keys currently in use: `transcription_provider`, `transcription_nas_url`.
+
+### Migrations
+
+There is no migration framework. `db.ts` runs `CREATE TABLE IF NOT EXISTS`, then
+patches older databases in place by checking `PRAGMA table_info` and issuing
+`ALTER TABLE ... ADD COLUMN` for `label` and `row_number`. Follow that pattern when
+adding a column: additive, idempotent, safe to run on every boot.
+
+### Planned Tables
+
+**Status: Planned** - none of these exist. Do not write code against them.
+
+- `tool_movements` - checkout and return history. Needs per-instance identity first.
+- `sensors` / `events` - generic sensor capture, from the original sketch of the
+  project. Currently unused; `drawer_observations` covers the only sensor that exists.
+- A dedicated `rows` table. Rows are presently just a nullable `row_number` column on
+  `drawers`, which the code treats as sufficient.
+
 **Schema Design Principles:**
-- Use INTEGER for timestamps (Unix epoch)
-- Use BLOB for binary data (images, audio)
+- SQLite `TEXT` timestamps via `CURRENT_TIMESTAMP` for rows written by the API;
+  Unix epoch integers only where the firmware supplies the time
 - Use TEXT for JSON payloads
 - Add indexes on frequently queried fields
 - Always include created_at timestamps
+- Enforce invariants with CHECK constraints rather than in application code
 
 ## API Endpoints
 
-Define your REST API endpoints here:
+**Status: Implemented** - this list is generated from the router in
+`api/src/index.ts`. The router is a plain `if` chain on pathname and method, not a
+framework; Hono is a dependency but is not currently used for routing.
 
-### Core Endpoints
+### HTTP Endpoints
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/health` | Liveness check. Returns `{"status":"Ok"}` |
+| GET | `/api/drawers` | All drawers with their tools and tool counts |
+| POST | `/api/drawers` | Create a drawer (`name`, optional `label`, `rowNumber`) |
+| POST | `/api/drawers/:id/tools` | Add or update a tool in a drawer (upsert on name) |
+| GET | `/api/tools/lookup?query=` | **Primary lookup.** Returns exact drawers plus rows collapsed by certainty |
+| POST | `/api/tools/assign` | Move a tool to a drawer by name |
+| POST | `/api/vision/observations` | Record camera detections for a drawer |
+| GET | `/api/logs?limit=` | Recent request log (default 50, capped at 200) |
+| GET | `/api/settings/transcription` | Current transcription provider settings |
+| PUT | `/api/settings/transcription` | Save provider and NAS URL |
+| POST | `/api/settings/transcription/test` | Probe the configured provider |
+
+Anything under `/api/` that does not match returns 404 JSON. Everything else falls
+through to static files from `api/public/`, with `index.html` as the SPA fallback.
+
+### Deprecated
+
+- `GET /api/tools/find?tool=` - superseded by `/api/tools/lookup`, which returns row
+  data the indicators need. Nothing calls it: the dashboard does not, and the firmware
+  uses the serial channel. Remove it and `findToolDrawer` in `db.ts` when convenient.
+- `POST /query` - scaffold from the first commit. Logs the body and replies
+  `{"reply":"Received"}`. Dead; remove.
+
+### Lookup Response Shape
+
+`GET /api/tools/lookup?query=needle-nose%20pliers`
+
+```json
+{
+  "found": true,
+  "tool": "Needle-nose Pliers",
+  "drawers": [
+    { "drawerId": 1, "label": "1A", "rowNumber": 1, "quantity": 2,
+      "confidence": 95, "observedAt": "2026-08-27 11:04:12" }
+  ],
+  "rows": [ { "rowNumber": 1, "certainty": 95 } ]
+}
+```
+
+`drawers` feeds the OLED (exact labels). `rows` feeds the 8x8 matrix, already
+collapsed so that several matching drawers in one row produce a single entry at the
+highest confidence. `confidence` is null when the tool is known from manual entry but
+has never been observed by the camera.
+
+Not found returns `{"found": false, "message": "Tool not found."}` with HTTP 200 -
+a lookup that matched nothing is a successful lookup, not an error.
+
+### Planned Endpoints
+
+**Status: Planned** - specified below but not implemented. `identify` and
+`identify-return` are the voice and vision flows described in Features 2 and 3; both
+are blocked on hardware, so neither has been built.
 
 ```
-GET    /api/health              - Health check
-POST   /api/sensors             - Store sensor data
-GET    /api/sensors/:id         - Get specific sensor reading
-GET    /api/sensors/device/:id  - Get all readings for a device
-DELETE /api/sensors/:id         - Delete sensor reading
+POST   /api/tools/identify         - Identify tool from voice query
+POST   /api/tools/identify-return  - Identify tool from image (return detection)
+GET    /api/tools/:id              - Get tool details
+GET    /api/tools/search           - Search tools by name/category
+PUT    /api/tools/:id              - Update tool information
+DELETE /api/tools/:id              - Remove tool from inventory
+GET    /api/config                 - Get system configuration
+POST   /api/config/keyword         - Update wake keyword
 ```
 
-### Tool Management Endpoints
-
-```
-POST   /api/tools/identify      - Identify tool from voice query
-POST   /api/tools/identify-return - Identify tool from image (return detection)
-GET    /api/tools/:id           - Get tool details
-GET    /api/tools/drawer/:id    - Get all tools in a specific drawer
-POST   /api/tools               - Add new tool to inventory
-PUT    /api/tools/:id           - Update tool information
-DELETE /api/tools/:id           - Remove tool from inventory
-GET    /api/tools/search        - Search tools by name/category
-POST   /api/config/keyword      - Update wake keyword configuration
-GET    /api/config              - Get system configuration
-```
-
-### Request/Response Formats
-
-**POST /api/sensors**
+**POST /api/tools/identify** (planned)
 ```json
 {
   "device_id": "xiao-001",
-  "sensor_type": "imu|camera|microphone",
   "timestamp": 1234567890,
-  "data": "base64-encoded-data"
+  "query": "phillips screwdriver"
 }
 ```
 
-**Response:**
-```json
-{
-  "success": true,
-  "id": 123,
-  "message": "Sensor data stored"
-}
-```
-
-**POST /api/tools/identify** (Tool drawer request)
-```json
-{
-  "device_id": "xiao-001",
-  "timestamp": 1234567890,
-  "query": "phillips screwdriver",
-  "audio_url": "optional-s3-url"
-}
-```
-
-**Response:**
+Response, where `row_number` drives the indicator and `drawer_id` identifies the exact
+drawer for logging:
 ```json
 {
   "success": true,
   "found": true,
-  "tool_name": "Phillips Screwdriver #2",
+  "tool_name": "Phillips Screwdriver",
   "drawers": [
-    { "drawer_id": 3, "certainty": 95 },
-    { "drawer_id": 7, "certainty": 60 }
+    { "drawer_id": 3, "row_number": 1, "certainty": 95 },
+    { "drawer_id": 7, "row_number": 4, "certainty": 60 }
   ]
 }
 ```
 
-**POST /api/tools/identify-return** (Tool return detection)
+**POST /api/tools/identify-return** (planned)
 ```json
 {
   "device_id": "xiao-001",
@@ -319,25 +417,46 @@ GET    /api/config              - Get system configuration
 }
 ```
 
-**Response:**
 ```json
 {
   "success": true,
   "tool_identified": true,
-  "tool_name": "Phillips Screwdriver #2",
-  "tool_id": "tool-12345",
+  "tool_name": "Phillips Screwdriver",
   "drawer_id": 5,
   "action": "returned",
   "confidence": 88
 }
 ```
 
+## Dashboard
+
+**Status: Implemented** - `api/public/index.html`, a single self-contained page with
+inline CSS and JS. No build step, no framework, no dependencies.
+
+This is the primary way drawers and tools are managed today, and it is how the system
+is usable at all while the firmware is unfinished. Four panels:
+
+| Panel | Backed by |
+|---|---|
+| Inventory Overview | `GET /api/drawers` - counts and summary |
+| Toolbox Inventory | `GET /api/drawers`, `POST /api/drawers`, `POST /api/drawers/:id/tools` |
+| Transcription Settings | `GET`/`PUT /api/settings/transcription`, `POST .../test` |
+| Recent Requests | `GET /api/logs?limit=40` |
+
+It does not call `/api/tools/lookup`, `/api/tools/assign`, or
+`/api/vision/observations` - those exist for the firmware.
+
+Because the page is served from the same origin as the API, no CORS configuration is
+needed. Keep it that way unless a separate front end is introduced.
+
 ## Authentication & Authorization
 
 **Decision (MVP)**: No authentication. The XIAO ESP32S3 and API server are assumed to be on a trusted local network (home LAN), with no direct internet exposure. Revisit if the API is ever exposed beyond the LAN (e.g., remote dashboard access).
 
-- [ ] Add CORS configuration (only if a browser-based dashboard on a different origin is added)
-- [ ] Revisit auth if network trust model changes
+- CORS is not needed: the dashboard is served from the same origin as the API. Add it
+  only if a front end moves to a different origin.
+- [ ] Revisit auth if the network trust model changes, or if the Pi is ever reachable
+  from outside the LAN
 
 ## Error Handling
 
@@ -361,13 +480,26 @@ All errors should return consistent format:
 
 ## Configuration
 
-Environment variables (use .env file):
-```
-PORT=3000
-DATABASE_PATH=./data/smarttoolbox.sqlite
-NODE_ENV=development|production
-LOG_LEVEL=debug|info|warn|error
-```
+Settings split in two by lifetime. Deploy-time values come from the environment;
+anything a user can change at runtime lives in the `config` table so it survives a
+redeploy and can be edited from the dashboard.
+
+**Environment variables** (read via `Bun.env`):
+
+| Variable | Default | Used by |
+|---|---|---|
+| `PORT` | `3000` | `index.ts` |
+| `SERIAL_DEVICE` | `/dev/ttyACM0` on Linux, otherwise unset | `index.ts`. When unset, the serial listener does not start - this is why the server runs fine on Windows with no XIAO attached |
+| `OPENAI_API_KEY` | unset | Optional OpenAI transcription fallback |
+| `NODE_ENV` | unset | Set to `production` by the systemd unit |
+
+**Runtime settings** (`config` table): `transcription_provider`,
+`transcription_nas_url`.
+
+The database path is **not** configurable. `db.ts` hardcodes `<cwd>/data/smarttoolbox.sqlite`
+and creates the directory if missing, so the server must be started from `api/` (or
+from `~/smarttoolbox/` on the Pi, which mirrors it). `DATABASE_PATH` and `LOG_LEVEL`
+were specified here previously but were never read by any code.
 
 ## Deployment
 
@@ -377,6 +509,40 @@ cd api
 bun install
 bun run start
 ```
+
+The server starts without a XIAO attached: `SERIAL_DEVICE` is unset off Linux, so the
+serial listener is skipped and only HTTP runs. The dashboard is then at
+`http://localhost:3000`.
+
+### Syncing to the Pi from Windows
+
+`api/sync.ps1` is the deploy path. It is tracked in git and resolves all paths from its
+own location, so it works from any clone.
+
+```powershell
+cd api
+.\sync.ps1                    # push code, restart the service
+.\sync.ps1 -SetupKey          # one-time: install the deploy public key on the Pi
+.\sync.ps1 -InstallService    # also install/enable the systemd unit
+.\sync.ps1 -Status            # service status plus the tail of both logs
+.\sync.ps1 -PiHost user@host  # override the target Pi
+```
+
+What it does, so the flow can be reproduced by hand or from another OS:
+
+1. Ensures an ed25519 deploy key exists at `~/.ssh/smarttoolbox_pi_ed25519`, creating
+   one if needed. A dedicated key keeps syncs passwordless without depending on your
+   default SSH identity.
+2. `scp -r` of `package.json`, `tsconfig.json`, `src/`, `public/`, `scripts/` to
+   `~/smarttoolbox/` on the Pi. Missing paths are skipped, since git does not track
+   empty directories.
+3. Optionally installs `api/deploy/smarttoolbox.service` to
+   `/etc/systemd/system/` and enables it.
+4. Restarts the `smarttoolbox` service, falling back to a bare `bun run start` if the
+   unit is not installed.
+
+Note it does **not** sync `bun.lock` or `node_modules`; run `bun install` on the Pi
+when dependencies change.
 
 ### Raspberry Pi SSH Access
 
@@ -453,7 +619,7 @@ ssh -i "$env:USERPROFILE\.ssh\smarttoolbox_pi_ed25519" shields@192.168.50.30
 - **Built-in Sensors**: None assumed. Vision, IMU, and microphone hardware are external peripherals.
 
 **Vision Hardware**: Seeed Grove Vision AI Module (V2), SKU 101021112, + OV5647 Camera
-- **Connection**: Connects to the XIAO ESP32S3 over I2C; physical expansion-header compatibility must be verified before stacking it.
+- **Connection**: Stacked on the XIAO ESP32S3 expansion header, communicating over I2C. **Verified on hardware 2026-08-27** - the link is up. This also means the header is occupied; see the Open Hardware Question under Pin Mappings.
 - **Onboard MCU**: Himax WiseEye2 (capable of on-device ML inference)
 - **Storage**: 32GB microSD card on the module itself
 - **Identification Method (default)**: On-device inference on the WiseEye2 MCU via a model deployed through **SenseCraft AI** (no-code; supports MobileNet V1/V2, EfficientNet-lite, YOLOv5/v8). Only inference results (label/confidence) are read by the Xiao — Seeed's hardware doesn't support reading both a live frame and results simultaneously over the link. Cloud vision model fallback (e.g., Claude, GPT-4o) remains an option if on-device accuracy is insufficient, but requires pulling raw frames a different way (e.g., the module's own SD card or Type-C port) since they aren't available over the I2C results link.
@@ -494,10 +660,13 @@ ssh -i "$env:USERPROFILE\.ssh\smarttoolbox_pi_ed25519" shields@192.168.50.30
 
 ### Vision: Grove Vision AI Module (V2) + OV5647 Camera
 - **Resolution**: OV5647, up to 5MP (2592x1944)
-- **Connection**: I2C connection to the XIAO ESP32S3; physical stacking remains to be verified.
+- **Connection**: I2C, stacked on the XIAO expansion header. Verified 2026-08-27.
 - **Interface**: I2C (SCL, SDA, VCC 3.3V, GND) — confirmed via Seeed documentation
 - **Use Cases**: Tool identification (voice-requested lookup context and drawer-return detection)
 - **Identification Method (default)**: On-device inference on the module's WiseEye2 MCU via a SenseCraft AI-deployed model (send only tool name/confidence to the API). Cloud vision model fallback (e.g., Claude, GPT-4o) if needed — see Feature 3.
+- **Model status**: **none deployed.** The module is connected and responds, but no
+  model trained on the actual tools has been flashed to it, so it produces no useful
+  labels. This is the next firmware milestone and the blocker for Feature 3.
 - **Library/SDK**: `Seeed_Arduino_SSCMA` (Arduino library for I2C communication with the module)
 
 ### IMU (External, TBD)
@@ -553,36 +722,62 @@ ssh -i "$env:USERPROFILE\.ssh\smarttoolbox_pi_ed25519" shields@192.168.50.30
 
 ## Pin Mappings
 
-### XIAO ESP32S3 Pin Assignments
+**Status: Partial** - the XIAO's own pins are confirmed on hardware. Peripherals that
+are not yet wired have no pin assignment, and none is invented here.
+
+### Confirmed
+
 ```cpp
-// Confirm pin assignments against the physical XIAO ESP32S3 wiring before use.
-#define LED_PIN           TBD
-#define VISION_I2C_SDA    TBD
-#define VISION_I2C_SCL    TBD
-#define IMU_I2C_SDA       TBD
-#define IMU_I2C_SCL       TBD
-#define MIC_DATA          TBD
-#define MIC_CLK           TBD
+// Onboard user LED. Active-low: LOW turns it ON, HIGH turns it OFF.
+// Verified on hardware; see .github/instructions/xiao-esp32s3-firmware.instructions.md
+#define LED_PIN           LED_BUILTIN   // GPIO21 on the XIAO_ESP32S3 board definition
 
-// Grove Extension Board connections (separate from the Grove Vision AI Module)
-#define GROVE_I2C_SDA     TBD   // Grove I2C data (for display, sensors)
-#define GROVE_I2C_SCL     TBD   // Grove I2C clock
-#define PIR_SENSOR_PIN    TBD   // Grove PIR sensor digital input
-
-// Row Indicator LED Control (one strip per ROW, not per drawer; 6 rows total)
-#define ROW_LED_1         TBD   // Row 1 LED data pin (covers 3 drawers)
-#define ROW_LED_2         TBD   // Row 2 LED data pin
-#define ROW_LED_3         TBD   // Row 3 LED data pin
-#define ROW_LED_4         TBD   // Row 4 LED data pin
-#define ROW_LED_5         TBD   // Row 5 LED data pin
-#define ROW_LED_6         TBD   // Row 6 LED data pin
-
-// Optional Drawer Sensors (hall effect or photointerrupters)
-#define DRAWER_SENSOR_1   TBD   // First drawer open/close sensor
-#define DRAWER_SENSOR_2   TBD   // Second drawer sensor
-#define DRAWER_SENSOR_3   TBD   // Third drawer sensor
-// Add more as needed per drawer count (8 drawers across 6 rows)
+// I2C to the Grove Vision AI V2. The module is stacked on the XIAO expansion
+// header rather than cabled to a Grove port, so it sits on the board's default
+// I2C pair and `Wire.begin()` needs no arguments.
+//   SDA = D4, SCL = D5
+// Confirm the GPIO numbers against the Seeed board doc in docs/SOURCES.md before
+// relying on the numeric values rather than the D-labels.
 ```
+
+Touch-capable exposed pads are GPIO1-9 (D0-D5, D8-D10). GPIO0 is the BOOT strapping
+pin and is not usable as a touch input. `RST` and `BOOT` are physical buttons, not
+touch pads.
+
+### Not Yet Assigned
+
+These parts are owned but unwired, because the Vision AI V2 occupies the expansion
+header that would carry their GPIO. Assign pins when the expansion question below is
+resolved - not before.
+
+```cpp
+#define PIR_SENSOR_PIN    TBD   // Grove PIR motion sensor, digital in
+#define BUTTON_PIN        TBD   // Grove Red LED Button, push-to-talk
+#define BUTTON_LED_PIN    TBD   // Same module, status indicator
+#define MIC_DATA          TBD   // No microphone part selected yet
+#define MIC_CLK           TBD
+```
+
+### Deliberately Absent
+
+- **No per-row LED GPIO pins.** Row indication is the I2C 8x8 RGB matrix, addressed
+  over the shared bus. Earlier drafts of this document defined `ROW_LED_1`..`ROW_LED_6`
+  as GPIO data pins; that design was replaced by the matrix and those defines should
+  not reappear. The WS2813 strip, which would need a real GPIO data pin, is deferred.
+- **No per-drawer sensors.** Drawer open/close detection is one of three candidate
+  methods in Feature 3 and no hardware has been chosen.
+
+### Open Hardware Question (blocking)
+
+The Vision AI V2 sits on the XIAO expansion header, which is where the PIR sensor,
+button, and LED strip would otherwise connect. Options not yet evaluated:
+
+1. Use the owned Seeed Expansion Board Base (SKU 103030356) and verify it stacks with
+   the Vision AI V2.
+2. Solder to the XIAO's remaining exposed pads directly.
+3. Move the Vision AI V2 to a Grove cable and free the header.
+
+Features 1 and 3 stay blocked until one is chosen.
 
 ## Communication Protocol
 
@@ -602,10 +797,19 @@ ssh -i "$env:USERPROFILE\.ssh\smarttoolbox_pi_ed25519" shields@192.168.50.30
   - Pi Zero 2 process listens on the serial device and dispatches to the same handlers used for the HTTP API
   - No network discovery needed (mDNS/static IP) since the link is a direct wire, not WiFi
 
-### API Server ↔ Whisper Transcription (NAS)
-- **Method**: HTTP call from the Pi Zero 2 to a self-hosted Whisper server on the local NAS
-- **Example**: `http://192.168.50.10:9000` (Swagger docs at `/docs`) — stored as `transcription_service_url` in the `config` table, not hardcoded
-- **Timeout/Retry**: 5-second timeout, 2 retries (per Feature 2 spec)
+### API Server ↔ Transcription
+
+**Status: Partial** - provider selection, persistence, and the reachability test are
+implemented (`/api/settings/transcription`). Actual audio transcription is not, because
+no audio source exists yet.
+
+- **Default provider**: self-hosted Whisper on the NAS, `http://192.168.50.10:9000`
+  (Swagger docs at `/docs`). Stored in `config` as `transcription_nas_url`.
+- **Fallback provider**: OpenAI, selected by setting `transcription_provider` to
+  `openai`. Requires `OPENAI_API_KEY` in the environment.
+- **Reachability test**: `nas_whisper` probes `<nasUrl>/docs`; `openai` probes
+  `/v1/models` with the configured key. Both use a 5-second timeout.
+- **Timeout/Retry** for real transcription calls: 5-second timeout, 2 retries.
 
 ### Data Format
 Define binary or JSON format for sensor data transmission:
@@ -624,18 +828,19 @@ struct SensorPacket {
 - Use deep sleep between readings
 - Wake on sensor interrupt or timer
 - Monitor battery level
-- Optimize WiFi connection/sleep intervals
-- Target: XX hours/days on battery
+- No Wi-Fi power budgeting needed; the radio stays off in the MVP
+- The XIAO is USB-powered from the Pi in the current design, so battery life is not
+  yet a live constraint. Revisit if the toolbox is ever untethered.
 
 ## Firmware Architecture
 
 ```cpp
 void setup() {
-  // 1. Initialize serial
-  // 2. Initialize sensors (Grove Vision AI, IMU, mic)
-  // 3. Initialize WiFi
-  // 4. Configure power management
-  // 5. Run self-test
+  // 1. Initialize USB serial (115200) and wait for the host
+  // 2. Initialize I2C peripherals (Grove Vision AI V2; OLED and matrix once wired)
+  // 3. Configure power management
+  // 4. Run self-test
+  // 5. Send the device/status boot request to the Pi
 }
 
 void loop() {
@@ -672,14 +877,22 @@ void loop() {
 ## Libraries Required
 
 Add to Arduino Library Manager:
-- [ ] FastLED or Adafruit_NeoPixel (LED control)
-- [ ] ArduinoJson (JSON parsing/encoding of messages sent over USB serial)
-- [ ] Seeed_Arduino_SSCMA (I2C communication with the Grove Vision AI Module V2)
-- [ ] Add others as needed
+- [ ] ArduinoJson - encoding and parsing the NDJSON serial messages. Needed as soon as
+      the sketch sends anything beyond the hardcoded boot request string.
+- [ ] Seeed_Arduino_SSCMA - I2C communication with the Grove Vision AI Module V2.
+      Needed for Feature 3.
+- [ ] U8g2 - the SSD1315 OLED. Needed once the I2C hub is wired.
+- [ ] Grove 8x8 RGB LED Matrix driver library. Needed once the I2C hub is wired.
+- [ ] FastLED or Adafruit_NeoPixel - **not needed.** These are for the deferred WS2813
+      strip only; the matrix is I2C and does not use them.
 
 ## Feature Specifications
 
 ### Feature 1: Wake Mode (Motion-Activated)
+
+**Status: Blocked** - the PIR sensor is owned but has nowhere to connect. See the Open
+Hardware Question under Pin Mappings. The design below is unvalidated: no part of it
+has run on hardware.
 
 **Purpose**: Automatically activate the toolbox when motion is detected, providing illumination and readying the camera for tool identification.
 
@@ -714,6 +927,12 @@ Add to Arduino Library Manager:
 
 ### Feature 2: Tool Drawer Requests (Voice-Activated)
 
+**Status: Blocked** - no microphone hardware has been selected, and the OLED and matrix
+are not wired. The wake-word and Whisper pipeline below is design only; none of it has
+been built or tested. The API half of the flow does exist and works today via
+`GET /api/tools/lookup` and the `tools/lookup` serial endpoint, so the lookup can be
+exercised from the dashboard without any of this.
+
 **Purpose**: Allow users to request tool locations via voice commands, with visual feedback via color-coded LED indicators.
 
 **Hardware Requirements**:
@@ -735,9 +954,21 @@ Add to Arduino Library Manager:
    - Buffer audio in RAM before transmission
 
 3. **Audio-to-Text Conversion**:
-   - **Decision**: Self-hosted Whisper server running on a NAS on the local network (not on the Pi Zero 2 — it doesn't have the RAM to run Whisper itself)
-   - Example: `http://192.168.50.10:9000` (Swagger docs at `/docs`); stored as `transcription_service_url` in the `config` table so it can change without a redeploy
-   - Include timeout and retry logic (5-second timeout, 2 retries)
+   - **Decision**: two providers, selectable at runtime. Self-hosted Whisper on the NAS
+     is the default; OpenAI is a fallback for when the NAS is down or its accuracy is
+     not good enough. Whisper does not run on the Pi Zero 2 itself - 512MB is not
+     enough RAM.
+   - Default: `http://192.168.50.10:9000` (Swagger docs at `/docs`)
+   - Stored in the `config` table as `transcription_provider` (`nas_whisper` |
+     `openai`) and `transcription_nas_url`, so both can change without a redeploy.
+     Configurable from the dashboard's Transcription Settings panel.
+   - The OpenAI path requires `OPENAI_API_KEY` in the environment. The API reports
+     whether it is present as `openaiApiKeyConfigured` but never returns the key.
+   - **Tradeoff to keep in mind**: `nas_whisper` keeps audio on the LAN and costs
+     nothing but needs the NAS up; `openai` is more accurate but sends audio off the
+     network. Default to `nas_whisper` for anything routine.
+   - Include timeout and retry logic (5-second timeout, 2 retries). The reachability
+     probe in `POST /api/settings/transcription/test` already uses a 5-second timeout.
 
 4. **API Request**:
    - Send transcribed text to API endpoint: `POST /api/tools/identify`
@@ -812,6 +1043,12 @@ Add to Arduino Library Manager:
 ---
 
 ### Feature 3: Watch for Tool Returns
+
+**Status: Blocked** - the Vision AI V2 is connected and the I2C link works, but **no
+SenseCraft model is deployed**, so there is nothing to detect. Deploying a model
+trained on the actual tools is the single next step that unblocks this feature. The
+API side is ready: `POST /api/vision/observations` and the `vision/observe` serial
+endpoint both accept and store detections today.
 
 **Purpose**: Automatically detect when tools are returned to drawers and log the event for inventory tracking.
 
@@ -893,6 +1130,170 @@ Add to Arduino Library Manager:
 
 ---
 
+### Feature 4: Firmware OTA Updates (Wi-Fi Over-The-Air)
+
+**Status: Planned** - Design complete; implementation to begin Phase 1 (estimated 3-4 weeks).
+This feature enables wireless firmware updates via Wi-Fi, eliminating manual USB cable 
+management after initial deployment.
+
+**Purpose**: Enable secure, remote firmware updates for the XIAO ESP32S3 without requiring 
+physical access or manual re-flashing.
+
+**Architecture Overview**:
+
+1. **Device-side (XIAO)**:
+   - Wi-Fi credentials stored in ESP32 NVS (Non-Volatile Storage)
+   - Initial setup via AP (Access Point) mode on first boot
+   - Periodic update checks (hourly default) via serial to Pi
+   - Built-in rollback via ESP32 bootloader on failure
+
+2. **Server-side (Pi API)**:
+   - Firmware version management and binary hosting
+   - Update checks via new serial endpoints
+   - Binary serving with checksum validation
+   - OTA event audit trail
+
+3. **Integration**:
+   - Extend serial protocol with `device/ota-check`, `device/ota-confirm`, `device/ota-reset` endpoints
+   - Add firmware version, history, and status tables to SQLite
+   - Dashboard UI for checking updates and viewing history
+
+**Hardware Requirements**:
+- Wi-Fi capability (already on XIAO ESP32S3)
+- 3.5MB free flash space for OTA partition (8MB XIAO has this)
+
+**Firmware Bootstrap Process**:
+1. **First boot**: Check for Wi-Fi credentials in NVS
+2. **If missing**: Enter AP mode (SSID: `SmartToolbox-{MAC}`, password: `12345678`)
+3. **AP mode**: Host simple HTTP form on port 80 to accept credentials
+4. **On save**: Reboot and attempt Wi-Fi connection
+5. **On failure**: Retry 3 times with backoff, then return to AP mode
+6. **On success**: Begin hourly update checks via serial
+
+**Update Flow**:
+1. Device sends `device/ota-check` request with current version via serial
+2. Pi queries latest available version from database
+3. Pi responds with version + download URL + SHA256 checksum (if update available)
+4. Device downloads firmware binary over Wi-Fi (streaming to avoid RAM exhaustion)
+5. Device validates checksum during download
+6. Device flashes to OTA partition using Arduino `Update` class
+7. Device reboots with new firmware
+8. Device sends `device/ota-confirm` within 30 seconds to complete update
+9. If no confirmation, bootloader auto-rollback to previous partition on next boot
+
+**Configuration**:
+- OTA check interval: configurable via serial (default 3600 seconds / 1 hour)
+- Automatic update: opt-in via serial config
+- Update can be triggered manually from dashboard or via serial `device/ota-reset` command
+
+**Safety Features**:
+- Checksum validation mandatory before flash (SHA256)
+- Bootloader-level rollback (automatic on crash, explicit via serial)
+- Explicit confirmation required after update (proves device booted successfully)
+- Previous version stored in NVS for easy rollback via dashboard
+- Exponential backoff on failures (prevents server spam)
+- Device MAC address included in check requests (audit trail)
+
+**Error Handling**:
+- Download interrupted: retry with exponential backoff (max 3 attempts)
+- Checksum mismatch: abort, retry later
+- Wi-Fi disconnected: queue check, retry next check cycle
+- Insufficient storage: report via serial, abort
+- Server unreachable: exponential backoff (10min → 20min → 1hr cap)
+
+**Dependencies**:
+- WiFi (ESP32 built-in)
+- Update (ESP32 built-in)
+- WiFiClientSecure (ESP32 built-in)
+- Preferences (ESP32 built-in) - wrapper around NVS
+- ArduinoJson (already required)
+
+**Implementation Files**:
+- `firmware/smarttoolbox/WiFiManager.h` - NVS storage, AP mode, Wi-Fi connection
+- `firmware/smarttoolbox/OTAManager.h` - Version checking, download, flash, rollback
+- `api/src/serialProtocol.ts` - New OTA endpoints
+- `api/src/index.ts` - OTA request handlers and binary serving
+- `api/src/db.ts` - New firmware_versions and device_ota_history tables
+
+**API Endpoints (New)**:
+```
+GET  /api/firmware/latest          - Latest firmware version + metadata
+GET  /api/firmware/v{version}.bin  - Download firmware binary (validated by device)
+POST /api/device/ota-check         - Check for updates (serial endpoint)
+POST /api/device/ota-confirm       - Confirm update success (serial endpoint)
+POST /api/device/ota-reset         - Reset Wi-Fi config (serial endpoint)
+GET  /api/device/ota-status        - Current device OTA status (HTTP endpoint)
+GET  /api/firmware/history         - OTA event history (HTTP endpoint)
+```
+
+**Serial Protocol Extensions**:
+```json
+// Check for update (device → Pi)
+{"id":"ota-1","type":"request","endpoint":"device/ota-check","body":{"firmwareVersion":"1.2.3","macAddress":"...","wifiConnected":true}}
+
+// Response: update available
+{"id":"ota-1","success":true,"body":{"available":true,"version":"1.3.0","url":"http://192.168.50.30:3000/api/firmware/v1.3.0.bin","size":524288,"checksum":"sha256:abc123..."}}
+
+// Confirm update (device → Pi)
+{"id":"ota-2","type":"request","endpoint":"device/ota-confirm","body":{"previousVersion":"1.2.3","newVersion":"1.3.0"}}
+
+// Response
+{"id":"ota-2","success":true,"body":{"acknowledged":true}}
+```
+
+**Database Additions**:
+```sql
+-- New tables for OTA system
+CREATE TABLE firmware_versions (
+  id INTEGER PRIMARY KEY,
+  version TEXT NOT NULL UNIQUE,
+  release_date TEXT NOT NULL,
+  release_notes TEXT,
+  bin_path TEXT NOT NULL,
+  checksum TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE device_ota_history (
+  id INTEGER PRIMARY KEY,
+  device_id TEXT,
+  from_version TEXT,
+  to_version TEXT,
+  status TEXT CHECK (status IN ('pending','checking','downloading','flashing','success','rollback','failed')),
+  error_message TEXT,
+  timestamp TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE device_wifi_config (
+  device_id TEXT PRIMARY KEY,
+  ssid TEXT,
+  configured_at TEXT,
+  last_connected TEXT,
+  ip_address TEXT
+);
+```
+
+**Dashboard Features**:
+- Display current firmware version
+- "Check for Updates" button (manual trigger)
+- Update history table (timestamp, version, status)
+- Rollback button (if previous version available)
+- Wi-Fi connection status indicator
+- OTA status live indicator (idle, checking, downloading, flashing)
+
+**Implementation Phases**:
+- **Phase 1 (Week 1)**: Core infrastructure (WiFiManager, OTAManager, serial endpoints)
+- **Phase 2 (Week 1-2)**: Device-side implementation (AP mode, update loop, Wi-Fi connection)
+- **Phase 3 (Week 2)**: Server-side implementation (binary hosting, version management)
+- **Phase 4 (Week 2)**: Rollback & safety (bootloader verification, confirm flow)
+- **Phase 5 (Week 3)**: Dashboard UI (status display, update triggers, history)
+- **Phase 6 (Week 3)**: Testing & documentation
+
+**Estimated Effort**: 3-4 weeks (split across phases 1-3 for MVP; phases 4-6 follow)
+
+---
+
 ## Firmware State Machine
 
 To manage the complex interactions between features, implement a state machine:
@@ -932,14 +1333,15 @@ const unsigned long WAKE_TIMEOUT = 600000; // 10 minutes in ms
 
 ```cpp
 void setup() {
-  // 1. Initialize serial (115200 baud)
-  // 2. Initialize sensors (camera, IMU, mic, PIR)
-  // 3. Initialize LED strips (row LEDs, camera LEDs)
-  // 4. Initialize network (WiFi)
-  // 5. Load configuration from EEPROM/flash
+  // 1. Initialize USB serial (115200 baud)
+  // 2. Initialize I2C bus and peripherals (Vision AI V2, OLED, 8x8 matrix)
+  // 3. Initialize camera illumination LED
+  // 4. Initialize Wi-Fi (load credentials from NVS, connect or start AP mode)
+  // 5. Load configuration from NVS/flash
   // 6. Configure interrupts (PIR motion detection)
   // 7. Run self-test (verify all hardware)
-  // 8. Enter idle state
+  // 8. Send device/status to Pi over serial
+  // 9. Enter idle state (OTA checks run hourly in loop)
 }
 
 void loop() {
@@ -958,9 +1360,14 @@ void loop() {
     
     case STATE_ACTIVE:
       // Monitor for keyword detection
+      // Check for OTA updates (hourly)
       // Check for timeout
       if (microphoneHasData()) {
         checkForKeyword();
+      }
+      if (wifiConnected && millis() - lastOTACheck > OTA_CHECK_INTERVAL) {
+        checkForUpdates();  // Sends device/ota-check via serial
+        lastOTACheck = millis();
       }
       if (millis() - lastActivityTime > WAKE_TIMEOUT) {
         shutdownWakeMode();
@@ -1032,16 +1439,21 @@ Client Applications (Web Dashboard, Mobile App, etc.)
 ```
 
 **Communication Paths**:
-1. **XIAO ESP32S3 → Pi Zero 2**: Tool queries, images, audio, telemetry (USB serial)
+1. **XIAO ESP32S3 → Pi Zero 2**: Tool queries, detections, telemetry (USB serial)
 2. **Pi Zero 2 → XIAO ESP32S3**: Tool locations, commands, configuration (USB serial response)
-3. **XIAO ESP32S3**: Controls LEDs directly based on API responses
-4. **Web Clients → Pi Zero 2**: Dashboard access, manual tool management (HTTP)
+3. **XIAO ESP32S3**: Drives the OLED and matrix directly from API responses
+4. **Dashboard → Pi Zero 2**: Drawer and tool management, settings, request log (HTTP,
+   same origin). This is the only path fully working end to end today.
+
+The serial and HTTP paths share handlers deliberately: `handleSerialRequest` in
+`api/src/index.ts` calls the same `db.ts` functions the HTTP routes do, so a lookup
+behaves identically whether it arrives over the wire or the network.
 
 ### Row-Aware Inventory Lookup
 
 - A drawer has an exact display `label` (such as `1A`, `1B`, `1C`, or `3`) and a `row_number`.
 - The Pi keeps the latest observation for each detected tool type and drawer, including quantity, confidence, model version, and timestamp.
-- `GET /api/tools/lookup?query=needle-nose%20pliers` returns exact `drawers` for the OLED and a `rows` list collapsed by `row_number` for the matrix. When several drawers in one row match, the row takes the highest available confidence.
+- `GET /api/tools/lookup?query=needle-nose%20pliers` returns exact `drawers` for the OLED and a `rows` list collapsed by `row_number` for the matrix. When several drawers in one row match, the row takes the highest available confidence. The `tools/lookup` serial endpoint returns the same payload.
 - `POST /api/vision/observations` accepts a `drawerId`, `modelVersion`, and `detections` array. Each detection contains `label`, `confidence` (0-100), and optional `quantity`.
 - Tool identity is by type, not by individual physical instance. Multiple detections of a type in one drawer are represented by quantity.
 
@@ -1064,25 +1476,30 @@ Use consistent data formats across both projects:
 
 # Development Priorities
 
-## Phase 1: Foundation
-- [ ] Set up basic API with health endpoint
-- [ ] Create database schema and migrations
-- [ ] Test basic sensor initialization on Xiao
-- [ ] Establish serial communication
+## Phase 1: Foundation - complete
+- [x] Set up basic API with health endpoint
+- [x] Create database schema
+- [x] Test basic hardware initialization on the XIAO (LED + touch)
+- [x] Establish serial communication (`device/status` handshake)
 
-## Phase 2: Core Features
-- [ ] Implement sensor data storage endpoints
-- [ ] Add IMU data capture in firmware
-- [ ] Establish Grove Vision AI ↔ Xiao link over I2C (`Seeed_Arduino_SSCMA`)
-- [ ] Implement USB serial data transmission pipeline
+## Phase 2: Core Features - in progress
+- [x] Implement drawer and tool storage endpoints
+- [x] Implement the row-aware lookup (`/api/tools/lookup`, `tools/lookup`)
+- [x] Implement observation storage (`/api/vision/observations`, `vision/observe`)
+- [x] Establish the Grove Vision AI to XIAO link over I2C (`Seeed_Arduino_SSCMA`)
+- [x] Build the management dashboard
+- [x] Serial reconnect (`api/src/serialTransport.ts` retries with backoff up to 5s, unlimited attempts)
+- [ ] **Next: deploy a SenseCraft model** so observations carry real labels
+- [ ] Wire the I2C hub, OLED, and 8x8 matrix
+- [ ] Make the firmware send real `vision/observe` requests
 
 ## Phase 3: Advanced Features
-- [ ] Add tool identification via on-device SenseCraft AI model (cloud vision fallback if needed)
-- [ ] Implement microphone recording
+- [ ] Resolve the GPIO expansion question (unblocks PIR and button)
+- [ ] Select microphone hardware
+- [ ] Implement microphone recording and the chunked audio transfer protocol
 - [ ] Optimize power consumption
 
 ## Phase 4: Polish
-- [ ] Add web dashboard for monitoring
 - [ ] Implement error recovery mechanisms
 - [ ] Performance testing and optimization
 - [ ] Documentation and deployment guides

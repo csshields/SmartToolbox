@@ -9,7 +9,12 @@ logs/
 
 dist/
 build/
+build-esp32s3/
 coverage/
+
+# Vendor datasheets are indexed in docs/SOURCES.md and re-downloadable from
+# the vendor URLs recorded there; the PDFs themselves stay out of the repo.
+docs/*.pdf
 
 *.log
 npm-debug.log*
@@ -19,4 +24,5 @@ yarn-error.log*
 .DS_Store
 Thumbs.db
 
-sync.ps1
+# Deploy-time secrets, if any are ever added. sync.ps1 itself is tracked.
+.deploy.env
