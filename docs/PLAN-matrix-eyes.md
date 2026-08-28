@@ -1,7 +1,7 @@
 ---
 title: Plan of Attack - LED Matrix Idle Eyes
 scope: implementation plan, written 2026-08-27, revised 2026-08-27 against the real driver
-status: code written, unverified - matrix hardware is not wired
+status: done - wired, running on hardware
 ---
 
 # Plan: idle "eyes" on the 8x8 matrix
@@ -12,8 +12,19 @@ status: code written, unverified - matrix hardware is not wired
 the spec's row-indicator behaviour; the face returns once the result's display
 duration ends.
 
-The matrix is **not wired**, so none of this has run. The code exists and compiles,
-and it is inert without the hardware - see Verification below.
+**Done 2026-08-27.** Wired, detected, and running. What the checklist below actually
+caught: the panel is mounted a quarter turn out, so the firmware now sets
+`DISPLAY_ROTATE_270` on every boot - that setting lives on the panel itself and
+survives power cycles, so leaving it unset meant rendering at whatever rotation it had
+last been left in.
+
+Two things changed after seeing it run. The mouth sits a row lower than first drawn.
+And a lookup now shows the lit row for 2s *then* the row digit for 2s: a single lit
+row and the digit 1 look alike, so showing both in turn keeps the spatial cue and
+removes the ambiguity. The digit is drawn into our own frame buffer rather than via
+the driver's `displayNumber()`, because that renders on the device where orientation
+is applied separately - a built-in digit and the face would not have agreed on which
+way is up.
 
 ### What already existed (an earlier draft of this plan got this wrong)
 

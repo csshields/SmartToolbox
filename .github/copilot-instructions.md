@@ -78,8 +78,8 @@ Updated 2026-08-27. This table is the single place to check what is physically w
 | Grove Vision AI V2 link | Connected | Stacked on the expansion header; I2C link up |
 | SenseCraft model | Not deployed | **Blocks Feature 3.** Nothing to detect until a model is trained and flashed |
 | OLED (Grove SSD1315 0.96") | Verified | On the I2C connector, GPIO5/GPIO6. Driven with U8g2 (`U8G2_SSD1306_128X64_NONAME_F_HW_I2C`); the SSD1315 is SSD1306-compatible. Shows lookup status and the exact drawer label |
-| Grove I2C Hub + 8x8 matrix | Not wired | Firmware support is written but **has never run**: `matrixReady` comes from a VID check and everything no-ops without it. Blocks the row-indicator half of Feature 2. See `docs/PLAN-matrix-eyes.md` for the first-power-up checklist |
-| Microphone | Not selected | **Blocks Feature 2.** No part chosen |
+| Grove 8x8 matrix | Verified | Wired and working. Shows an idle purple face, and on a lookup the lit row for 2s then the row digit for 2s. Mounted a quarter turn out, so the firmware sets `DISPLAY_ROTATE_270` every boot - that setting lives on the panel and survives power cycles |
+| Microphone | On board, unused | The XIAO's own PDM mic. No sketch has initialised it yet, so it is unproven in this project - bring it up alone before building on it. See `docs/PLAN-voice-lookup.md` |
 | PIR motion sensor | Deferred | **Blocks Feature 1.** Needs GPIO the Vision AI V2 stack now occupies |
 
 ### API Project
@@ -733,12 +733,18 @@ ssh -i "$env:USERPROFILE\.ssh\smarttoolbox_pi_ed25519" shields@192.168.50.30
 - **Use Cases**: Motion detection, orientation tracking
 - **Library**: TBD
 
-### Microphone (External, TBD)
-- **Type**: Digital microphone
-- **Interface**: PDM (Pulse Density Modulation)
-- **Sample Rate**: Configurable (8kHz - 16kHz typical)
-- **Use Cases**: Audio recording, sound detection, keyword detection
-- **Library**: TBD
+### Microphone (On board)
+- **Type**: The XIAO's own digital microphone. No external part is needed or planned.
+- **Interface**: PDM (Pulse Density Modulation). Confirm the clock and data GPIO numbers
+  against the Seeed board doc and record them in `docs/SOURCES.md` before hard-coding.
+- **Sample Rate**: 16 kHz mono, 16-bit - what Whisper wants; higher buys nothing.
+- **Library**: `ESP_I2S.h` from the installed esp32 core (3.3.11), *not* the core-2.x
+  `I2S.h` that Seeed's published examples use. `I2SClass::recordWAV(seconds, &size)`
+  returns a malloc'd buffer with a WAV header already attached.
+- **Status**: never initialised by this project's firmware. Bring it up in isolation
+  first - an uninitialised mic and a mic returning silence are indistinguishable
+  everywhere else in this system.
+- **Use Cases**: push-to-talk tool lookup (Feature 2). A wake word is out of scope.
 
 ### PIR Motion Sensor (Grove PIR Sensor, SKU 101020020)
 - **Type**: Passive Infrared Motion Detector
@@ -849,7 +855,7 @@ Features 1 and 3 stay blocked until one is chosen.
   - `vision/observe`: Xiao sends `drawerLabel`, model version, and a `detections` array of tool-type labels, confidence, quantity, and optional bounding boxes.
 - **Successful response**: `{"id":"req-001","success":true,"body":{...}}`
 - **Error response**: `{"id":"req-001","success":false,"error":{"code":"INVALID_REQUEST","message":"drawer_label is required"}}`
-- **Audio**: Do not embed multi-second WAV data in a JSON line. Push-to-talk audio will use a separate chunked transfer protocol after ordinary serial requests are working.
+- **Audio**: **Status: Planned.** Push-to-talk audio is carried on this same link as a single base64 line on a `voice/audio` request - roughly 171 KB for four seconds of 16 kHz 16-bit mono. An earlier draft of this document called for a separate chunked transfer protocol; that was reconsidered and rejected in `docs/PLAN-voice-lookup.md`, which records why (a chunked protocol needs reassembly state, partial-upload timeouts, and a resync path, where a single line needs only a retry - and the retry is pressing the button again). Raw binary framing was also rejected: the transport splits on newlines and raw PCM is full of `0x0A`. This means `SerialLineBuffer` must grow a maximum line length, and the `[serial-debug]` log must truncate.
 - **Connectivity**:
   - XIAO ESP32S3 writes/reads framed JSON messages over its USB serial connection
   - Pi Zero 2 process listens on the serial device and dispatches to the same handlers used for the HTTP API
@@ -1066,6 +1072,14 @@ are not wired. The wake-word and Whisper pipeline below is design only; none of 
 been built or tested. The API half of the flow does exist and works today via
 `GET /api/tools/lookup` and the `tools/lookup` serial endpoint, so the lookup can be
 exercised from the dashboard without any of this.
+
+`docs/PLAN-voice-lookup.md` is the implementation plan for this feature. It uses the
+XIAO's **on-board PDM microphone**, and the audio travels to the Pi **over the USB serial
+link** as a single base64 line on a new `voice/audio` endpoint - not over Wi-Fi, so the
+radio keeps its one job of OTA updates and the voice path depends on only one device
+being on the network. The plan re-scopes the wake word out in favour of the push-to-talk
+button, and orders the work so the transcript-to-tool matching - the only genuinely hard
+part - is built and tested first, with no hardware.
 
 A **bench harness** for the request half now exists in the firmware: a touch pad (or
 the `lookup <tool name>` serial command) stands in for the microphone and drives the
