@@ -21,6 +21,9 @@ const {
   listDrawers,
   recordDeviceContact,
   recordDrawerObservation,
+  recordDrawerObservations,
+  pruneRequestLogs,
+  recordRequestLog,
   ToolNameConflictError,
 } = await import("./db");
 
@@ -214,18 +217,27 @@ test("a name already in the target drawer is a conflict, not a silent merge", ()
   expect(listDrawers().find((d) => d.id === source.id)?.tools[0]?.id).toBe(tool.id);
 });
 
-// A case variant left behind means the camera's sighting there is still about a
-// real tool, so that drawer keeps its observation.
-test("the source drawer keeps its observation when a same-named tool remains", () => {
-  const source = makeDrawer(22);
-  const target = makeDrawer(23);
-  const moving = addToolToDrawer(source.id, { name: "Punch", quantity: 1 });
-  addToolToDrawer(source.id, { name: "punch", quantity: 1 });
-  recordDrawerObservation({ drawerId: source.id, toolName: "Punch", confidence: 70 });
+// Case-insensitive identity: "Punch" and "punch" are one tool. Adding the
+// variant updates the existing row and keeps the first capitalisation as the
+// display form, rather than creating a second row every read would conflate.
+test("a case variant updates the existing tool rather than adding a second", () => {
+  const drawer = makeDrawer(22);
+  const first = addToolToDrawer(drawer.id, { name: "Punch", quantity: 1 });
+  const second = addToolToDrawer(drawer.id, { name: "punch", quantity: 4 });
 
-  assignToolToDrawer(target.id, { toolId: moving.id });
+  expect(second.id).toBe(first.id);
+  expect(second.name).toBe("Punch");
+  expect(second.quantity).toBe(4);
+  expect(listDrawers().find((d) => d.id === drawer.id)?.tools.length).toBe(1);
+});
 
-  expect(findToolLocations("punch")?.drawers.map((d) => d.drawerId).sort()).toEqual([source.id, target.id].sort());
+test("case variants of a name resolve to the same tool on lookup", () => {
+  const drawer = makeDrawer(23);
+  addToolToDrawer(drawer.id, { name: "Mallet", quantity: 1 });
+
+  for (const spelling of ["Mallet", "mallet", "MALLET"]) {
+    expect(findToolLocations(spelling)?.primaryLocation?.drawerId).toBe(drawer.id);
+  }
 });
 
 test("assignment rejects unknown tool and drawer ids", () => {
@@ -283,4 +295,72 @@ test("a single location is the primary and is not flagged ambiguous", () => {
 
   expect(lookup.primaryLocation?.drawerId).toBe(only.id);
   expect(lookup.hasMultipleLocations).toBe(false);
+});
+
+// A batch whose third detection was invalid used to leave the first two
+// committed and still answer 400, so a retrying client doubled the rows that
+// had already landed.
+test("an invalid detection rolls back the whole batch", () => {
+  const drawer = makeDrawer(31);
+
+  expect(() => recordDrawerObservations([
+    { drawerId: drawer.id, toolName: "Good One", confidence: 90 },
+    { drawerId: drawer.id, toolName: "Good Two", confidence: 80 },
+    { drawerId: drawer.id, toolName: "Bad", confidence: 500 },
+  ])).toThrow("Observation confidence must be between 0 and 100.");
+
+  const written = rawDatabase
+    .query("SELECT COUNT(*) AS n FROM drawer_observations WHERE drawer_id = ?1")
+    .get(drawer.id) as { n: number };
+
+  expect(written.n).toBe(0);
+});
+
+test("an unknown drawer in a batch writes nothing", () => {
+  const drawer = makeDrawer(32);
+
+  expect(() => recordDrawerObservations([
+    { drawerId: drawer.id, toolName: "Fine", confidence: 50 },
+    { drawerId: 999_999, toolName: "Nowhere", confidence: 50 },
+  ])).toThrow("Drawer not found.");
+
+  const written = rawDatabase
+    .query("SELECT COUNT(*) AS n FROM drawer_observations WHERE drawer_id = ?1")
+    .get(drawer.id) as { n: number };
+
+  expect(written.n).toBe(0);
+});
+
+test("a valid batch is written whole", () => {
+  const drawer = makeDrawer(33);
+
+  expect(recordDrawerObservations([
+    { drawerId: drawer.id, toolName: "Alpha", confidence: 90 },
+    { drawerId: drawer.id, toolName: "Beta", confidence: 80 },
+  ])).toBe(2);
+
+  const written = rawDatabase
+    .query("SELECT COUNT(*) AS n FROM drawer_observations WHERE drawer_id = ?1")
+    .get(drawer.id) as { n: number };
+
+  expect(written.n).toBe(2);
+});
+
+test("pruneRequestLogs drops entries past the retention window and keeps the rest", () => {
+  recordRequestLog({ method: "GET", path: "/api/fresh", statusCode: 200, result: "recent" });
+
+  rawDatabase
+    .query("INSERT INTO request_logs (method, path, status_code, result, created_at) VALUES (?1, ?2, ?3, ?4, datetime('now', '-31 days'))")
+    .run("GET", "/api/ancient", 200, "old");
+
+  const before = rawDatabase.query("SELECT COUNT(*) AS n FROM request_logs WHERE path = '/api/ancient'").get() as { n: number };
+  expect(before.n).toBe(1);
+
+  pruneRequestLogs();
+
+  const ancient = rawDatabase.query("SELECT COUNT(*) AS n FROM request_logs WHERE path = '/api/ancient'").get() as { n: number };
+  const fresh = rawDatabase.query("SELECT COUNT(*) AS n FROM request_logs WHERE path = '/api/fresh'").get() as { n: number };
+
+  expect(ancient.n).toBe(0);
+  expect(fresh.n).toBe(1);
 });

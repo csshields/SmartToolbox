@@ -135,7 +135,7 @@ database.exec(`
     first_seen TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
 
-  CREATE UNIQUE INDEX IF NOT EXISTS idx_tools_drawer_name ON tools(drawer_id, name);
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_tools_drawer_name ON tools(drawer_id, name COLLATE NOCASE);
   CREATE INDEX IF NOT EXISTS idx_request_logs_created_at ON request_logs(created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_observations_tool_drawer ON drawer_observations(tool_name, drawer_id, id DESC);
 `);
@@ -147,6 +147,58 @@ const observationColumns = database.query("PRAGMA table_info(drawer_observations
 // and that history is worth having - it just is not a current location.
 if (!observationColumns.some((column) => column.name === "superseded_at")) {
   database.exec("ALTER TABLE drawer_observations ADD COLUMN superseded_at TEXT");
+}
+
+// Tool names are one identity, case-insensitively: lookups have always compared
+// with COLLATE NOCASE, but the unique index was BINARY, so "Hammer" and "hammer"
+// could sit in one drawer while every read treated them as the same tool. Old
+// databases are merged into that rule once, then the index is swapped.
+const toolIndex = database
+  .query("SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'idx_tools_drawer_name'")
+  .get() as { sql: string | null } | null;
+
+if (toolIndex && toolIndex.sql && !/nocase/i.test(toolIndex.sql)) {
+  // Fold only A-Z. SQLite's NOCASE is ASCII-only, and using toLowerCase() here
+  // would merge pairs the new index would still consider distinct.
+  const foldAscii = (value: string) => value.replace(/[A-Z]/g, (letter) => letter.toLowerCase());
+
+  const mergeCaseDuplicates = database.transaction(() => {
+    const rows = database
+      .query("SELECT id, drawer_id AS drawerId, name, quantity, notes FROM tools ORDER BY id ASC")
+      .all() as Array<{ id: number; drawerId: number; name: string; quantity: number; notes: string }>;
+
+    const groups = new Map<string, typeof rows>();
+
+    for (const row of rows) {
+      const key = JSON.stringify([row.drawerId, foldAscii(row.name)]);
+      groups.set(key, [...(groups.get(key) ?? []), row]);
+    }
+
+    for (const group of groups.values()) {
+      if (group.length < 2) {
+        continue;
+      }
+
+      // The oldest row survives, and its capitalisation becomes the display
+      // form. Quantities add up: they are the same tool counted twice.
+      const [survivor, ...duplicates] = group as [typeof rows[number], ...typeof rows];
+      const quantity = group.reduce((total, row) => total + row.quantity, 0);
+      const notes = survivor.notes.trim() || duplicates.find((row) => row.notes.trim())?.notes || "";
+
+      database.query("UPDATE tools SET quantity = ?2, notes = ?3 WHERE id = ?1").run(survivor.id, quantity, notes);
+
+      for (const duplicate of duplicates) {
+        database.query("DELETE FROM tools WHERE id = ?1").run(duplicate.id);
+      }
+
+      console.log(`[db] merged ${duplicates.length} case-duplicate tool row(s) into "${survivor.name}"`);
+    }
+
+    database.exec("DROP INDEX IF EXISTS idx_tools_drawer_name");
+    database.exec("CREATE UNIQUE INDEX idx_tools_drawer_name ON tools(drawer_id, name COLLATE NOCASE)");
+  });
+
+  mergeCaseDuplicates();
 }
 
 const drawerColumns = database.query("PRAGMA table_info(drawers)").all() as Array<{ name: string }>;
@@ -271,7 +323,7 @@ const supersedeObservationsForTool = database.query(`
 const upsertTool = database.query(`
   INSERT INTO tools (drawer_id, name, quantity, notes)
   VALUES (?1, ?2, ?3, ?4)
-  ON CONFLICT(drawer_id, name)
+  ON CONFLICT(drawer_id, name COLLATE NOCASE)
   DO UPDATE SET
     quantity = excluded.quantity,
     notes = excluded.notes
@@ -280,7 +332,7 @@ const upsertTool = database.query(`
 const selectToolByDrawerAndName = database.query(`
   SELECT id, drawer_id AS drawerId, name, quantity, notes, created_at AS createdAt
   FROM tools
-  WHERE drawer_id = ?1 AND name = ?2
+  WHERE drawer_id = ?1 AND name = ?2 COLLATE NOCASE
 `);
 
 const selectToolByName = database.query(`
@@ -341,6 +393,28 @@ const insertRequestLog = database.query(`
   INSERT INTO request_logs (method, path, tool, drawer_number, status_code, result, details)
   VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
 `);
+
+// request_logs is diagnostics, not an audit trail. Nothing reads it back except
+// the dashboard's Recent Requests panel, which asks for at most 200 rows, so
+// keeping it forever buys nothing and costs steady writes to the Pi's SD card.
+export const REQUEST_LOG_RETENTION_DAYS = 30;
+
+const deleteExpiredRequestLogs = database.query(`
+  DELETE FROM request_logs
+  WHERE created_at < datetime('now', ?1)
+`);
+
+// Pruned from the write path rather than on a timer: no interval to keep alive,
+// nothing to clean up on shutdown, and a server nobody is using does no work.
+const PRUNE_INTERVAL_MS = 60 * 60 * 1000;
+let lastPrunedAt = 0;
+
+export function pruneRequestLogs() {
+  const result = deleteExpiredRequestLogs.run(`-${REQUEST_LOG_RETENTION_DAYS} days`);
+  lastPrunedAt = Date.now();
+
+  return Number(result.changes ?? 0);
+}
 
 const selectRequestLogs = database.query(`
   SELECT id,
@@ -542,8 +616,10 @@ export function assignToolToDrawer(drawerId: number, tool: { toolId: number; qua
   const move = database.transaction(() => {
     updateToolAssignment.run(existingTool.id, drawerId, quantity, notes);
 
-    // Only when nothing of that name is left behind. A case variant still in the
-    // source drawer means the camera's sighting there is still about a real tool.
+    // Defensive. The unique index on (drawer_id, name COLLATE NOCASE) means no
+    // other row of this name can remain in the source drawer, so this is always
+    // true today - but superseding observations for a tool that is still there
+    // would be silent data loss, and the guard costs one indexed lookup.
     const sourceNowEmptyOfThisName = sourceDrawerId !== drawerId
       && !selectOtherToolNamed.get(sourceDrawerId, existingTool.name, existingTool.id);
 
@@ -578,6 +654,14 @@ export function recordRequestLog(log: {
     log.result,
     (log.details ?? "").trim(),
   );
+
+  if (Date.now() - lastPrunedAt > PRUNE_INTERVAL_MS) {
+    const removed = pruneRequestLogs();
+
+    if (removed > 0) {
+      console.log(`[db] pruned ${removed} request log(s) older than ${REQUEST_LOG_RETENTION_DAYS} days`);
+    }
+  }
 }
 
 export function listRequestLogs(limit = 50) {
@@ -670,19 +754,15 @@ export function findToolLocations(toolName: string): ToolLookupResult | null {
   };
 }
 
-export function recordDrawerObservation(observation: {
+export type DrawerObservation = {
   drawerId: number;
   toolName: string;
   quantity?: number;
   confidence: number;
   modelVersion?: string;
-}) {
-  const drawer = selectDrawerById.get(observation.drawerId) as Omit<DrawerRecord, "toolCount" | "tools"> | null;
+};
 
-  if (!drawer) {
-    throw new Error("Drawer not found.");
-  }
-
+function validateObservation(observation: DrawerObservation) {
   const toolName = normalizeName(observation.toolName, "Tool name");
   const quantity = Number.isInteger(observation.quantity) && (observation.quantity as number) > 0
     ? observation.quantity as number
@@ -693,7 +773,50 @@ export function recordDrawerObservation(observation: {
     throw new Error("Observation confidence must be between 0 and 100.");
   }
 
-  insertObservation.run(observation.drawerId, toolName, quantity, confidence, (observation.modelVersion ?? "").trim());
+  return { toolName, quantity, confidence, modelVersion: (observation.modelVersion ?? "").trim() };
+}
+
+// Validates the whole batch before writing any of it, then writes it in one
+// transaction. Doing this per detection meant a batch whose third item was bad
+// left the first two committed and still answered 400 - so the caller saw a
+// failure, retried, and doubled the rows that had already landed.
+export function recordDrawerObservations(observations: DrawerObservation[]) {
+  if (observations.length === 0) {
+    throw new Error("At least one detection is required.");
+  }
+
+  // Drawer ids are checked up front too: a batch naming a drawer that does not
+  // exist should write nothing, not everything before it.
+  for (const observation of observations) {
+    if (!selectDrawerById.get(observation.drawerId)) {
+      throw new Error("Drawer not found.");
+    }
+  }
+
+  const validated = observations.map((observation) => ({
+    drawerId: observation.drawerId,
+    ...validateObservation(observation),
+  }));
+
+  const write = database.transaction(() => {
+    for (const observation of validated) {
+      insertObservation.run(
+        observation.drawerId,
+        observation.toolName,
+        observation.quantity,
+        observation.confidence,
+        observation.modelVersion,
+      );
+    }
+  });
+
+  write();
+
+  return validated.length;
+}
+
+export function recordDrawerObservation(observation: DrawerObservation) {
+  recordDrawerObservations([observation]);
 }
 
 export function findDrawerByLabel(label: string) {

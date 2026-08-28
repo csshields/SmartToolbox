@@ -223,6 +223,20 @@ this section is stale.
 
 ### Tool Identity
 
+**A tool name is one identity, case-insensitively.** Every read has always compared with
+`COLLATE NOCASE`, but the unique index was BINARY, so "Hammer" and "hammer" could sit in
+one drawer while every lookup treated them as the same tool - producing duplicate rows a
+user could not tell apart and, once the index changed, a read-back that silently returned
+null. `idx_tools_drawer_name` is now `(drawer_id, name COLLATE NOCASE)`, and
+`selectToolByDrawerAndName` and `upsertTool`'s conflict target match that collation.
+
+The first startup on an older database merges existing case-duplicates within a drawer:
+the oldest row survives and its capitalisation becomes the display form, quantities are
+summed because they count the same tool, and the first non-empty notes field is kept. The
+merge and the index swap happen in one transaction, and the fold is ASCII-only to match
+what `NOCASE` actually does - `toLowerCase()` would merge pairs the index would still
+consider distinct.
+
 Tools are tracked **by type and quantity, not as individual physical instances.**
 "Three Phillips screwdrivers in drawer 1A", never "screwdriver #2 is in 1A". There is
 no per-tool checkout state, no `tool_id`, and no movement history. Per-instance
@@ -269,7 +283,9 @@ CREATE TABLE IF NOT EXISTS drawer_observations (
 );
 
 -- Every API request, for the dashboard's Recent Requests panel. Serial requests
--- land here too, with method 'SERIAL' and path 'serial:<endpoint>'.
+-- land here too, with method 'SERIAL' and path 'serial:<endpoint>'. Diagnostics,
+-- not an audit trail: pruned to 30 days, and a failed write never changes an
+-- API result.
 CREATE TABLE IF NOT EXISTS request_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   method TEXT NOT NULL,
@@ -300,7 +316,9 @@ CREATE TABLE IF NOT EXISTS config (
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS idx_tools_drawer_name ON tools(drawer_id, name);
+-- NOCASE: tool names are one identity case-insensitively, which is how every
+-- read has always compared them. See the Tool Identity note below.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tools_drawer_name ON tools(drawer_id, name COLLATE NOCASE);
 CREATE INDEX IF NOT EXISTS idx_request_logs_created_at ON request_logs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_observations_tool_drawer
   ON drawer_observations(tool_name, drawer_id, id DESC);
@@ -351,7 +369,7 @@ framework; Hono is a dependency but is not currently used for routing.
 | DELETE | `/api/drawers/:id/tools/:toolId` | Delete one tool **and its observations** for that drawer, in one transaction. Scoped by drawer, so a mismatched pair is a 404 rather than deleting a tool in another drawer |
 | GET | `/api/tools/lookup?query=` | **Primary lookup.** Returns `primaryLocation` (the one location to act on), `hasMultipleLocations`, plus `drawers` and `rows` collapsed by certainty |
 | POST | `/api/tools/assign` | **Move an existing tool to another drawer**, by `toolId`. 400 on a missing/invalid id, 404 on an unknown tool or drawer, 409 when the target drawer already holds that name. Does not create tools |
-| POST | `/api/vision/observations` | Record camera detections for a drawer |
+| POST | `/api/vision/observations` | Record camera detections for a drawer. **All or nothing**: the whole batch is validated before any of it is written, and written in one transaction |
 | GET | `/api/firmware/latest?currentVersion=` | **OTA update check.** Requires an `X-Device-Key` header. 200 streams the newer `.bin`, 204 means already current, 401 rejects a bad key, 503 means `DEVICE_KEY` is unconfigured |
 | GET | `/api/devices` | Device status: last contact, firmware version, boot count, plus the latest firmware on disk and whether the serial listener is running |
 | GET | `/api/logs?limit=` | Recent request log (default 50, capped at 200). Includes serial traffic, logged with method `SERIAL` and path `serial:<endpoint>` |
@@ -548,6 +566,13 @@ now sets `superseded_at` on the source drawer's observations in the same transac
 the move, but only when no same-named tool remains there (`tools` is unique on
 `(drawer_id, name)` under BINARY collation, so "Hammer" and "hammer" can share a drawer).
 
+**An observation batch is all or nothing.** Both vision paths - HTTP and serial - go
+through `recordDrawerObservations`, which validates every detection and every drawer id
+before writing any of them, then writes the batch in one transaction. Inserting per
+detection meant a batch whose third item was invalid left the first two committed and
+still answered 400: the caller saw a failure, retried, and doubled the rows that had
+already landed. Both paths call the same helper so their behaviour cannot drift.
+
 **A displayed row and label must come from the same location object.** `drawers` and
 `rows` are ordered independently: `drawers` comes back ordered by `row_number ASC` and
 SQLite sorts NULLs *first*, while `rows` skips null row numbers entirely. Reading
@@ -578,6 +603,18 @@ history is not what "delete drawer" sounds like.
 
 Neither page calls `/api/tools/lookup`, `/api/tools/assign`, or
 `/api/vision/observations` - those exist for the firmware.
+
+**Request logging must never change an API result.** Several routes log inside the same
+`try` that performed the mutation, so a throw from the log write turned a completed
+change into a 400 and invited the client to retry something that had already happened.
+`writeRequestLog` swallows and reports its own failures. `request_logs` is pruned to 30
+days from the write path - no timer to keep alive, and a server nobody is using does no
+work. If the log is ever promoted to a real audit trail, that decision reverses: the
+mutation and its entry would then belong in one transaction.
+
+Note that the systemd unit still appends stdout and stderr to flat files under
+`~/smarttoolbox/logs/`. Those are outside the database's retention and want logrotate or
+journald on the Pi; nothing in this repo rotates them.
 
 Because the pages are served from the same origin as the API, no CORS configuration is
 needed. Keep it that way unless a separate front end is introduced.

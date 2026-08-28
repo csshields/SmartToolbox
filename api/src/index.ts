@@ -1,6 +1,6 @@
 import { serve } from "bun";
 import { join } from "node:path";
-import { addToolToDrawer, assignToolToDrawer, createDrawer, deleteDrawer, deleteTool, findDrawerByLabel, findToolDrawer, findToolLocations, getDeviceStatus, getTranscriptionSettings, listDrawers, listRequestLogs, recordDeviceContact, recordDrawerObservation, recordRequestLog, saveTranscriptionSettings, ToolNameConflictError } from "./db";
+import { addToolToDrawer, assignToolToDrawer, createDrawer, deleteDrawer, deleteTool, findDrawerByLabel, findToolDrawer, findToolLocations, getDeviceStatus, getTranscriptionSettings, listDrawers, listRequestLogs, recordDeviceContact, recordDrawerObservations, recordRequestLog, saveTranscriptionSettings, ToolNameConflictError } from "./db";
 import { parseSerialRequest, serialError, serialSuccess, serializeSerialResponse, type SerialRequest, type SerialResponse } from "./serialProtocol";
 import { startSerialTransport } from "./serialTransport";
 import { FIRMWARE_DIR, findLatestFirmware, isUpdateAvailable } from "./firmware";
@@ -39,7 +39,16 @@ function writeRequestLog(log: {
     return;
   }
 
-  recordRequestLog(log);
+  // Best effort, deliberately. Several routes log inside the same try block that
+  // performed the mutation, so a throw here used to turn a completed write into
+  // a 400 - inviting the client to retry something that had already happened.
+  // This log is diagnostics; it does not get to change an API result.
+  try {
+    recordRequestLog(log);
+  } catch (error) {
+    console.error(`[api] request log write failed: ${error instanceof Error ? error.message : error}`);
+  }
+
   console.log(
     `[api] ${log.method} ${log.path} status=${log.statusCode} result=${log.result}` +
       `${log.tool ? ` tool=${log.tool}` : ""}` +
@@ -144,17 +153,15 @@ async function handleSerialRequest(request: SerialRequest): Promise<SerialRespon
       return serialError(request.id, "DRAWER_NOT_FOUND", "drawer label was not found");
     }
 
-    for (const detection of body.detections) {
-      recordDrawerObservation({
-        drawerId: drawer.id,
-        toolName: typeof detection.label === "string" ? detection.label : "",
-        confidence: Number(detection.confidence),
-        quantity: typeof detection.quantity === "number" ? detection.quantity : undefined,
-        modelVersion: typeof body.modelVersion === "string" ? body.modelVersion : undefined,
-      });
-    }
+    const recorded = recordDrawerObservations(body.detections.map((detection) => ({
+      drawerId: drawer.id,
+      toolName: typeof detection.label === "string" ? detection.label : "",
+      confidence: Number(detection.confidence),
+      quantity: typeof detection.quantity === "number" ? detection.quantity : undefined,
+      modelVersion: typeof body.modelVersion === "string" ? body.modelVersion : undefined,
+    })));
 
-    return serialSuccess(request.id, { recorded: body.detections.length, drawerLabel: drawer.label });
+    return serialSuccess(request.id, { recorded, drawerLabel: drawer.label });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to process serial request.";
     return serialError(request.id, "INVALID_REQUEST", message);
@@ -519,15 +526,13 @@ serve({
           throw new Error('At least one detection is required.');
         }
 
-        for (const detection of body.detections) {
-          recordDrawerObservation({
-            drawerId: validatedDrawerId,
-            toolName: detection.label ?? '',
-            quantity: detection.quantity,
-            confidence: Number(detection.confidence),
-            modelVersion: body.modelVersion,
-          });
-        }
+        const recorded = recordDrawerObservations(body.detections.map((detection) => ({
+          drawerId: validatedDrawerId,
+          toolName: detection.label ?? '',
+          quantity: detection.quantity,
+          confidence: Number(detection.confidence),
+          modelVersion: body.modelVersion,
+        })));
 
         writeRequestLog({
           method: req.method,
@@ -535,9 +540,9 @@ serve({
           drawerNumber: validatedDrawerId,
           statusCode: 201,
           result: 'Vision observations recorded',
-          details: `${body.detections.length} detection(s)`,
+          details: `${recorded} detection(s)`,
         });
-        return jsonResponse({ success: true, recorded: body.detections.length }, { status: 201 });
+        return jsonResponse({ success: true, recorded }, { status: 201 });
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unable to record vision observations.';
         const status = message === 'Drawer not found.' ? 404 : 400;
