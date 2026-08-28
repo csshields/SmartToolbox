@@ -1,6 +1,6 @@
 ---
 title: Plan of Attack - Voice Lookup (press to talk, matrix shows the row)
-scope: implementation plan, written 2026-08-27, revised same day - on-board PDM mic, audio over serial
+scope: implementation plan, written 2026-08-27, revised same day - on-board PDM mic, audio over serial, hold-to-talk
 status: not started
 ---
 
@@ -73,15 +73,21 @@ device POSTs the WAV to the Pi over HTTP instead of writing it to Serial, reusin
 OTA `HTTPClient` code and the `X-Device-Key` header) and nothing else in this plan
 changes. Do not switch on a hunch; switch on the number.
 
-### The wire format: one line, base64, no chunking
+### The wire format: one line, base64 raw PCM, no chunking
 
 ```
 {"id":"req-9","type":"request","endpoint":"voice/audio",
- "body":{"format":"wav","sampleRate":16000,"bytes":128044,"data":"UklGRi..."}}
+ "body":{"format":"pcm_s16le","sampleRate":16000,"channels":1,"data":"AAD//wIA..."}}
 ```
 
-Four seconds of 16 kHz 16-bit mono is 128,000 bytes of PCM plus a 44-byte WAV header;
-base64 makes that ~171 KB. One line, one request, one response.
+**Raw PCM, not WAV - the Pi writes the header.** With hold-to-talk the device does not
+know the recording's length when it starts, and a WAV header's first field is the length.
+Rather than make the device seek back and patch it, send the samples and the three facts
+needed to describe them; the Pi prepends the 44-byte header before handing the audio to
+Whisper. That is a dozen lines on the Pi and it deletes the whole problem.
+
+Four seconds of 16 kHz 16-bit mono is 128,000 bytes; base64 makes that ~171 KB. One
+line, one request, one response.
 
 **No sequence numbers, no chunk acks, no resync.** This is the whole point of choosing
 this shape. A chunked protocol needs reassembly state on the Pi, a timeout for a
@@ -105,17 +111,19 @@ the closing brace and the newline. Only the 128 KB WAV is ever in memory - there
 ### The flow
 
 ```
-  button press
+  button DOWN
         |
         v
   XIAO: LED solid, matrix -> listening, OLED "Listening..."
-  XIAO: I2S PDM record 4s -> 128 KB WAV in PSRAM
+  XIAO: I2S PDM readBytes() in a loop, appending to a PSRAM buffer
+        |
+  button UP  (or the 10 s cap)
         |
         v
-  XIAO: {"id":"req-9",...,"endpoint":"voice/audio","body":{...,"data":"<171 KB base64>"}}
+  XIAO: {"id":"req-9",...,"endpoint":"voice/audio","body":{...,"data":"<base64 PCM>"}}
         |
         v
-  Pi: decode -> Whisper (NAS or OpenAI) -> "where are my needle nose pliers"
+  Pi: decode -> prepend WAV header -> Whisper (NAS or OpenAI) -> "where are my needle nose pliers"
   Pi: resolveToolQuery() -> "Needle-nose Pliers" -> findToolLocations()
         |
         v
@@ -140,15 +148,69 @@ The Grove Red LED Button (SKU 111020044) needs two GPIO - signal in, LED out - a
 XIAO's expansion header is occupied. This is the spec's **Open Hardware Question**,
 unchanged.
 
-**Do not let it block the software.** A touch pad *is* a press-to-talk button: D0 is
-already calibrated, debounced, and proven on hardware, and `onTouchStart` already
-refuses to fire while a request is in flight. Phase 3 triggers voice capture from a touch
-pad; Phase 4 swaps in the real button and changes roughly ten lines. The project has
-already used exactly this stand-in once - the touch harness for `tools/lookup` - and it
-worked.
+A touch pad still stands in for *triggering* a capture - D0 is already calibrated,
+debounced, and proven, and `onTouchStart` already refuses to fire while a request is in
+flight. But note the limit, because Decision 3 changed it:
+
+**Decided 2026-08-27: hold a touch pad, and no new hardware for now.** The Grove Red LED
+Button cannot be read where it is - it is plugged into the I2C hub, which has no GPIO to
+give it - and every way of fixing that costs either soldering or a part. A touch pad
+costs nothing and works today.
+
+The risk is that the S3 reads touch against a baseline captured at boot, so a long hold
+could in principle drift back under the trigger ratio and end a recording early. Within
+a few seconds a held finger should stay comfortably above threshold; the drift that
+matters is the slow kind, across minutes. **So try hold-on-touch directly** rather than
+designing around a problem that may not appear.
+
+If it does cut out early, the fallback needs no hardware either: **tap to start, tap to
+stop**. That sidesteps drift completely, removes any maximum hold, and is arguably the
+nicer gesture - nobody has to keep a finger pressed while thinking of the tool's name.
+
+The Grove Red LED Button remains the eventual answer for feel, and Phase 4 still
+describes it. It is now genuinely deferred rather than blocking: nothing above depends on
+it, and the interaction it provides is one `digitalRead` away once it has two real pins.
 
 Until the button's own LED exists, "the box is listening" is the onboard LED held solid
 (not blinking - blinking already means a row number) plus a listening face on the matrix.
+
+## Decision 3: hold-to-talk - the recording runs for as long as the button is held
+
+**Decided 2026-08-27.** Button down starts the capture, button up ends it. Not a fixed
+window. This is the better interaction - it never clips a long tool name and never makes
+you wait out silence - and it has three concrete consequences.
+
+**1. `recordWAV()` is unusable.** It takes a fixed `rec_seconds` and returns when they
+have elapsed. The capture becomes a loop over `I2SClass::readBytes(buffer, size)` -
+confirmed present in the installed core alongside `available()` - reading small blocks
+and appending them while polling the button between blocks. Read in ~512-byte blocks:
+at 32 KB/s that is ~16 ms per block, which is also the granularity at which a release is
+noticed, so it sets how much trailing audio gets captured after the user lets go. Small
+blocks are cheap; do not read in 8 KB ones.
+
+**2. The length is unknown until the user lets go**, which is what drives the raw-PCM
+wire format above. It also means the response timeout has to scale: use roughly
+`10000 + recordedMs`, not a constant, since Whisper's inference time grows with the clip.
+
+**3. Both ends of the hold need guarding.**
+
+- **Minimum ~300 ms.** An accidental brush should not spend a Whisper call. Below the
+  minimum, show "Too short" and discard - do not send.
+- **Maximum ~10 s.** Someone will lean on the button, or it will stick. At the cap, stop
+  recording and send what there is; do not discard it, and do not keep growing the
+  buffer. 10 s at 16 kHz 16-bit mono is 320 KB, which is the number the capture buffer
+  must be sized for.
+- **Debounce the release, not just the press.** A mechanical button bounces on both
+  edges. The existing touch code already requires two consecutive released readings; keep
+  that shape, because a single noisy sample read as a release now truncates a sentence
+  mid-word rather than merely ending a touch.
+
+**The buffer, first cut: preallocate the 10-second maximum in PSRAM** and record into it
+until release. It is the version you can debug - dump it, check the peak, write it to a
+file and listen to it. The optimisation, once that works, is to base64 it out to the port
+*as it is captured* rather than after: hold-to-talk makes this natural, since there is no
+length to know in advance and the raw-PCM format already carries no header. That removes
+the buffer entirely and hides the whole transfer time inside the press. Do it second.
 
 ---
 
@@ -293,21 +355,21 @@ no alphabetic content, is `NO_SPEECH` - a distinct error, not a failed lookup.
 
 ### The toolchain facts, checked against what is installed here
 
-- Core is **esp32 3.3.11** (FQBN `esp32:esp32:XIAO_ESP32S3`). Confirmed:
-  `libraries/ESP_I2S/src/ESP_I2S.h` has `setPinsPdmRx(clk, din0, ...)`,
-  `begin(I2S_MODE_PDM_RX, rate, bits, slots)`, and
-  **`uint8_t *recordWAV(size_t rec_seconds, size_t *out_size)`**, which returns a
-  malloc'd buffer with a 44-byte WAV header already on the front. That is the whole
-  capture step.
+- Core is **esp32 3.3.11** (FQBN `esp32:esp32:XIAO_ESP32S3`). Confirmed in
+  `libraries/ESP_I2S/src/ESP_I2S.h`: `setPinsPdmRx(clk, din0, ...)`,
+  `begin(I2S_MODE_PDM_RX, rate, bits, slots)`, `readBytes(char*, size_t)`, and
+  `available()`. There is also a `recordWAV(rec_seconds, &out_size)` convenience -
+  **not usable here**, because it records a fixed duration and hold-to-talk does not have
+  one. It is still the fastest way to do the standalone mic bring-up in step 1 below, so
+  use it there and nowhere else.
 - **Most Seeed mic tutorials will not compile.** They use the core-2.x `I2S.h` API
   (`I2S.setAllPins(...)`, `I2S.begin(PDM_MONO_MODE, ...)`). On 3.x it is `ESP_I2S.h` and
   `I2SClass`. Expect to translate every example found online.
 - **PSRAM is off in every build this project ships.** `release-firmware.ps1` compiles
   with a bare `esp32:esp32:XIAO_ESP32S3`, and in `boards.txt` the PSRAM menu's first -
-  therefore default - option is `disabled`. A 128 KB `recordWAV` allocation then has to
-  come out of internal SRAM as one contiguous block, next to the Wi-Fi stack and the
-  U8g2 buffer. It may well succeed; relying on it is how you get a box that works on the
-  bench and fails after an OTA changes the memory map. Set the release script's FQBN to
+  therefore default - option is `disabled`. The 320 KB capture buffer then has to come
+  out of internal SRAM as one contiguous block, next to the Wi-Fi stack and the U8g2
+  buffer, and at that size it will simply fail. Set the release script's FQBN to
   `esp32:esp32:XIAO_ESP32S3:PSRAM=opi`, print `psramFound()` and `ESP.getFreePsram()` at
   boot, and allocate the capture buffer explicitly.
 - PDM pin numbers for the on-board mic (commonly documented as clock GPIO42, data
@@ -319,10 +381,14 @@ no alphabetic content, is `NO_SPEECH` - a distinct error, not a failed lookup.
 
 - Add `"voice/audio"` to `serialEndpoints` in `serialProtocol.ts` and to the
   `SerialEndpoint` union.
-- Branch in `handleSerialRequest`: base64-decode `body.data`, check it against
-  `body.bytes`, transcribe, resolve, `findToolLocations`, return the merged body. Each
-  failure gets its own code - `BAD_AUDIO`, `TRANSCRIPTION_FAILED`, `NO_SPEECH` - because
-  on a 128x64 screen the error code is the entire diagnosis.
+- Branch in `handleSerialRequest`: base64-decode `body.data`, prepend a 44-byte WAV
+  header built from `sampleRate` / `channels` / the decoded length, transcribe, resolve,
+  `findToolLocations`, return the merged body. Each failure gets its own code -
+  `BAD_AUDIO`, `TRANSCRIPTION_FAILED`, `NO_SPEECH` - because on a 128x64 screen the error
+  code is the entire diagnosis.
+- The WAV header is fixed-layout and worth writing by hand rather than pulling in a
+  dependency: `RIFF`, size, `WAVEfmt `, 16, PCM=1, channels, rate, byte rate, block
+  align, bits, `data`, size. Unit-test it by round-tripping a known buffer.
 - **Cap the line length in `SerialLineBuffer`.** It currently accumulates until it sees a
   newline, with no ceiling; a device that resets mid-transfer, or any noise on a
   disconnected port, can grow `remainder` without bound. Add a limit around 512 KB -
@@ -333,26 +399,36 @@ no alphabetic content, is `NO_SPEECH` - a distinct error, not a failed lookup.
 
 ### Firmware side
 
-- `pendingTimeoutMs`, set per request: keep 2000 for `tools/lookup`, use ~15000 for
-  `voice/audio`. Do **not** raise the constant globally - a stuck `tools/lookup` should
-  still fail fast, and that fast failure is a diagnostic you already rely on.
-- A `LISTENING` state: onboard LED solid, OLED "Listening...", matrix listening face. Set
-  all of it **before** the blocking record call, not after.
+- `pendingTimeoutMs`, set per request: keep 2000 for `tools/lookup`, and
+  `10000 + recordedMs` for `voice/audio`. Do **not** raise the constant globally - a stuck
+  `tools/lookup` should still fail fast, and that fast failure is a diagnostic you
+  already rely on.
+- A `LISTENING` state driving the capture loop: onboard LED solid, OLED "Listening...",
+  matrix listening face, all set **before** the loop starts, not after. The loop is
+  `readBytes` a block, append, poll the button, repeat - so the OLED and matrix can also
+  be updated during a long hold if you want a level meter later.
+- Enforce the minimum and maximum hold from Decision 3, and debounce the **release**.
 - **Bound the send.** If the Pi's service is not draining the port, a large write can
   block long enough to trip the task watchdog. Write the base64 in a loop that checks
   `Serial.availableForWrite()` against a deadline (say 5 s), and abandon the request with
   an OLED error if it stalls. A voice query that fails is fine; a device that reboots
   mid-send is not.
-- Free the WAV buffer on **every** path, failures included. `recordWAV` mallocs, and a
-  leak here shows up as the third or fourth query failing on a box that was fine at boot.
+- Allocate the 320 KB capture buffer **once at boot** and reuse it, rather than per
+  press. A repeated allocation of that size fragments the heap and turns into the third
+  or fourth query failing on a box that was fine at boot; a single static allocation also
+  fails loudly at startup, where you will see it, instead of mid-press.
 - Show the **transcript** on the OLED next to the result. When the box says "not found",
   the only question that matters is whether it misheard you or does not own the tool, and
   the transcript is the entire answer.
 - Add a `voice` bench command to `handleIncomingLine` next to `lookup <tool name>`, so
   the path can be driven from a serial monitor with no pad and no button.
-- Trigger from a touch pad **not** mapped in `TOUCH_TOOL_NAMES` - D1 or D2. Keep D0's
-  direct lookup: when voice misbehaves you want a known-good trigger for the same round
-  trip on the same wire to tell the two apart.
+- Trigger from a touch pad **not** mapped in `TOUCH_TOOL_NAMES` - D1 or D2 - held for the
+  duration of the capture, per Decision 2. Keep D0's direct lookup: when voice
+  misbehaves you want a known-good trigger for the same round trip on the same wire to
+  tell the two apart.
+- Write the capture loop against a `isTriggerHeld()` predicate rather than against
+  `touchRead` directly. Swapping in `digitalRead` for the real button later then touches
+  one function, and the tap-to-start/tap-to-stop fallback is a change in the same place.
 
 ### Steps
 
@@ -360,14 +436,19 @@ no alphabetic content, is `NO_SPEECH` - a distinct error, not a failed lookup.
    seconds and prints the peak sample value. A mic that returns constant zeros and a mic
    that was never initialised look identical from every other vantage point in this
    system, and this is the only cheap moment to tell them apart.
-2. Base64 the buffer straight to `Serial` behind the hand-written JSON envelope. Prove it
-   against the Pi with a throwaway handler that just decodes, checks the length, and
-   writes the WAV to `/tmp` - listen to the file before involving Whisper. If the audio
-   is wrong, you want to find out here and not through a bad transcript.
-3. **Measure the transfer.** Time from the first byte written to the response arriving,
-   logged from the Pi. This is the number that decides whether Decision 1 stands: over
-   ~3 s of transfer, switch that one step to the Wi-Fi POST.
-4. Add the real handler, the timeout change, and the result display.
+2. Convert the bring-up sketch's fixed record into the hold-to-talk loop, still
+   standalone: hold a pad or short a pin, print the captured byte count and peak on
+   release. Get the minimum, maximum, and release debounce right here, where the only
+   moving part is the button.
+3. Base64 the buffer straight to `Serial` behind the hand-written JSON envelope. Prove it
+   against the Pi with a throwaway handler that just decodes, adds the header, and writes
+   the WAV to `/tmp` - **listen to the file** before involving Whisper. If the audio is
+   wrong, you want to find out here and not through a bad transcript.
+4. **Measure the transfer.** Time from the first byte written to the response arriving,
+   logged from the Pi, for a full 10-second hold - the worst case. This is the number
+   that decides whether Decision 1 stands: over ~3 s of transfer, switch that one step to
+   the Wi-Fi POST.
+5. Add the real handler, the timeout change, and the result display.
 
 ### Done when
 
@@ -381,12 +462,13 @@ no alphabetic content, is `NO_SPEECH` - a distinct error, not a failed lookup.
 
 In order of what to try:
 
-1. **Record three seconds instead of four.** 25% off everything, and most tool names fit.
-2. **Stream the capture instead of buffering it.** Read I2S in 4 KB blocks and base64
-   them out as they arrive rather than calling `recordWAV`. The WAV header's length is
-   known in advance for a fixed-duration capture, so it can be written first. This
-   removes the 128 KB buffer entirely and hides the transfer time inside the recording -
-   worth doing, but not before the simple version works.
+1. **Stream the capture instead of buffering it**, as Decision 3 describes. Base64 each
+   block out to the port as it is read rather than after the release. The raw-PCM format
+   carries no header, so there is nothing to patch afterwards - this works out cleanly.
+   It removes the 320 KB buffer and hides the entire transfer inside the press, which
+   makes it the first thing to try, not the last.
+2. **Lower the maximum hold.** Ten seconds is generous for a tool name; six would cut the
+   worst case by 40% and nobody would notice.
 3. **8-bit mu-law instead of 16-bit PCM.** Halves the payload, is a legal WAV encoding
    that ffmpeg and Whisper accept, and is a lookup table on the device. Costs some
    fidelity; try it only if 1 and 2 are not enough.
@@ -401,19 +483,18 @@ Once Decision 2 is resolved:
 - Assign `BUTTON_PIN` and `BUTTON_LED_PIN` in the spec's Pin Mappings, replacing the
   `TBD`s, and record which mounting option was chosen.
 - Grove Red LED Button: signal is an ordinary digital input (`INPUT_PULLUP`, active low),
-  LED an ordinary digital output. Debounce it the way the touch pads are debounced - two
-  consecutive readings - rather than inventing a second scheme.
+  LED an ordinary digital output. Debounce **both edges** the way the touch pads are
+  debounced - two consecutive readings - rather than inventing a second scheme. The
+  release edge is the one that matters now: a bounce read as a release truncates a
+  sentence.
+- **This is where hold-to-talk actually lands.** The capture loop from Phase 3 is already
+  written against a "is it still held?" predicate; this phase swaps a touch reading for
+  `digitalRead`, and the interaction becomes the real one. Everything else is done.
 - Button LED: **off** idle, **solid** while listening, **fast flash** while the request is
   in flight, **off** when the result appears. That is the whole reason to prefer this
   module over a plain button, so use all four states.
-- Replace the touch trigger; leave the `voice` bench command in place.
-
-**Upgrade available here:** hold-to-talk. Press starts the capture, release ends it,
-which removes the fixed window and stops clipping longer tool names. It pairs naturally
-with the streaming capture above - and note that streaming a recording of unknown length
-means the WAV header's size field cannot be written first, so either buffer after all or
-send the length in the JSON body and let the Pi build the header. Worth doing second, not
-first.
+- Keep the touch pad's fixed-window trigger and the `voice` bench command. Both stay
+  useful as the known-good paths when the button itself is suspect.
 
 ---
 
@@ -447,10 +528,16 @@ say why.
 - **PSRAM is disabled in the shipped build.** See Phase 3. This is the one that will bite
   silently and late.
 - **The core-2.x `I2S.h` examples do not compile on 3.3.11.** See Phase 3.
-- **`recordWAV` blocks for the whole recording.** Four seconds inside `loop()` means four
-  seconds of no `pollSerialResponses`, no touch scan, no matrix update. Acceptable -
-  nothing else is happening while the user is talking - but set the LED and the OLED
-  before the call, not after, or the box looks dead for the duration.
+- **The capture loop owns `loop()` for the whole hold.** Up to ten seconds of no
+  `pollSerialResponses`, no touch scan, no matrix blink. Acceptable - nothing else is
+  happening while the user is talking - but set the LED and the OLED before the loop
+  starts, or the box looks dead for the duration.
+- **Read in small blocks.** The block size is the release granularity: 8 KB blocks mean a
+  quarter-second of latency between letting go and the recording stopping, which reads as
+  the button not working. ~512 bytes.
+- **A stuck or bouncing button is a real failure mode**, not a theoretical one. The 10 s
+  cap is what keeps it from becoming an unbounded buffer, and the 300 ms minimum is what
+  keeps a brush against the panel from spending a Whisper call.
 - **A large blocking write can trip the watchdog.** See the bounded-send note in Phase 3.
 - **The 2000 ms response timeout will fire on the first voice request** if the
   per-request timeout is forgotten. The symptom is the box giving up while the Pi is
@@ -478,7 +565,7 @@ say why.
    Settle it and correct whichever document is wrong.
 2. Confirm the PDM clock and data GPIO numbers, and add the board doc to
    `docs/SOURCES.md` with a checked date.
-3. Fixed 4-second window, or hold-to-talk? (Plan assumes fixed; hold-to-talk in Phase 4.)
+3. ~~Fixed window or hold-to-talk?~~ **Settled 2026-08-27: hold-to-talk.** See Decision 3.
 4. Aliases: "cross-head" for Phillips, "spanner" for wrench. A `tool_aliases` table is
    cheap and would help, but it is a schema change - keep it out of Phase 1 and decide
    once there are real misses in the log to justify it.

@@ -80,7 +80,9 @@ Updated 2026-08-27. This table is the single place to check what is physically w
 | OLED (Grove SSD1315 0.96") | Verified | On the I2C connector, GPIO5/GPIO6. Driven with U8g2 (`U8G2_SSD1306_128X64_NONAME_F_HW_I2C`); the SSD1315 is SSD1306-compatible. Shows lookup status and the exact drawer label |
 | Grove 8x8 matrix | Verified | Wired and working. Shows an idle purple face, and on a lookup the lit row for 2s then the row digit for 2s. Mounted a quarter turn out, so the firmware sets `DISPLAY_ROTATE_270` every boot - that setting lives on the panel and survives power cycles |
 | Microphone | On board, unused | The XIAO's own PDM mic. No sketch has initialised it yet, so it is unproven in this project - bring it up alone before building on it. See `docs/PLAN-voice-lookup.md` |
-| PIR motion sensor | Deferred | **Blocks Feature 1.** Needs GPIO the Vision AI V2 stack now occupies |
+| PIR motion sensor | Deferred | Needs two GPIO. No longer necessarily blocked - the Pi's 40-pin header is free; see the Open Hardware Question |
+| Grove Red LED Button | **Mis-wired** | Currently plugged into the Grove I2C Hub, where it cannot work: it is a passive switch and LED with no I2C chip, so its two pins land on SDA and SCL. The LED is lit only because a bus line idles high. **Pressing it disturbs the I2C bus** the OLED and matrix depend on. Unplug it until it has real GPIO |
+| Pi 40-pin GPIO header | Free, unpopulated | 26 usable GPIO, nothing in this project uses them. `gpioget`/`gpiomon` (libgpiod) are installed and `/dev/gpiochip0` is present - confirmed 2026-08-27 |
 
 ### API Project
 - **Host Device**: Raspberry Pi Zero 2
@@ -696,11 +698,14 @@ ssh -i "$env:USERPROFILE\.ssh\smarttoolbox_pi_ed25519" shields@192.168.50.30
 
 ## Hardware Platform
 
-**Main Controller**: Seeed XIAO ESP32S3
+**Main Controller**: Seeed **XIAO ESP32S3 Sense** (not the plain XIAO ESP32S3 - see
+`docs/xiao-screenshot.PNG` for the exact part)
 - **MCU**: Espressif ESP32-S3
 - **Connectivity**: Wi-Fi and BLE are available; the MVP connects to the Pi Zero 2 over **wired USB serial** (USB-C, CDC/ACM), not Wi-Fi
+- **Memory**: 8MB PSRAM, 8MB flash. **PSRAM is off in the shipped build** - `release-firmware.ps1` compiles a bare `esp32:esp32:XIAO_ESP32S3`, and the board's default PSRAM menu option is `disabled`. Anything needing a large buffer must set `:PSRAM=opi`.
 - **Power**: 3.3V, rechargeable battery support
-- **Built-in Sensors**: None assumed. Vision, IMU, and microphone hardware are external peripherals.
+- **Built-in Sensors**: a **PDM digital microphone** and an **OV2640 camera**, both on the Sense expansion board that mates with the core board's underside connector. Neither has ever been initialised by this project's firmware. IMU is still external and unselected.
+- **Note**: the Sense expansion board and any module that mounts the XIAO from below are competing for the same physical space. Which is actually attached is recorded under Pin Mappings' Open Hardware Question, not assumed here.
 
 **Vision Hardware**: Seeed Grove Vision AI Module (V2), SKU 101021112, + OV5647 Camera
 - **Connection**: Stacked on the XIAO ESP32S3 expansion header, communicating over I2C. **Verified on hardware 2026-08-27** - the link is up. This also means the header is occupied; see the Open Hardware Question under Pin Mappings.
@@ -857,17 +862,36 @@ resolved - not before.
 - **No per-drawer sensors.** Drawer open/close detection is one of three candidate
   methods in Feature 3 and no hardware has been chosen.
 
-### Open Hardware Question (blocking)
+### Open Hardware Question
 
-The Vision AI V2 sits on the XIAO expansion header, which is where the PIR sensor,
-button, and LED strip would otherwise connect. Options not yet evaluated:
+**Revised 2026-08-27.** This section used to say Features 1 and 3 stayed blocked until
+the XIAO's expansion header was freed. That framing was wrong, and it was wrong because
+of an assumption nobody had stated: **that GPIO has to come from the XIAO.** It does
+not. The Pi Zero 2 W's 40-pin header is entirely unused - 26 usable pins - and the Pi is
+already in the box, already running, and already talking to the XIAO.
 
-1. Use the owned Seeed Expansion Board Base (SKU 103030356) and verify it stacks with
-   the Vision AI V2.
-2. Solder to the XIAO's remaining exposed pads directly.
-3. Move the Vision AI V2 to a Grove cable and free the header.
+The real question is narrower: the Vision AI V2 occupies the XIAO's expansion header,
+and the Sense expansion board that carries the microphone and OV2640 wants the same
+underside connector. Only one can be there.
 
-Features 1 and 3 stay blocked until one is chosen.
+**Options, and what each costs:**
+
+| Option | Cost | Gets you |
+|---|---|---|
+| **Put GPIO parts on the Pi's header** | Two wires per part, or a Grove Base Hat for Pi Zero (SKU 103030276, ~$6) for solderless Grove ports | Button and PIR both work, with no XIAO surgery. Costs a Pi-to-XIAO message for anything the firmware must react to |
+| **Touch pads on the XIAO** | Nothing | A trigger with no connector at all. D0 is proven. Not a mechanical button feel |
+| Seeed Expansion Board Base (SKU 103030356, owned) | Verify it mates with the Sense board first | Grove I2C and a digital port without soldering |
+| Solder to the XIAO's exposed pads | One soldering session | Everything on one device, no cross-device coordination |
+| Move the Vision AI V2 to a Grove cable | A cable | Frees the header - but the hub currently chains off the Vision AI's Grove port, so this also moves the I2C path |
+
+**Do not connect a passive Grove module to the I2C Hub.** Every Grove connector is the
+same four-pin shape, but an I2C port's two signal pins are SDA and SCL. A module with no
+I2C chip - the Red LED Button, the PIR - cannot be addressed there, and its switch pulls
+on a line the OLED and matrix are using. See the Grove Red LED Button row in the
+Hardware Bring-Up table for what that looks like in practice.
+
+**Current decision**: touch pad for the voice trigger, no new hardware. See
+`docs/PLAN-voice-lookup.md`, Decision 2.
 
 ## Communication Protocol
 
@@ -882,7 +906,7 @@ Features 1 and 3 stay blocked until one is chosen.
   - `vision/observe`: Xiao sends `drawerLabel`, model version, and a `detections` array of tool-type labels, confidence, quantity, and optional bounding boxes.
 - **Successful response**: `{"id":"req-001","success":true,"body":{...}}`
 - **Error response**: `{"id":"req-001","success":false,"error":{"code":"INVALID_REQUEST","message":"drawer_label is required"}}`
-- **Audio**: **Status: Planned.** Push-to-talk audio is carried on this same link as a single base64 line on a `voice/audio` request - roughly 171 KB for four seconds of 16 kHz 16-bit mono. An earlier draft of this document called for a separate chunked transfer protocol; that was reconsidered and rejected in `docs/PLAN-voice-lookup.md`, which records why (a chunked protocol needs reassembly state, partial-upload timeouts, and a resync path, where a single line needs only a retry - and the retry is pressing the button again). Raw binary framing was also rejected: the transport splits on newlines and raw PCM is full of `0x0A`. This means `SerialLineBuffer` must grow a maximum line length, and the `[serial-debug]` log must truncate.
+- **Audio**: **Status: Planned.** Push-to-talk audio is carried on this same link as a single base64 line on a `voice/audio` request - raw 16 kHz 16-bit mono PCM, roughly 171 KB of base64 for four seconds. The recording runs for as long as the button is held (300 ms minimum, 10 s cap), so its length is not known when the transfer starts: the device sends samples plus `sampleRate`/`channels` and **the Pi prepends the WAV header**. An earlier draft of this document called for a separate chunked transfer protocol; that was reconsidered and rejected in `docs/PLAN-voice-lookup.md`, which records why (a chunked protocol needs reassembly state, partial-upload timeouts, and a resync path, where a single line needs only a retry - and the retry is pressing the button again). Raw binary framing was also rejected: the transport splits on newlines and PCM is full of `0x0A`. This means `SerialLineBuffer` must grow a maximum line length, and the `[serial-debug]` log must truncate.
 - **Connectivity**:
   - XIAO ESP32S3 writes/reads framed JSON messages over its USB serial connection
   - Pi Zero 2 process listens on the serial device and dispatches to the same handlers used for the HTTP API
