@@ -1,11 +1,16 @@
 import { serve } from "bun";
 import { join } from "node:path";
-import { addToolToDrawer, assignToolToDrawer, createDrawer, deleteDrawer, deleteTool, findDrawerByLabel, findToolDrawer, findToolLocations, getTranscriptionSettings, listDrawers, listRequestLogs, recordDrawerObservation, recordRequestLog, saveTranscriptionSettings } from "./db";
+import { addToolToDrawer, assignToolToDrawer, createDrawer, deleteDrawer, deleteTool, findDrawerByLabel, findToolDrawer, findToolLocations, getDeviceStatus, getTranscriptionSettings, listDrawers, listRequestLogs, recordDeviceContact, recordDrawerObservation, recordRequestLog, saveTranscriptionSettings } from "./db";
 import { parseSerialRequest, serialError, serialSuccess, serializeSerialResponse, type SerialRequest, type SerialResponse } from "./serialProtocol";
 import { startSerialTransport } from "./serialTransport";
 import { FIRMWARE_DIR, findLatestFirmware, isUpdateAvailable } from "./firmware";
 
 const port = Number(Bun.env.PORT ?? 3000);
+
+// Declared up here because /api/devices reports whether the listener is even
+// running: on Windows it is not, and a device that has never been seen there
+// means "no serial listener", not "no device".
+const serialDevice = Bun.env.SERIAL_DEVICE ?? (process.platform === "linux" ? "/dev/ttyACM0" : undefined);
 
 function jsonResponse(data: unknown, init: ResponseInit = {}) {
   const headers = new Headers(init.headers);
@@ -169,7 +174,32 @@ async function handleSerialLine(line: string): Promise<SerialResponse | null> {
   try {
     const request = parseSerialRequest(line);
     console.log(`[serial] request id=${request.id} endpoint=${request.endpoint}`);
-    return await handleSerialRequest(request);
+
+    // Every serial line is the only evidence the device exists: it sends
+    // device/status once at boot and is otherwise silent until someone uses it.
+    // Recorded before handling, because a request we go on to reject is still
+    // proof the XIAO is on the wire.
+    const body = request.body as { firmwareVersion?: unknown; query?: unknown };
+    recordDeviceContact({
+      endpoint: request.endpoint,
+      firmwareVersion: typeof body.firmwareVersion === "string" ? body.firmwareVersion : undefined,
+    });
+
+    const response = await handleSerialRequest(request);
+
+    // Serial traffic used to exist only in the journal, which left the device's
+    // activity invisible to the dashboard. SERIAL/serial: keeps it sortable
+    // apart from HTTP in the same table.
+    writeRequestLog({
+      method: "SERIAL",
+      path: `serial:${request.endpoint}`,
+      tool: typeof body.query === "string" ? body.query : undefined,
+      statusCode: response.success ? 200 : 400,
+      result: response.success ? "Serial request handled" : "Serial request rejected",
+      details: response.success ? "" : response.error.message,
+    });
+
+    return response;
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unable to parse serial request.";
     return serialError(null, "INVALID_REQUEST", message);
@@ -268,6 +298,25 @@ serve({
         });
         return errorResponse(message, status);
       }
+    }
+
+    if (pathname === '/api/devices' && req.method === 'GET') {
+      const device = getDeviceStatus();
+      const latest = findLatestFirmware(join(process.cwd(), FIRMWARE_DIR));
+
+      return jsonResponse({
+        device,
+        // Whether the listener runs at all is the difference between "the XIAO
+        // is unplugged" and "this is Windows, so nothing was ever listening".
+        // The page cannot tell those apart without being told.
+        serialDevice: serialDevice ?? null,
+        firmware: latest
+          ? {
+              latestVersion: latest.version,
+              updateAvailable: device ? isUpdateAvailable(latest, device.firmwareVersion) : false,
+            }
+          : null,
+      });
     }
 
     if (pathname === '/api/logs' && req.method === 'GET') {
@@ -637,8 +686,6 @@ serve({
 });
 
 console.log(`Server running on http://localhost:${port}`);
-
-const serialDevice = Bun.env.SERIAL_DEVICE ?? (process.platform === "linux" ? "/dev/ttyACM0" : undefined);
 
 if (serialDevice) {
   startSerialTransport({

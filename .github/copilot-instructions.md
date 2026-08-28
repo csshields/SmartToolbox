@@ -24,7 +24,8 @@ When a section's status changes, update the line in the same commit as the code.
 SmartToolbox is a monorepo containing three parts:
 - **API**: Bun web server and SQLite database running on a Raspberry Pi Zero 2
 - **Firmware**: Arduino sketch for the Seeed XIAO ESP32S3 microcontroller
-- **Dashboard**: a two-page web UI served by the API, used to manage drawers and tools
+- **Dashboard**: a three-page web UI served by the API, used to manage drawers, tools,
+  and the device
 
 ## Project Structure
 
@@ -264,7 +265,8 @@ CREATE TABLE IF NOT EXISTS drawer_observations (
   FOREIGN KEY(drawer_id) REFERENCES drawers(id) ON DELETE CASCADE
 );
 
--- Every API request, for the dashboard's Recent Requests panel.
+-- Every API request, for the dashboard's Recent Requests panel. Serial requests
+-- land here too, with method 'SERIAL' and path 'serial:<endpoint>'.
 CREATE TABLE IF NOT EXISTS request_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   method TEXT NOT NULL,
@@ -275,6 +277,17 @@ CREATE TABLE IF NOT EXISTS request_logs (
   result TEXT NOT NULL,
   details TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+-- What the XIAO has told the Pi. One row: the serial protocol carries no device
+-- identifier, and there is one device on one wire, so the id is the constant 'xiao'.
+CREATE TABLE IF NOT EXISTS devices (
+  id TEXT PRIMARY KEY,
+  firmware_version TEXT NOT NULL DEFAULT '',
+  last_endpoint TEXT NOT NULL DEFAULT '',
+  last_seen TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  boot_count INTEGER NOT NULL DEFAULT 0,
+  first_seen TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Mutable runtime settings. Deploy-time settings stay in the environment.
@@ -337,13 +350,16 @@ framework; Hono is a dependency but is not currently used for routing.
 | POST | `/api/tools/assign` | Move a tool to a drawer by name |
 | POST | `/api/vision/observations` | Record camera detections for a drawer |
 | GET | `/api/firmware/latest?currentVersion=` | **OTA update check.** Requires an `X-Device-Key` header. 200 streams the newer `.bin`, 204 means already current, 401 rejects a bad key, 503 means `DEVICE_KEY` is unconfigured |
-| GET | `/api/logs?limit=` | Recent request log (default 50, capped at 200) |
+| GET | `/api/devices` | Device status: last contact, firmware version, boot count, plus the latest firmware on disk and whether the serial listener is running |
+| GET | `/api/logs?limit=` | Recent request log (default 50, capped at 200). Includes serial traffic, logged with method `SERIAL` and path `serial:<endpoint>` |
 | GET | `/api/settings/transcription` | Current transcription provider settings |
 | PUT | `/api/settings/transcription` | Save provider and NAS URL |
 | POST | `/api/settings/transcription/test` | Probe the configured provider |
 
 Anything under `/api/` that does not match returns 404 JSON. Everything else falls
-through to static files from `api/public/`, with `index.html` as the SPA fallback.
+through to static files from `api/public/`. An extensionless path is tried as
+`<path>.html` first, so `/drawers` and `/devices` resolve to their pages; `index.html`
+remains the fallback for anything else.
 
 ### Deprecated
 
@@ -460,12 +476,32 @@ is usable at all while the firmware is unfinished.
 | Recent Requests | `GET /api/logs?limit=40` |
 | API Quick Reference | nothing - static text for the endpoints the page does not call |
 
-**`drawers.html` - Drawer Management**, served at `/drawers`:
+**`drawers.html` - Drawers**, served at `/drawers`:
 
 | Panel | Backed by |
 |---|---|
 | Add a drawer - name, optional label, optional matrix row | `POST /api/drawers` |
 | Drawers - table with tool counts and delete | `GET /api/drawers`, `DELETE /api/drawers/:id` |
+
+**`devices.html` - Devices**, served at `/devices`:
+
+| Panel | Backed by |
+|---|---|
+| Stat tiles - firmware running, latest available, boots, last contact | `GET /api/devices` |
+| XIAO ESP32S3 - version, last contact, last endpoint, boot count | `GET /api/devices` |
+| Device Activity - the device's serial requests | `GET /api/logs?limit=200`, filtered to `method = 'SERIAL'` |
+
+The Devices page is **read-only and reports no live connection state.** The firmware
+sends `device/status` once in `setup()` and is otherwise silent until a touch pad or the
+camera is used, so "last contact" means the last boot or use. It is labelled that way on
+the page on purpose: an indicator that claimed "online" would be wrong most of the time.
+A periodic heartbeat in the firmware is the prerequisite for anything better, and for
+any control that has to reach the device - see the note under Serial Protocol.
+
+When no device row exists the page distinguishes two causes, using `serialDevice` from
+`GET /api/devices`: the listener is running and the XIAO has not checked in, or this is
+Windows and no listener was ever started. Blaming the device on a machine that never
+opened the port would be a lie.
 
 The split is deliberate: creating and destroying drawers is structural and rare, and
 sat awkwardly next to the per-drawer tool forms it kept re-rendering. The Dashboard now
@@ -904,6 +940,21 @@ Hardware Bring-Up table for what that looks like in practice.
   - `device/status`: Xiao reports its firmware version and readiness.
   - `tools/lookup`: Xiao sends recognized or transcribed text; Pi returns matching drawer labels and row indicators.
   - `vision/observe`: Xiao sends `drawerLabel`, model version, and a `detections` array of tool-type labels, confidence, quantity, and optional bounding boxes.
+- **The device speaks first, always.** The protocol models requests from the XIAO and
+  responses from the Pi; there is no Pi-initiated message type and the transport only
+  ever writes responses. Nothing on the dashboard can push to the device. Any future
+  control - "check for updates now", "use this Wi-Fi" - has to be queued and collected
+  on the device's next request. That is cheap to add, but it is close to useless until
+  the firmware sends a **periodic heartbeat**: today `device/status` goes out once in
+  `setup()` (a hardcoded string literal in `smarttoolbox.ino`), so a queued command
+  would wait for the next reboot or the next touch. **The heartbeat is the prerequisite
+  for every interactive device feature**, not an optimisation.
+- **Every serial request is recorded.** `handleSerialLine` calls `recordDeviceContact`
+  before dispatching - a request that is then rejected is still proof the XIAO is on the
+  wire - and logs the outcome to `request_logs` with method `SERIAL`. Only
+  `device/status` counts as a boot, and only it carries `firmwareVersion`, so the upsert
+  must not let the other endpoints' empty string blank out the stored version. Guarded
+  by `api/src/db.test.ts`.
 - **Successful response**: `{"id":"req-001","success":true,"body":{...}}`
 - **Error response**: `{"id":"req-001","success":false,"error":{"code":"INVALID_REQUEST","message":"drawer_label is required"}}`
 - **Audio**: **Status: Planned.** Push-to-talk audio is carried on this same link as a single base64 line on a `voice/audio` request - raw 16 kHz 16-bit mono PCM, roughly 171 KB of base64 for four seconds. The recording runs for as long as the button is held (300 ms minimum, 10 s cap), so its length is not known when the transfer starts: the device sends samples plus `sampleRate`/`channels` and **the Pi prepends the WAV header**. An earlier draft of this document called for a separate chunked transfer protocol; that was reconsidered and rejected in `docs/PLAN-voice-lookup.md`, which records why (a chunked protocol needs reassembly state, partial-upload timeouts, and a resync path, where a single line needs only a retry - and the retry is pressing the button again). Raw binary framing was also rejected: the transport splits on newlines and PCM is full of `0x0A`. This means `SerialLineBuffer` must grow a maximum line length, and the `[serial-debug]` log must truncate.

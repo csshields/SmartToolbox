@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Devices | SmartToolBox</title>
+    <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+    <header class="topbar">
+        <div class="topbar-inner">
+            <a class="brand" href="/">
+                <span class="brand-mark" aria-hidden="true">ST</span>
+                <span class="brand-text">SmartToolBox</span>
+            </a>
+            <nav class="nav">
+                <a href="/">Dashboard</a>
+                <a href="/drawers">Drawers</a>
+                <a href="/devices" aria-current="page">Devices</a>
+            </nav>
+            <div class="health">
+                <span id="healthDot" class="health-dot"></span>
+                <span id="healthLabel" class="health-text">Checking API…</span>
+            </div>
+        </div>
+    </header>
+
+    <main class="page">
+        <div class="page-head">
+            <h1>Devices</h1>
+            <p>What the XIAO has told the Pi over the serial wire, and which firmware it is running.</p>
+        </div>
+
+        <section class="stats">
+            <div class="stat">
+                <div class="stat-label">Firmware running</div>
+                <div id="statVersion" class="stat-value">—</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Latest available</div>
+                <div id="statLatest" class="stat-value">—</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Boots recorded</div>
+                <div id="statBoots" class="stat-value">—</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Last contact</div>
+                <div id="statLastSeen" class="stat-value">—</div>
+            </div>
+        </section>
+
+        <section class="card">
+            <div class="card-head">
+                <div>
+                    <h2>XIAO ESP32S3</h2>
+                    <p>The one device on the wire. The serial protocol carries no device id, so everything folds into this row.</p>
+                </div>
+                <button id="refreshButton" class="btn btn-secondary" type="button">Refresh</button>
+            </div>
+            <div class="card-body">
+                <div id="deviceStatus" class="status" aria-live="polite"></div>
+                <div id="deviceDetail"></div>
+            </div>
+        </section>
+
+        <section class="card">
+            <div class="card-head">
+                <div>
+                    <h2>Device Activity</h2>
+                    <p>Serial requests the device has made, newest first.</p>
+                </div>
+            </div>
+            <div class="card-body">
+                <div id="activityTable"></div>
+            </div>
+        </section>
+
+        <div class="footer">SmartToolBox v1.0</div>
+    </main>
+
+    <script src="/app.js"></script>
+    <script>
+        const deviceStatus = document.getElementById('deviceStatus');
+        const deviceDetail = document.getElementById('deviceDetail');
+        const activityTable = document.getElementById('activityTable');
+        const refreshButton = document.getElementById('refreshButton');
+
+        // SQLite writes CURRENT_TIMESTAMP as UTC without a zone marker, which
+        // Date parses as local time and so reads hours off. The Z puts it back.
+        function parseTimestamp(value) {
+            const parsed = new Date(`${String(value).replace(' ', 'T')}Z`);
+            return Number.isNaN(parsed.getTime()) ? null : parsed;
+        }
+
+        function relativeTime(value) {
+            const at = parseTimestamp(value);
+
+            if (!at) {
+                return String(value ?? '—');
+            }
+
+            const seconds = Math.round((Date.now() - at.getTime()) / 1000);
+
+            if (seconds < 60) return 'just now';
+            if (seconds < 3600) return `${Math.floor(seconds / 60)} min ago`;
+            if (seconds < 86400) return `${Math.floor(seconds / 3600)} h ago`;
+            return `${Math.floor(seconds / 86400)} d ago`;
+        }
+
+        function renderDevice(data) {
+            const device = data.device;
+
+            if (!device) {
+                // Two very different causes, and the page would be lying if it
+                // blamed the device on a machine that never opened the port.
+                deviceDetail.innerHTML = data.serialDevice
+                    ? `
+                        <div class="empty">
+                            <h3>No device has checked in yet</h3>
+                            <p>The Pi is listening on <code>${escapeHtml(data.serialDevice)}</code>. The XIAO reports at boot, so power-cycle it to see it here.</p>
+                        </div>
+                    `
+                    : `
+                        <div class="empty">
+                            <h3>Serial listener is not running</h3>
+                            <p>This platform starts no serial listener, so the XIAO cannot be seen from here regardless of whether it is plugged in. Device data appears when the API runs on the Pi.</p>
+                        </div>
+                    `;
+                return;
+            }
+
+            const updateAvailable = data.firmware?.updateAvailable;
+            const rows = [
+                ['Firmware version', device.firmwareVersion
+                    ? `${escapeHtml(device.firmwareVersion)}${updateAvailable ? ' <span class="chip accent">Update available</span>' : ' <span class="chip">Up to date</span>'}`
+                    : '<span class="muted">Never reported</span>'],
+                ['Last contact', `${escapeHtml(device.lastSeen)} <span class="muted">(${relativeTime(device.lastSeen)})</span>`],
+                ['Last request', `<code>${escapeHtml(device.lastEndpoint)}</code>`],
+                ['Boots recorded', escapeHtml(device.bootCount)],
+                ['First seen', escapeHtml(device.firstSeen)],
+            ];
+
+            deviceDetail.innerHTML = `
+                <div class="table-wrap">
+                    <table>
+                        <tbody>
+                            ${rows.map(([label, value]) => `
+                                <tr><td class="nowrap"><strong>${label}</strong></td><td>${value}</td></tr>
+                            `).join('')}
+                        </tbody>
+                    </table>
+                </div>
+                <p class="field-hint" style="margin-top: 14px;">
+                    The firmware sends <code>device/status</code> once at boot and is otherwise silent
+                    until a touch pad or the camera is used, so "last contact" is the last time the
+                    toolbox was booted or used - not a live connection check.
+                </p>
+            `;
+        }
+
+        function renderActivity(logs) {
+            // Serial traffic is tagged SERIAL by handleSerialLine; everything
+            // else in the log table is HTTP from this dashboard.
+            const deviceLogs = logs.filter((log) => log.method === 'SERIAL');
+
+            if (!deviceLogs.length) {
+                activityTable.innerHTML = `
+                    <div class="empty">
+                        <h3>No device activity recorded</h3>
+                        <p>Serial requests from the XIAO will appear here once it talks to the Pi.</p>
+                    </div>
+                `;
+                return;
+            }
+
+            const rowsMarkup = deviceLogs.map((log) => {
+                const statusClass = log.statusCode >= 400 ? 'error' : 'ok';
+                return `
+                    <tr>
+                        <td class="nowrap muted">${escapeHtml(log.createdAt)}</td>
+                        <td class="nowrap muted">${relativeTime(log.createdAt)}</td>
+                        <td><code>${escapeHtml(log.path.replace(/^serial:/, ''))}</code></td>
+                        <td class="${log.tool ? '' : 'muted'}">${escapeHtml(log.tool || '—')}</td>
+                        <td><span class="badge ${statusClass}">${escapeHtml(log.statusCode)}</span></td>
+                        <td>${escapeHtml(log.result)}${log.details ? `<br><span class="muted">${escapeHtml(log.details)}</span>` : ''}</td>
+                    </tr>
+                `;
+            }).join('');
+
+            activityTable.innerHTML = `
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr><th>Time</th><th>When</th><th>Endpoint</th><th>Tool</th><th>Status</th><th>Result</th></tr>
+                        </thead>
+                        <tbody>${rowsMarkup}</tbody>
+                    </table>
+                </div>
+            `;
+        }
+
+        function renderStats(data) {
+            const device = data.device;
+            document.getElementById('statVersion').textContent = device?.firmwareVersion || '—';
+            document.getElementById('statLatest').textContent = data.firmware?.latestVersion || '—';
+            document.getElementById('statBoots').textContent = device ? device.bootCount : '—';
+            document.getElementById('statLastSeen').textContent = device ? relativeTime(device.lastSeen) : '—';
+        }
+
+        async function load() {
+            try {
+                const [deviceResponse, logsResponse] = await Promise.all([
+                    fetch('/api/devices'),
+                    fetch('/api/logs?limit=200'),
+                ]);
+
+                if (!deviceResponse.ok) {
+                    throw new Error('Unable to load device status.');
+                }
+
+                const data = await deviceResponse.json();
+                renderStats(data);
+                renderDevice(data);
+
+                if (logsResponse.ok) {
+                    const logs = await logsResponse.json();
+                    renderActivity(logs.logs ?? []);
+                }
+            } catch (error) {
+                setStatus(deviceStatus, error.message, 'error');
+            }
+        }
+
+        refreshButton.addEventListener('click', load);
+
+        startHealthIndicator();
+        load();
+    </script>
+</body>
+</html>

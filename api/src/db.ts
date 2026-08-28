@@ -21,6 +21,15 @@ export type DrawerRecord = {
   tools: ToolRecord[];
 };
 
+export type DeviceRecord = {
+  id: string;
+  firmwareVersion: string;
+  lastEndpoint: string;
+  lastSeen: string;
+  bootCount: number;
+  firstSeen: string;
+};
+
 export type ToolLocation = {
   drawerId: number;
   label: string;
@@ -109,6 +118,18 @@ database.exec(`
     FOREIGN KEY(drawer_id) REFERENCES drawers(id) ON DELETE CASCADE
   );
 
+  -- One row per device. There is exactly one XIAO on exactly one wire, so the
+  -- id is a constant rather than anything the device reports - the serial
+  -- protocol carries no device identifier.
+  CREATE TABLE IF NOT EXISTS devices (
+    id TEXT PRIMARY KEY,
+    firmware_version TEXT NOT NULL DEFAULT '',
+    last_endpoint TEXT NOT NULL DEFAULT '',
+    last_seen TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    boot_count INTEGER NOT NULL DEFAULT 0,
+    first_seen TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+
   CREATE UNIQUE INDEX IF NOT EXISTS idx_tools_drawer_name ON tools(drawer_id, name);
   CREATE INDEX IF NOT EXISTS idx_request_logs_created_at ON request_logs(created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_observations_tool_drawer ON drawer_observations(tool_name, drawer_id, id DESC);
@@ -160,6 +181,32 @@ const selectDrawerByLabel = database.query(`
 const insertDrawer = database.query(`
   INSERT INTO drawers (name, label, row_number)
   VALUES (?1, ?2, ?3)
+`);
+
+const upsertDeviceContact = database.query(`
+  INSERT INTO devices (id, firmware_version, last_endpoint, last_seen, boot_count)
+  VALUES (?1, ?2, ?3, CURRENT_TIMESTAMP, ?4)
+  ON CONFLICT(id) DO UPDATE SET
+    last_seen = CURRENT_TIMESTAMP,
+    last_endpoint = excluded.last_endpoint,
+    -- Only device/status carries a version. Every other endpoint sends an
+    -- empty string, which must not blank out what the last boot reported.
+    firmware_version = CASE
+      WHEN excluded.firmware_version <> '' THEN excluded.firmware_version
+      ELSE devices.firmware_version
+    END,
+    boot_count = devices.boot_count + excluded.boot_count
+`);
+
+const selectDevice = database.query(`
+  SELECT id,
+         firmware_version AS firmwareVersion,
+         last_endpoint AS lastEndpoint,
+         last_seen AS lastSeen,
+         boot_count AS bootCount,
+         first_seen AS firstSeen
+  FROM devices
+  WHERE id = ?1
 `);
 
 const deleteDrawerById = database.query(`
@@ -541,4 +588,25 @@ export function recordDrawerObservation(observation: {
 export function findDrawerByLabel(label: string) {
   const normalizedLabel = normalizeName(label, "Drawer label");
   return selectDrawerByLabel.get(normalizedLabel) as Omit<DrawerRecord, "toolCount" | "tools"> | null;
+}
+
+// The XIAO speaks only over the serial wire and sends no identifier of its own,
+// so every contact folds into this one row.
+export const DEVICE_ID = "xiao";
+
+export function recordDeviceContact(contact: { endpoint: string; firmwareVersion?: string }) {
+  // device/status is the firmware's boot announcement and nothing else sends it,
+  // so it is also the only thing that counts as a boot.
+  const isBoot = contact.endpoint === "device/status" ? 1 : 0;
+
+  upsertDeviceContact.run(
+    DEVICE_ID,
+    (contact.firmwareVersion ?? "").trim(),
+    contact.endpoint,
+    isBoot,
+  );
+}
+
+export function getDeviceStatus(): DeviceRecord | null {
+  return selectDevice.get(DEVICE_ID) as DeviceRecord | null;
 }

@@ -15,7 +15,9 @@ const {
   deleteDrawer,
   deleteTool,
   findToolLocations,
+  getDeviceStatus,
   listDrawers,
+  recordDeviceContact,
   recordDrawerObservation,
 } = await import("./db");
 
@@ -89,4 +91,40 @@ test("deleteDrawer cascades its tools and their observations", () => {
 
 test("deleteDrawer reports false for an id that does not exist", () => {
   expect(deleteDrawer(999999)).toBe(false);
+});
+
+test("recordDeviceContact counts only device/status as a boot", () => {
+  recordDeviceContact({ endpoint: "device/status", firmwareVersion: "0.11.0" });
+  recordDeviceContact({ endpoint: "tools/lookup" });
+  recordDeviceContact({ endpoint: "tools/lookup" });
+
+  const device = getDeviceStatus();
+
+  expect(device?.bootCount).toBe(1);
+  expect(device?.lastEndpoint).toBe("tools/lookup");
+});
+
+// tools/lookup and vision/observe send no firmwareVersion. If their empty
+// string were written through, using the toolbox would erase the version the
+// device reported at boot and the dashboard would show it as never reported.
+test("recordDeviceContact keeps the last reported firmware version", () => {
+  recordDeviceContact({ endpoint: "device/status", firmwareVersion: "0.11.0" });
+  recordDeviceContact({ endpoint: "tools/lookup" });
+
+  expect(getDeviceStatus()?.firmwareVersion).toBe("0.11.0");
+});
+
+test("getDeviceStatus returns null before the device has ever been seen", async () => {
+  // A second database, because the tests above have already written to the
+  // module-scope one and the empty case cannot be reached from there.
+  const emptyDirectory = mkdtempSync(join(tmpdir(), "smarttoolbox-db-empty-"));
+  const previous = process.cwd();
+  process.chdir(emptyDirectory);
+
+  try {
+    const fresh = await import(`./db?empty=${Date.now()}`);
+    expect(fresh.getDeviceStatus()).toBeNull();
+  } finally {
+    process.chdir(previous);
+  }
 });

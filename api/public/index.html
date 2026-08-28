@@ -15,7 +15,8 @@
             </a>
             <nav class="nav">
                 <a href="/" aria-current="page">Dashboard</a>
-                <a href="/drawers">Drawer Management</a>
+                <a href="/drawers">Drawers</a>
+                <a href="/devices">Devices</a>
             </nav>
             <div class="health">
                 <span id="healthDot" class="health-dot"></span>
@@ -27,7 +28,7 @@
     <main class="page">
         <div class="page-head">
             <h1>Dashboard</h1>
-            <p>What is in each drawer, where the audio goes, and what the API has been asked lately. Add or remove drawers themselves on <a href="/drawers">Drawer Management</a>.</p>
+            <p>What is in each drawer, where the audio goes, and what the API has been asked lately. Add or remove drawers themselves on the <a href="/drawers">Drawers</a> page.</p>
         </div>
 
         <section class="stats">
@@ -237,7 +238,7 @@
                 drawerGrid.innerHTML = `
                     <div class="empty">
                         <h3>No drawers yet</h3>
-                        <p>Create your first drawer on <a href="/drawers">Drawer Management</a>, then add tools to it here.</p>
+                        <p>Create your first drawer on the <a href="/drawers">Drawers</a> page, then add tools to it here.</p>
                     </div>
                 `;
                 return;
