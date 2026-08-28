@@ -24,7 +24,7 @@ When a section's status changes, update the line in the same commit as the code.
 SmartToolbox is a monorepo containing three parts:
 - **API**: Bun web server and SQLite database running on a Raspberry Pi Zero 2
 - **Firmware**: Arduino sketch for the Seeed XIAO ESP32S3 microcontroller
-- **Dashboard**: a single-page web UI served by the API, used to manage drawers and tools
+- **Dashboard**: a two-page web UI served by the API, used to manage drawers and tools
 
 ## Project Structure
 
@@ -44,7 +44,7 @@ smarttoolbox/
 │   │   ├── serialProtocol.ts     # NDJSON request/response framing
 │   │   └── serialTransport.ts    # Reads and writes the CDC ACM device
 │   ├── data/                     # SQLite database files (gitignored)
-│   ├── public/                   # Dashboard single-page app
+│   ├── public/                   # Dashboard pages, shared app.css and app.js
 │   ├── deploy/                   # smarttoolbox.service systemd unit
 │   ├── scripts/                  # Build and utility scripts
 │   ├── package.json              # Dependencies
@@ -439,18 +439,44 @@ drawer for logging:
 
 ## Dashboard
 
-**Status: Implemented** - `api/public/index.html`, a single self-contained page with
-inline CSS and JS. No build step, no framework, no dependencies.
+**Status: Implemented** - two pages under `api/public/`, sharing `app.css` (the whole
+design, every colour a custom property on `:root` with a dark-mode override) and
+`app.js` (`escapeHtml`, `setStatus`, `startHealthIndicator`).
+Page-specific logic stays inline in each page. No build step, no framework, no
+dependencies.
 
 This is the primary way drawers and tools are managed today, and it is how the system
-is usable at all while the firmware is unfinished. Four panels:
+is usable at all while the firmware is unfinished.
+
+**`index.html` - Dashboard**, served at `/`:
 
 | Panel | Backed by |
 |---|---|
-| Inventory Overview | `GET /api/drawers` - counts and summary |
-| Toolbox Inventory | `GET /api/drawers`, `POST /api/drawers`, `POST /api/drawers/:id/tools`, `DELETE /api/drawers/:id`, `DELETE /api/drawers/:id/tools/:toolId` |
+| Stat tiles - drawers, tools, items on hand, drawers with a matrix row | `GET /api/drawers`, counted client-side |
+| Toolbox Inventory - tools within each drawer | `GET /api/drawers`, `POST /api/drawers/:id/tools`, `DELETE /api/drawers/:id/tools/:toolId` |
 | Transcription Settings | `GET`/`PUT /api/settings/transcription`, `POST .../test` |
 | Recent Requests | `GET /api/logs?limit=40` |
+| API Quick Reference | nothing - static text for the endpoints the page does not call |
+
+**`drawers.html` - Drawer Management**, served at `/drawers`:
+
+| Panel | Backed by |
+|---|---|
+| Add a drawer - name, optional label, optional matrix row | `POST /api/drawers` |
+| Drawers - table with tool counts and delete | `GET /api/drawers`, `DELETE /api/drawers/:id` |
+
+The split is deliberate: creating and destroying drawers is structural and rare, and
+sat awkwardly next to the per-drawer tool forms it kept re-rendering. The Dashboard now
+only ever adds and removes *tools*; drawer lifecycle lives on its own page. There is no
+edit: the API has no `PATCH /api/drawers/:id`, so a drawer's name, label, and row are
+fixed once created.
+
+`app.js` sends the label and row number only when the fields are filled in, so `POST
+/api/drawers` still defaults the label to the name and leaves `row_number` null.
+
+`/drawers` resolves through `serveStaticFile`, which tries `<path>.html` for
+extensionless requests before falling back to `index.html`. Adding a page means adding
+the file and a nav link - no route in `serve()`.
 
 **Deleting a tool must also delete its observations.** `selectCanonicalToolName`
 UNIONs `drawer_observations`, and `selectToolLocations` matches on `tool.id IS NOT
@@ -461,14 +487,15 @@ nothing in the UI revealing it. `deleteTool` handles both in one transaction; de
 a drawer was never affected, since observations cascade on `drawer_id`. Guarded by
 `api/src/db.test.ts`.
 
-Deletes sit behind a `confirm()`. The drawer dialog names the tool count and says
-that the observation history goes too, because `drawer_observations` cascades on
-`drawer_id` as well and losing camera history is not what "delete drawer" sounds like.
+Deletes sit behind a `confirm()` on both pages. The drawer dialog, now on Drawer
+Management, names the tool count and says that the observation history goes too,
+because `drawer_observations` cascades on `drawer_id` as well and losing camera
+history is not what "delete drawer" sounds like.
 
-It does not call `/api/tools/lookup`, `/api/tools/assign`, or
+Neither page calls `/api/tools/lookup`, `/api/tools/assign`, or
 `/api/vision/observations` - those exist for the firmware.
 
-Because the page is served from the same origin as the API, no CORS configuration is
+Because the pages are served from the same origin as the API, no CORS configuration is
 needed. Keep it that way unless a separate front end is introduced.
 
 ## Authentication & Authorization

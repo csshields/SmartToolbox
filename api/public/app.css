@@ -1,0 +1,670 @@
+/* Shared by index.html and drawers.html. Plain CSS, no build step: the pages
+   link this file rather than each carrying its own copy of the design.
+
+   Every colour in this file comes from a custom property defined in the two
+   blocks below - nothing further down hard-codes a hex value. Retheming the
+   dashboard means editing :root, and dark mode is the same token names with
+   different values. */
+
+:root {
+    color-scheme: light dark;
+
+    --bg: #f4f5f7;
+    --bg-accent: #eceef2;
+    --surface: #ffffff;
+    --surface-2: #f9fafb;
+    --border: #e3e6ea;
+    --border-strong: #cfd4dc;
+    --text: #101828;
+    --text-muted: #667085;
+    --accent: #4f46e5;
+    --accent-hover: #4338ca;
+    --accent-soft: #eef2ff;
+    --accent-text: #3730a3;
+    --accent-contrast: #ffffff;
+    --brand-gradient-end: #9333ea;
+    --ok: #067647;
+    --ok-soft: #ecfdf3;
+    --danger: #b42318;
+    --danger-soft: #fef3f2;
+    --danger-border: #fecdca;
+
+    --shadow-color: rgba(16, 24, 40, 0.06);
+    --shadow-color-strong: rgba(16, 24, 40, 0.09);
+    --radius: 12px;
+    --radius-lg: 16px;
+    --shadow-sm: 0 1px 2px var(--shadow-color);
+    --shadow: 0 1px 3px var(--shadow-color-strong), 0 8px 24px var(--shadow-color);
+}
+
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg: #0d1117;
+        --bg-accent: #141a24;
+        --surface: #161b24;
+        --surface-2: #1c222c;
+        --border: #262d38;
+        --border-strong: #38404d;
+        --text: #e6e9ef;
+        --text-muted: #98a2b3;
+        --accent: #7c74ff;
+        --accent-hover: #928bff;
+        --accent-soft: #21203f;
+        --accent-text: #c4bfff;
+        --accent-contrast: #10121c;
+        --brand-gradient-end: #b866f5;
+        --ok: #6ce9a6;
+        --ok-soft: #0d2b1f;
+        --danger: #fda29b;
+        --danger-soft: #2d1513;
+        --danger-border: #5a2320;
+
+        --shadow-color: rgba(0, 0, 0, 0.35);
+        --shadow-color-strong: rgba(0, 0, 0, 0.5);
+    }
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    background-image: radial-gradient(circle at 12% -10%, var(--bg-accent), transparent 55%);
+    background-attachment: fixed;
+    color: var(--text);
+    min-height: 100vh;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+}
+
+/* ---------- Top bar ---------- */
+
+.topbar {
+    position: sticky;
+    top: 0;
+    z-index: 10;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+}
+
+.topbar-inner {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 0 24px;
+    height: 62px;
+    display: flex;
+    align-items: center;
+    gap: 28px;
+}
+
+.brand {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-weight: 700;
+    font-size: 1.02rem;
+    letter-spacing: -0.01em;
+    color: var(--text);
+    text-decoration: none;
+}
+
+.brand-mark {
+    width: 28px;
+    height: 28px;
+    display: grid;
+    place-items: center;
+    border-radius: 8px;
+    background: linear-gradient(140deg, var(--accent), var(--brand-gradient-end));
+    color: var(--accent-contrast);
+    font-size: 0.85rem;
+}
+
+.nav {
+    display: flex;
+    gap: 4px;
+    margin-right: auto;
+}
+
+.nav a {
+    padding: 7px 13px;
+    border-radius: 8px;
+    font-size: 0.9rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    text-decoration: none;
+    transition: background 0.15s, color 0.15s;
+}
+
+.nav a:hover {
+    background: var(--surface-2);
+    color: var(--text);
+}
+
+.nav a[aria-current="page"] {
+    background: var(--accent-soft);
+    color: var(--accent-text);
+}
+
+.health {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 0.82rem;
+    color: var(--text-muted);
+    white-space: nowrap;
+}
+
+.health-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--border-strong);
+}
+
+.health-dot.online {
+    background: var(--ok);
+}
+
+.health-dot.offline {
+    background: var(--danger);
+}
+
+/* ---------- Page scaffolding ---------- */
+
+.page {
+    max-width: 1180px;
+    margin: 0 auto;
+    padding: 36px 24px 64px;
+    display: grid;
+    gap: 24px;
+}
+
+.page-head h1 {
+    font-size: 1.9rem;
+    font-weight: 700;
+    letter-spacing: -0.025em;
+    margin-bottom: 6px;
+}
+
+.page-head p {
+    color: var(--text-muted);
+    max-width: 68ch;
+}
+
+.footer {
+    color: var(--text-muted);
+    font-size: 0.82rem;
+    text-align: center;
+    padding-top: 8px;
+}
+
+/* ---------- Stats ---------- */
+
+.stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 16px;
+}
+
+.stat {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 18px 20px;
+    box-shadow: var(--shadow-sm);
+}
+
+.stat-label {
+    font-size: 0.78rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+}
+
+.stat-value {
+    font-size: 1.85rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    font-variant-numeric: tabular-nums;
+    margin-top: 4px;
+}
+
+/* ---------- Cards ---------- */
+
+.card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow);
+    overflow: hidden;
+}
+
+.card-head {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 20px 24px;
+    border-bottom: 1px solid var(--border);
+}
+
+.card-head h2 {
+    font-size: 1.08rem;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+}
+
+.card-head p {
+    color: var(--text-muted);
+    font-size: 0.88rem;
+    margin-top: 3px;
+}
+
+.card-body {
+    padding: 24px;
+}
+
+.card-body > * + * {
+    margin-top: 18px;
+}
+
+/* ---------- Buttons ---------- */
+
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 10px 16px;
+    border: 1px solid transparent;
+    border-radius: 9px;
+    font: inherit;
+    font-size: 0.9rem;
+    font-weight: 600;
+    line-height: 1.2;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.btn:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+.btn-primary {
+    background: var(--accent);
+    color: var(--accent-contrast);
+}
+
+.btn-primary:hover {
+    background: var(--accent-hover);
+}
+
+.btn-secondary {
+    background: var(--surface);
+    border-color: var(--border-strong);
+    color: var(--text);
+}
+
+.btn-secondary:hover {
+    background: var(--surface-2);
+}
+
+/* Deliberately quiet until hovered: these are the only irreversible controls
+   on the page, so they should not compete with the save actions. */
+.btn-delete {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 5px 11px;
+    font: inherit;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.btn-delete:hover,
+.btn-delete:focus-visible {
+    color: var(--danger);
+    border-color: var(--danger-border);
+    background: var(--danger-soft);
+}
+
+/* ---------- Forms ---------- */
+
+.field {
+    display: grid;
+    gap: 6px;
+}
+
+.field label {
+    font-size: 0.85rem;
+    font-weight: 600;
+}
+
+.field-hint {
+    font-size: 0.8rem;
+    color: var(--text-muted);
+}
+
+input,
+select,
+textarea {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid var(--border-strong);
+    border-radius: 9px;
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+    font-size: 0.92rem;
+    transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+input::placeholder,
+textarea::placeholder {
+    color: var(--text-muted);
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+textarea {
+    min-height: 74px;
+    resize: vertical;
+}
+
+.form-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 16px;
+    align-items: start;
+}
+
+.form-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 12px;
+}
+
+/* ---------- Status line ---------- */
+
+.status {
+    min-height: 20px;
+    font-size: 0.88rem;
+    font-weight: 600;
+    color: var(--text-muted);
+}
+
+.status:empty {
+    display: none;
+}
+
+.status.success {
+    color: var(--ok);
+}
+
+.status.error {
+    color: var(--danger);
+}
+
+/* ---------- Chips and empty states ---------- */
+
+.chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 2px 9px;
+    border-radius: 999px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 0.76rem;
+    font-weight: 600;
+    white-space: nowrap;
+}
+
+.chip.accent {
+    background: var(--accent-soft);
+    border-color: transparent;
+    color: var(--accent-text);
+}
+
+.empty {
+    border: 1px dashed var(--border-strong);
+    border-radius: var(--radius);
+    padding: 28px 24px;
+    text-align: center;
+    color: var(--text-muted);
+    background: var(--surface-2);
+}
+
+.empty h3 {
+    color: var(--text);
+    font-size: 0.98rem;
+    margin-bottom: 4px;
+}
+
+.empty a {
+    color: var(--accent);
+}
+
+.muted {
+    color: var(--text-muted);
+}
+
+code {
+    padding: 2px 6px;
+    border-radius: 6px;
+    background: var(--accent-soft);
+    color: var(--accent-text);
+    font-family: ui-monospace, Consolas, Monaco, monospace;
+    font-size: 0.86em;
+}
+
+/* ---------- Drawer cards ---------- */
+
+.drawer-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: 18px;
+}
+
+.drawer-card {
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface-2);
+    padding: 18px;
+}
+
+.drawer-card h3 {
+    font-size: 1rem;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+}
+
+.drawer-card-head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.drawer-tags {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 6px;
+}
+
+.tool-list {
+    list-style: none;
+    display: grid;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.tool-item {
+    position: relative;
+    /* Extra right padding reserves room for the absolutely-positioned delete
+       button so a long tool name cannot run underneath it. */
+    padding: 10px 84px 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface);
+    font-size: 0.9rem;
+}
+
+.tool-item strong {
+    display: block;
+    font-weight: 600;
+}
+
+.tool-item span,
+.tool-item small {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.82rem;
+}
+
+.tool-item .btn-delete {
+    position: absolute;
+    top: 9px;
+    right: 9px;
+}
+
+.tool-form {
+    display: grid;
+    gap: 10px;
+    margin-top: auto;
+    padding-top: 14px;
+    border-top: 1px dashed var(--border);
+}
+
+.tool-form-row {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) 96px;
+    gap: 10px;
+}
+
+/* ---------- Tables ---------- */
+
+.table-wrap {
+    overflow-x: auto;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+}
+
+table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.88rem;
+}
+
+th {
+    position: sticky;
+    top: 0;
+    background: var(--surface-2);
+    text-align: left;
+    font-size: 0.76rem;
+    font-weight: 650;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-muted);
+    padding: 11px 14px;
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+}
+
+td {
+    padding: 11px 14px;
+    border-bottom: 1px solid var(--border);
+    vertical-align: top;
+    overflow-wrap: anywhere;
+}
+
+tbody tr:last-child td {
+    border-bottom: none;
+}
+
+tbody tr:hover td {
+    background: var(--surface-2);
+}
+
+td.nowrap {
+    white-space: nowrap;
+}
+
+.badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 0.76rem;
+    font-weight: 650;
+    font-variant-numeric: tabular-nums;
+}
+
+.badge.ok {
+    background: var(--ok-soft);
+    color: var(--ok);
+}
+
+.badge.error {
+    background: var(--danger-soft);
+    color: var(--danger);
+}
+
+/* ---------- Responsive ---------- */
+
+@media (max-width: 720px) {
+    .topbar-inner {
+        gap: 14px;
+        padding: 0 16px;
+    }
+
+    .brand-text {
+        display: none;
+    }
+
+    .page {
+        padding: 24px 16px 48px;
+    }
+
+    .page-head h1 {
+        font-size: 1.55rem;
+    }
+
+    .card-head,
+    .card-body {
+        padding: 18px 16px;
+    }
+
+    .card-head {
+        flex-direction: column;
+        align-items: flex-start;
+    }
+
+    .drawer-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .health-text {
+        display: none;
+    }
+}

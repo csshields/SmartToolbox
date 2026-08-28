@@ -189,6 +189,17 @@ async function serveStaticFile(pathname: string) {
     return new Response(file);
   }
 
+  // Extensionless routes get the matching page, so the nav can link /drawers
+  // rather than /drawers.html. Without this the fallback below would answer
+  // every dashboard page with index.html.
+  if (!relativePath.includes(".")) {
+    const page = Bun.file(join(process.cwd(), "public", `${relativePath}.html`));
+
+    if (await page.exists()) {
+      return new Response(page);
+    }
+  }
+
   const fallback = Bun.file(join(process.cwd(), "public", "index.html"));
 
   if (await fallback.exists()) {

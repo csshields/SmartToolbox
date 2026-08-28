@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Drawer Management | SmartToolBox</title>
+    <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+    <header class="topbar">
+        <div class="topbar-inner">
+            <a class="brand" href="/">
+                <span class="brand-mark" aria-hidden="true">ST</span>
+                <span class="brand-text">SmartToolBox</span>
+            </a>
+            <nav class="nav">
+                <a href="/">Dashboard</a>
+                <a href="/drawers" aria-current="page">Drawer Management</a>
+            </nav>
+            <div class="health">
+                <span id="healthDot" class="health-dot"></span>
+                <span id="healthLabel" class="health-text">Checking API…</span>
+            </div>
+        </div>
+    </header>
+
+    <main class="page">
+        <div class="page-head">
+            <h1>Drawer Management</h1>
+            <p>Create and remove the drawers themselves. Tools go into them on the <a href="/">Dashboard</a>.</p>
+        </div>
+
+        <section class="card">
+            <div class="card-head">
+                <div>
+                    <h2>Add a drawer</h2>
+                    <p>Only the name is required. The label is what the camera reports and the row is the LED matrix row that lights up.</p>
+                </div>
+            </div>
+            <div class="card-body">
+                <form id="drawerForm">
+                    <div class="form-grid">
+                        <div class="field">
+                            <label for="drawerNameInput">Name</label>
+                            <input id="drawerNameInput" type="text" placeholder="Wrenches" maxlength="80" required>
+                        </div>
+                        <div class="field">
+                            <label for="drawerLabelInput">Label <span class="muted">(optional)</span></label>
+                            <input id="drawerLabelInput" type="text" placeholder="Defaults to the name" maxlength="80">
+                            <span class="field-hint">Matched against the camera's <code>drawerLabel</code>.</span>
+                        </div>
+                        <div class="field">
+                            <label for="drawerRowInput">Matrix row <span class="muted">(optional)</span></label>
+                            <input id="drawerRowInput" type="number" min="1" placeholder="1">
+                            <span class="field-hint">Row the device lights on a lookup.</span>
+                        </div>
+                    </div>
+                    <div class="form-actions" style="margin-top: 18px;">
+                        <button class="btn btn-primary" type="submit">Add drawer</button>
+                    </div>
+                </form>
+                <div id="drawerStatus" class="status" aria-live="polite"></div>
+            </div>
+        </section>
+
+        <section class="card">
+            <div class="card-head">
+                <div>
+                    <h2>Drawers</h2>
+                    <p id="drawerCount">Every drawer the toolbox knows about.</p>
+                </div>
+                <button id="refreshDrawersButton" class="btn btn-secondary" type="button">Refresh</button>
+            </div>
+            <div class="card-body">
+                <div id="drawerTable"></div>
+            </div>
+        </section>
+
+        <div class="footer">SmartToolBox v1.0</div>
+    </main>
+
+    <script src="/app.js"></script>
+    <script>
+        const drawerForm = document.getElementById('drawerForm');
+        const drawerNameInput = document.getElementById('drawerNameInput');
+        const drawerLabelInput = document.getElementById('drawerLabelInput');
+        const drawerRowInput = document.getElementById('drawerRowInput');
+        const drawerStatus = document.getElementById('drawerStatus');
+        const drawerTable = document.getElementById('drawerTable');
+        const drawerCount = document.getElementById('drawerCount');
+        const refreshDrawersButton = document.getElementById('refreshDrawersButton');
+
+        function renderDrawers(drawers) {
+            drawerCount.textContent = drawers.length
+                ? `${drawers.length} drawer${drawers.length === 1 ? '' : 's'}, ordered by matrix row.`
+                : 'Every drawer the toolbox knows about.';
+
+            if (!drawers.length) {
+                drawerTable.innerHTML = `
+                    <div class="empty">
+                        <h3>No drawers yet</h3>
+                        <p>Add your first drawer above, then put tools in it from the <a href="/">Dashboard</a>.</p>
+                    </div>
+                `;
+                return;
+            }
+
+            const rowsMarkup = drawers.map((drawer) => `
+                <tr>
+                    <td><strong>${escapeHtml(drawer.name)}</strong></td>
+                    <td class="${drawer.label === drawer.name ? 'muted' : ''}">${escapeHtml(drawer.label)}</td>
+                    <td class="nowrap">${drawer.rowNumber != null
+                        ? `<span class="chip accent">Row ${escapeHtml(drawer.rowNumber)}</span>`
+                        : '<span class="muted">—</span>'}</td>
+                    <td class="nowrap">${drawer.toolCount} tool${drawer.toolCount === 1 ? '' : 's'}</td>
+                    <td class="nowrap muted">${escapeHtml(drawer.createdAt)}</td>
+                    <td class="nowrap">
+                        <button class="btn-delete" type="button" data-drawer-id="${drawer.id}" data-drawer-name="${escapeHtml(drawer.name)}" data-tool-count="${drawer.toolCount}" title="Delete this drawer">Delete</button>
+                    </td>
+                </tr>
+            `).join('');
+
+            drawerTable.innerHTML = `
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Name</th><th>Label</th><th>Matrix row</th>
+                                <th>Tools</th><th>Created</th><th></th>
+                            </tr>
+                        </thead>
+                        <tbody>${rowsMarkup}</tbody>
+                    </table>
+                </div>
+            `;
+
+            document.querySelectorAll('.btn-delete[data-drawer-id]').forEach((button) => {
+                button.addEventListener('click', handleDrawerDelete);
+            });
+        }
+
+        async function handleDrawerDelete(event) {
+            const { drawerId, drawerName, toolCount } = event.currentTarget.dataset;
+            const count = Number(toolCount);
+
+            // Spell out the cascade. drawer_observations also references drawers
+            // with ON DELETE CASCADE, so this discards the camera's history for
+            // this drawer as well as its tools - not obvious from the button.
+            const warning = [
+                `Delete drawer "${drawerName}"?`,
+                '',
+                count > 0
+                    ? `This also deletes ${count} tool${count === 1 ? '' : 's'} in it, along with any observation history for this drawer.`
+                    : 'This also deletes any observation history for this drawer.',
+                'This cannot be undone.',
+            ].join('\n');
+
+            if (!confirm(warning)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/drawers/${drawerId}`, { method: 'DELETE' });
+                const payload = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(payload.error ?? 'Delete failed.');
+                }
+
+                setStatus(drawerStatus, `Deleted drawer: ${drawerName}.`, 'success');
+                await loadDrawers();
+            } catch (error) {
+                setStatus(drawerStatus, error.message, 'error');
+            }
+        }
+
+        async function loadDrawers() {
+            try {
+                const response = await fetch('/api/drawers');
+
+                if (!response.ok) {
+                    throw new Error('Unable to load drawers.');
+                }
+
+                const data = await response.json();
+                renderDrawers(data.drawers ?? []);
+            } catch (error) {
+                setStatus(drawerStatus, error.message, 'error');
+            }
+        }
+
+        drawerForm.addEventListener('submit', async (event) => {
+            event.preventDefault();
+
+            // Both optional fields are omitted rather than sent empty: the API
+            // defaults the label to the name and leaves the row null.
+            const payload = { name: drawerNameInput.value };
+
+            if (drawerLabelInput.value.trim()) {
+                payload.label = drawerLabelInput.value.trim();
+            }
+
+            if (drawerRowInput.value) {
+                payload.rowNumber = Number(drawerRowInput.value);
+            }
+
+            try {
+                const response = await fetch('/api/drawers', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Unable to create drawer.');
+                }
+
+                drawerForm.reset();
+                setStatus(drawerStatus, `Added drawer: ${data.drawer.name}.`, 'success');
+                await loadDrawers();
+            } catch (error) {
+                setStatus(drawerStatus, error.message, 'error');
+            }
+        });
+
+        refreshDrawersButton.addEventListener('click', () => {
+            loadDrawers();
+        });
+
+        startHealthIndicator();
+        loadDrawers();
+    </script>
+</body>
+</html>

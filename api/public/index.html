@@ -3,521 +3,133 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SmartToolBox Inventory</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            padding: 20px;
-        }
-
-        .container {
-            width: 100%;
-            max-width: 1200px;
-        }
-
-        .header {
-            text-align: center;
-            color: white;
-            margin-bottom: 40px;
-        }
-
-        .header h1 {
-            font-size: 3em;
-            font-weight: 700;
-            margin-bottom: 10px;
-            text-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
-        }
-
-        .header p {
-            font-size: 1.1em;
-            opacity: 0.95;
-            font-weight: 300;
-        }
-
-        .btn {
-            padding: 12px 20px;
-            border: none;
-            border-radius: 8px;
-            font-size: 0.95em;
-            font-weight: 600;
-            cursor: pointer;
-            transition: all 0.3s ease;
-        }
-
-        .btn-primary {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-        }
-
-        .btn-primary:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.4);
-        }
-
-        .btn-secondary {
-            background: #e9ecef;
-            color: #333;
-        }
-
-        .btn-secondary:hover {
-            background: #dee2e6;
-        }
-
-        .summary-card {
-            background: white;
-            border-radius: 16px;
-            padding: 20px;
-            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15);
-            margin-bottom: 30px;
-        }
-
-        .summary-card h2 {
-            color: #333;
-            margin-bottom: 15px;
-            font-size: 1.4em;
-        }
-
-        .summary-card p {
-            color: #4b5563;
-            line-height: 1.6;
-        }
-
-        .summary-card code {
-            display: inline-block;
-            padding: 2px 6px;
-            border-radius: 6px;
-            background: #eef2ff;
-            color: #3730a3;
-            font-family: Consolas, Monaco, monospace;
-            font-size: 0.92em;
-        }
-
-        .footer {
-            text-align: center;
-            color: white;
-            opacity: 0.9;
-            font-size: 0.9em;
-        }
-
-        .inventory-section {
-            background: rgba(255, 255, 255, 0.14);
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            border-radius: 24px;
-            padding: 24px;
-            backdrop-filter: blur(18px);
-            box-shadow: 0 24px 50px rgba(0, 0, 0, 0.22);
-            margin-bottom: 30px;
-        }
-
-        .logs-section {
-            background: rgba(255, 255, 255, 0.14);
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            border-radius: 24px;
-            padding: 24px;
-            backdrop-filter: blur(18px);
-            box-shadow: 0 24px 50px rgba(0, 0, 0, 0.22);
-            margin-bottom: 30px;
-        }
-
-        .settings-section {
-            background: rgba(255, 255, 255, 0.14);
-            border: 1px solid rgba(255, 255, 255, 0.2);
-            border-radius: 24px;
-            padding: 24px;
-            backdrop-filter: blur(18px);
-            box-shadow: 0 24px 50px rgba(0, 0, 0, 0.22);
-            margin-bottom: 30px;
-            color: white;
-        }
-
-        .settings-grid {
-            display: grid;
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-            gap: 16px;
-            margin-top: 18px;
-        }
-
-        .settings-field {
-            display: grid;
-            gap: 8px;
-        }
-
-        .settings-field label {
-            font-weight: 700;
-        }
-
-        .settings-field input,
-        .settings-field select {
-            width: 100%;
-            padding: 12px 14px;
-            border: 1px solid rgba(16, 24, 40, 0.12);
-            border-radius: 12px;
-            background: white;
-            color: #1f2937;
-            font: inherit;
-        }
-
-        .settings-actions {
-            display: flex;
-            gap: 12px;
-            align-items: center;
-            flex-wrap: wrap;
-            margin-top: 18px;
-        }
-
-        .settings-hint {
-            color: rgba(255, 255, 255, 0.85);
-            line-height: 1.5;
-        }
-
-        .inventory-header {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-end;
-            gap: 20px;
-            margin-bottom: 20px;
-            color: white;
-        }
-
-        .inventory-header h2 {
-            font-size: 1.8em;
-            margin-bottom: 6px;
-        }
-
-        .inventory-header p {
-            opacity: 0.9;
-        }
-
-        .logs-toolbar {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            gap: 12px;
-            margin-bottom: 18px;
-            color: white;
-        }
-
-        .logs-toolbar p {
-            opacity: 0.9;
-        }
-
-        .drawer-create {
-            display: grid;
-            grid-template-columns: minmax(0, 1fr) auto;
-            gap: 12px;
-            margin-bottom: 18px;
-        }
-
-        .drawer-create input,
-        .tool-form input,
-        .tool-form textarea {
-            width: 100%;
-            padding: 12px 14px;
-            border: 1px solid rgba(16, 24, 40, 0.12);
-            border-radius: 12px;
-            font: inherit;
-        }
-
-        .drawer-create input:focus,
-        .tool-form input:focus,
-        .tool-form textarea:focus {
-            outline: none;
-            border-color: #667eea;
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.15);
-        }
-
-        .inventory-status {
-            min-height: 24px;
-            margin-bottom: 18px;
-            color: white;
-            font-weight: 600;
-        }
-
-        .inventory-status.error {
-            color: #fee2e2;
-        }
-
-        .inventory-status.success {
-            color: #dcfce7;
-        }
-
-        .drawer-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
-            gap: 18px;
-        }
-
-        .drawer-card,
-        .empty-state {
-            background: white;
-            border-radius: 18px;
-            padding: 20px;
-            box-shadow: 0 12px 32px rgba(15, 23, 42, 0.15);
-        }
-
-        .drawer-card h3 {
-            margin-bottom: 6px;
-            color: #1f2937;
-        }
-
-        .drawer-meta {
-            color: #6b7280;
-            font-size: 0.92em;
-            margin-bottom: 16px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 12px;
-        }
-
-        /* Deliberately quiet until hovered: these are the only irreversible
-           controls on the page, so they should not compete with Save Tool. */
-        .btn-delete {
-            border: 1px solid #e5e7eb;
-            background: transparent;
-            color: #9ca3af;
-            border-radius: 8px;
-            padding: 4px 10px;
-            font-size: 0.85em;
-            cursor: pointer;
-            transition: color 0.15s, border-color 0.15s, background 0.15s;
-        }
-
-        .btn-delete:hover,
-        .btn-delete:focus-visible {
-            color: #b91c1c;
-            border-color: #fca5a5;
-            background: #fef2f2;
-        }
-
-        .tool-item .btn-delete {
-            position: absolute;
-            top: 10px;
-            right: 10px;
-        }
-
-        .tool-list {
-            list-style: none;
-            display: grid;
-            gap: 10px;
-            margin: 0 0 18px;
-            padding: 0;
-        }
-
-        .tool-item {
-            border: 1px solid #e5e7eb;
-            border-radius: 12px;
-            /* Extra right padding reserves room for the absolutely-positioned
-               delete button so a long tool name cannot run underneath it. */
-            padding: 12px 84px 12px 12px;
-            background: #f9fafb;
-            position: relative;
-        }
-
-        .tool-item strong {
-            display: block;
-            margin-bottom: 4px;
-            color: #111827;
-        }
-
-        .tool-item span,
-        .tool-item small {
-            display: block;
-            color: #4b5563;
-        }
-
-        .tool-form {
-            display: grid;
-            gap: 10px;
-        }
-
-        .tool-form-row {
-            display: grid;
-            grid-template-columns: minmax(0, 1fr) 110px;
-            gap: 10px;
-        }
-
-        .tool-form textarea {
-            min-height: 76px;
-            resize: vertical;
-        }
-
-        .empty-state {
-            color: #374151;
-        }
-
-        .request-grid {
-            display: grid;
-            grid-template-columns: 160px 90px 1.3fr 1fr 90px 90px 1.2fr;
-            gap: 1px;
-            border-radius: 18px;
-            overflow: hidden;
-            background: rgba(148, 163, 184, 0.35);
-        }
-
-        .request-grid-cell {
-            min-width: 0;
-            padding: 12px 14px;
-            background: rgba(255, 255, 255, 0.95);
-            color: #1f2937;
-            font-size: 0.92em;
-            overflow-wrap: anywhere;
-        }
-
-        .request-grid-cell.header {
-            background: #dbeafe;
-            color: #1e3a8a;
-            font-weight: 700;
-            position: sticky;
-            top: 0;
-        }
-
-        .request-grid-cell.muted {
-            color: #6b7280;
-        }
-
-        .muted {
-            color: #6b7280;
-        }
-
-        .request-grid-cell.status-ok {
-            color: #166534;
-            font-weight: 700;
-        }
-
-        .request-grid-cell.status-error {
-            color: #991b1b;
-            font-weight: 700;
-        }
-
-        .request-grid-wrapper {
-            overflow-x: auto;
-            border-radius: 18px;
-        }
-
-        @media (max-width: 768px) {
-            .header h1 {
-                font-size: 2em;
-            }
-
-            .inventory-header,
-            .logs-toolbar,
-            .drawer-create,
-            .tool-form-row,
-            .settings-grid {
-                grid-template-columns: 1fr;
-            }
-
-            .inventory-header,
-            .logs-toolbar {
-                align-items: flex-start;
-                flex-direction: column;
-            }
-
-            .request-grid {
-                min-width: 860px;
-            }
-        }
-    </style>
+    <title>SmartToolBox Dashboard</title>
+    <link rel="stylesheet" href="/app.css">
 </head>
 <body>
-    <div class="container">
-        <div class="header">
-            <h1>SmartToolBox</h1>
-            <p>Inventory and drawer assignment for your toolbox</p>
+    <header class="topbar">
+        <div class="topbar-inner">
+            <a class="brand" href="/">
+                <span class="brand-mark" aria-hidden="true">ST</span>
+                <span class="brand-text">SmartToolBox</span>
+            </a>
+            <nav class="nav">
+                <a href="/" aria-current="page">Dashboard</a>
+                <a href="/drawers">Drawer Management</a>
+            </nav>
+            <div class="health">
+                <span id="healthDot" class="health-dot"></span>
+                <span id="healthLabel" class="health-text">Checking API…</span>
+            </div>
+        </div>
+    </header>
+
+    <main class="page">
+        <div class="page-head">
+            <h1>Dashboard</h1>
+            <p>What is in each drawer, where the audio goes, and what the API has been asked lately. Add or remove drawers themselves on <a href="/drawers">Drawer Management</a>.</p>
         </div>
 
-        <section class="summary-card">
-            <h2>Inventory Overview</h2>
-            <p>Keep one place to track which drawer holds each tool. Use the API to search by tool name or assign a tool to a new drawer number.</p>
-            <p><strong>Find tool:</strong> <code>GET /api/tools/find?tool=10mm%20socket</code></p>
-            <p><strong>Assign tool:</strong> <code>POST /api/tools/assign</code> with JSON <code>{"tool":"10mm socket","drawerNumber":2}</code></p>
+        <section class="stats">
+            <div class="stat">
+                <div class="stat-label">Drawers</div>
+                <div id="statDrawers" class="stat-value">—</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Tools tracked</div>
+                <div id="statTools" class="stat-value">—</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Items on hand</div>
+                <div id="statQuantity" class="stat-value">—</div>
+            </div>
+            <div class="stat">
+                <div class="stat-label">Drawers with a matrix row</div>
+                <div id="statRows" class="stat-value">—</div>
+            </div>
         </section>
 
-        <section class="inventory-section">
-            <div class="inventory-header">
+        <section class="card">
+            <div class="card-head">
                 <div>
                     <h2>Toolbox Inventory</h2>
                     <p>Track what belongs in each drawer and keep the list persistent on the device.</p>
                 </div>
             </div>
-
-            <form id="drawerForm" class="drawer-create">
-                <input id="drawerNameInput" type="text" placeholder="Add a drawer, for example: Wrenches" maxlength="80" required>
-                <button class="btn btn-primary" type="submit">Add Drawer</button>
-            </form>
-
-            <div id="inventoryStatus" class="inventory-status" aria-live="polite"></div>
-            <div id="drawerGrid" class="drawer-grid"></div>
+            <div class="card-body">
+                <div id="inventoryStatus" class="status" aria-live="polite"></div>
+                <div id="drawerGrid" class="drawer-grid"></div>
+            </div>
         </section>
 
-        <section class="settings-section">
-            <div class="inventory-header">
+        <section class="card">
+            <div class="card-head">
                 <div>
                     <h2>Transcription Settings</h2>
                     <p>Choose where push-to-talk audio is transcribed. API keys remain on the Pi and are never shown here.</p>
                 </div>
             </div>
-
-            <form id="transcriptionSettingsForm">
-                <div class="settings-grid">
-                    <div class="settings-field">
-                        <label for="transcriptionProvider">Provider</label>
-                        <select id="transcriptionProvider" name="provider">
-                            <option value="nas_whisper">NAS Whisper</option>
-                            <option value="openai">OpenAI</option>
-                        </select>
+            <div class="card-body">
+                <form id="transcriptionSettingsForm">
+                    <div class="form-grid">
+                        <div class="field">
+                            <label for="transcriptionProvider">Provider</label>
+                            <select id="transcriptionProvider" name="provider">
+                                <option value="nas_whisper">NAS Whisper</option>
+                                <option value="openai">OpenAI</option>
+                            </select>
+                        </div>
+                        <div id="nasUrlField" class="field">
+                            <label for="nasUrl">NAS Whisper URL</label>
+                            <input id="nasUrl" name="nasUrl" type="url" placeholder="http://192.168.50.10:9000" required>
+                        </div>
                     </div>
-                    <div id="nasUrlField" class="settings-field">
-                        <label for="nasUrl">NAS Whisper URL</label>
-                        <input id="nasUrl" name="nasUrl" type="url" placeholder="http://192.168.50.10:9000" required>
+                    <p id="transcriptionHint" class="field-hint" style="margin-top: 14px;"></p>
+                    <div class="form-actions" style="margin-top: 18px;">
+                        <button class="btn btn-primary" type="submit">Save settings</button>
+                        <button id="testTranscriptionButton" class="btn btn-secondary" type="button">Test connection</button>
                     </div>
-                </div>
-                <p id="transcriptionHint" class="settings-hint"></p>
-                <div class="settings-actions">
-                    <button class="btn btn-primary" type="submit">Save Settings</button>
-                    <button id="testTranscriptionButton" class="btn btn-secondary" type="button">Test Connection</button>
-                </div>
-            </form>
-            <div id="transcriptionStatus" class="inventory-status" aria-live="polite"></div>
+                </form>
+                <div id="transcriptionStatus" class="status" aria-live="polite"></div>
+            </div>
         </section>
 
-        <section class="logs-section">
-            <div class="logs-toolbar">
+        <section class="card">
+            <div class="card-head">
                 <div>
                     <h2>Recent Requests</h2>
                     <p>Structured request history from the API, including result and status code.</p>
                 </div>
-                <button id="refreshLogsButton" class="btn btn-secondary" type="button">Refresh Logs</button>
+                <button id="refreshLogsButton" class="btn btn-secondary" type="button">Refresh</button>
             </div>
-
-            <div id="logsStatus" class="inventory-status" aria-live="polite"></div>
-            <div id="requestGridWrapper" class="request-grid-wrapper"></div>
+            <div class="card-body">
+                <div id="logsStatus" class="status" aria-live="polite"></div>
+                <div id="requestTable"></div>
+            </div>
         </section>
 
-        <div class="footer">
-            <p>SmartToolBox v1.0 | Live since today</p>
-        </div>
-    </div>
+        <section class="card">
+            <div class="card-head">
+                <div>
+                    <h2>API Quick Reference</h2>
+                    <p>The endpoints this page does not use, for testing by hand.</p>
+                </div>
+            </div>
+            <div class="card-body">
+                <p class="muted"><strong>Find tool:</strong> <code>GET /api/tools/find?tool=10mm%20socket</code></p>
+                <p class="muted"><strong>Assign tool:</strong> <code>POST /api/tools/assign</code> with <code>{"tool":"10mm socket","drawerNumber":2}</code></p>
+            </div>
+        </section>
 
+        <div class="footer">SmartToolBox v1.0</div>
+    </main>
+
+    <script src="/app.js"></script>
     <script>
         const inventoryStatus = document.getElementById('inventoryStatus');
         const drawerGrid = document.getElementById('drawerGrid');
-        const drawerForm = document.getElementById('drawerForm');
-        const drawerNameInput = document.getElementById('drawerNameInput');
         const logsStatus = document.getElementById('logsStatus');
-        const requestGridWrapper = document.getElementById('requestGridWrapper');
+        const requestTable = document.getElementById('requestTable');
         const refreshLogsButton = document.getElementById('refreshLogsButton');
         const transcriptionSettingsForm = document.getElementById('transcriptionSettingsForm');
         const transcriptionProvider = document.getElementById('transcriptionProvider');
@@ -527,28 +139,28 @@
         const transcriptionStatus = document.getElementById('transcriptionStatus');
         const testTranscriptionButton = document.getElementById('testTranscriptionButton');
 
-        function setInventoryStatus(message, type = '') {
-            inventoryStatus.textContent = message;
-            inventoryStatus.className = `inventory-status ${type}`.trim();
+        // A drawer's label and matrix row are only worth showing when the label
+        // differs from the name, or to say plainly that no row is set.
+        function drawerTagsMarkup(drawer) {
+            const tags = [];
+
+            if (drawer.label && drawer.label !== drawer.name) {
+                tags.push(`<span class="chip">Label: ${escapeHtml(drawer.label)}</span>`);
+            }
+
+            tags.push(drawer.rowNumber != null
+                ? `<span class="chip accent">Row ${escapeHtml(drawer.rowNumber)}</span>`
+                : '<span class="chip">No matrix row</span>');
+
+            return `<div class="drawer-tags">${tags.join('')}</div>`;
         }
 
-        function escapeHtml(value) {
-            return String(value ?? '')
-                .replaceAll('&', '&amp;')
-                .replaceAll('<', '&lt;')
-                .replaceAll('>', '&gt;')
-                .replaceAll('"', '&quot;')
-                .replaceAll("'", '&#39;');
-        }
-
-        function setLogsStatus(message, type = '') {
-            logsStatus.textContent = message;
-            logsStatus.className = `inventory-status ${type}`.trim();
-        }
-
-        function setTranscriptionStatus(message, type = '') {
-            transcriptionStatus.textContent = message;
-            transcriptionStatus.className = `inventory-status ${type}`.trim();
+        function renderStats(drawers) {
+            const tools = drawers.flatMap((drawer) => drawer.tools);
+            document.getElementById('statDrawers').textContent = drawers.length;
+            document.getElementById('statTools').textContent = tools.length;
+            document.getElementById('statQuantity').textContent = tools.reduce((total, tool) => total + tool.quantity, 0);
+            document.getElementById('statRows').textContent = drawers.filter((drawer) => drawer.rowNumber != null).length;
         }
 
         function updateTranscriptionFields(openaiApiKeyConfigured = false) {
@@ -575,14 +187,14 @@
                 nasUrl.value = settings.nasUrl;
                 updateTranscriptionFields(settings.openaiApiKeyConfigured);
             } catch (error) {
-                setTranscriptionStatus(error.message, 'error');
+                setStatus(transcriptionStatus, error.message, 'error');
             }
         }
 
         function renderLogs(logs) {
             if (!logs.length) {
-                requestGridWrapper.innerHTML = `
-                    <div class="empty-state">
+                requestTable.innerHTML = `
+                    <div class="empty">
                         <h3>No requests logged yet</h3>
                         <p>API requests will appear here after the app receives them.</p>
                     </div>
@@ -590,30 +202,42 @@
                 return;
             }
 
-            const headers = ['Time', 'Method', 'Route', 'Tool', 'Drawer', 'Status', 'Result'];
-            const headerMarkup = headers.map((header) => `<div class="request-grid-cell header">${header}</div>`).join('');
             const rowsMarkup = logs.map((log) => {
-                const statusClass = log.statusCode >= 400 ? 'status-error' : 'status-ok';
+                const statusClass = log.statusCode >= 400 ? 'error' : 'ok';
                 return `
-                    <div class="request-grid-cell">${escapeHtml(log.createdAt)}</div>
-                    <div class="request-grid-cell">${escapeHtml(log.method)}</div>
-                    <div class="request-grid-cell">${escapeHtml(log.path)}</div>
-                    <div class="request-grid-cell ${log.tool ? '' : 'muted'}">${escapeHtml(log.tool || '—')}</div>
-                    <div class="request-grid-cell ${log.drawerNumber != null ? '' : 'muted'}">${log.drawerNumber != null ? escapeHtml(log.drawerNumber) : '—'}</div>
-                    <div class="request-grid-cell ${statusClass}">${escapeHtml(log.statusCode)}</div>
-                    <div class="request-grid-cell">${escapeHtml(log.result)}${log.details ? `<br><span class="muted">${escapeHtml(log.details)}</span>` : ''}</div>
+                    <tr>
+                        <td class="nowrap muted">${escapeHtml(log.createdAt)}</td>
+                        <td class="nowrap">${escapeHtml(log.method)}</td>
+                        <td>${escapeHtml(log.path)}</td>
+                        <td class="${log.tool ? '' : 'muted'}">${escapeHtml(log.tool || '—')}</td>
+                        <td class="${log.drawerNumber != null ? '' : 'muted'}">${log.drawerNumber != null ? escapeHtml(log.drawerNumber) : '—'}</td>
+                        <td><span class="badge ${statusClass}">${escapeHtml(log.statusCode)}</span></td>
+                        <td>${escapeHtml(log.result)}${log.details ? `<br><span class="muted">${escapeHtml(log.details)}</span>` : ''}</td>
+                    </tr>
                 `;
             }).join('');
 
-            requestGridWrapper.innerHTML = `<div class="request-grid">${headerMarkup}${rowsMarkup}</div>`;
+            requestTable.innerHTML = `
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Time</th><th>Method</th><th>Route</th><th>Tool</th>
+                                <th>Drawer</th><th>Status</th><th>Result</th>
+                            </tr>
+                        </thead>
+                        <tbody>${rowsMarkup}</tbody>
+                    </table>
+                </div>
+            `;
         }
 
         function renderDrawers(drawers) {
             if (!drawers.length) {
                 drawerGrid.innerHTML = `
-                    <div class="empty-state">
+                    <div class="empty">
                         <h3>No drawers yet</h3>
-                        <p>Create your first drawer above, then start adding tools to it.</p>
+                        <p>Create your first drawer on <a href="/drawers">Drawer Management</a>, then add tools to it here.</p>
                     </div>
                 `;
                 return;
@@ -633,10 +257,12 @@
 
                 return `
                     <article class="drawer-card">
-                        <h3>${escapeHtml(drawer.name)}</h3>
-                        <div class="drawer-meta">
-                            ${drawer.toolCount} tool${drawer.toolCount === 1 ? '' : 's'} tracked
-                            <button class="btn-delete" type="button" data-drawer-id="${drawer.id}" data-drawer-name="${escapeHtml(drawer.name)}" data-tool-count="${drawer.toolCount}" title="Delete this drawer">Delete drawer</button>
+                        <div class="drawer-card-head">
+                            <div>
+                                <h3>${escapeHtml(drawer.name)}</h3>
+                                ${drawerTagsMarkup(drawer)}
+                            </div>
+                            <span class="chip">${drawer.toolCount} tool${drawer.toolCount === 1 ? '' : 's'}</span>
                         </div>
                         <ul class="tool-list">${toolsMarkup}</ul>
                         <form class="tool-form" data-drawer-id="${drawer.id}">
@@ -645,7 +271,7 @@
                                 <input name="quantity" type="number" min="1" value="1" required>
                             </div>
                             <textarea name="notes" placeholder="Notes, size, or location details"></textarea>
-                            <button class="btn btn-secondary" type="submit">Save Tool</button>
+                            <button class="btn btn-secondary" type="submit">Save tool</button>
                         </form>
                     </article>
                 `;
@@ -657,10 +283,6 @@
 
             document.querySelectorAll('.btn-delete[data-tool-id]').forEach((button) => {
                 button.addEventListener('click', handleToolDelete);
-            });
-
-            document.querySelectorAll('.btn-delete[data-drawer-name]').forEach((button) => {
-                button.addEventListener('click', handleDrawerDelete);
             });
         }
 
@@ -679,46 +301,19 @@
                 return;
             }
 
-            await sendDelete(`/api/drawers/${drawerId}/tools/${toolId}`, 'Tool deleted.');
-        }
-
-        async function handleDrawerDelete(event) {
-            const { drawerId, drawerName, toolCount } = event.currentTarget.dataset;
-            const count = Number(toolCount);
-
-            // Spell out the cascade. drawer_observations also references drawers
-            // with ON DELETE CASCADE, so this discards the camera's history for
-            // this drawer as well as its tools - not obvious from the button.
-            const warning = [
-                `Delete drawer "${drawerName}"?`,
-                '',
-                count > 0
-                    ? `This also deletes ${count} tool${count === 1 ? '' : 's'} in it, along with any observation history for this drawer.`
-                    : 'This also deletes any observation history for this drawer.',
-                'This cannot be undone.',
-            ].join('\n');
-
-            if (!confirm(warning)) {
-                return;
-            }
-
-            await sendDelete(`/api/drawers/${drawerId}`, 'Drawer deleted.');
-        }
-
-        async function sendDelete(url, successMessage) {
             try {
-                const response = await fetch(url, { method: 'DELETE' });
+                const response = await fetch(`/api/drawers/${drawerId}/tools/${toolId}`, { method: 'DELETE' });
                 const payload = await response.json();
 
                 if (!response.ok) {
                     throw new Error(payload.error ?? 'Delete failed.');
                 }
 
-                setInventoryStatus(successMessage, 'success');
+                setStatus(inventoryStatus, 'Tool deleted.', 'success');
                 await loadInventory();
                 await loadLogs();
             } catch (error) {
-                setInventoryStatus(error.message, 'error');
+                setStatus(inventoryStatus, error.message, 'error');
             }
         }
 
@@ -731,9 +326,11 @@
                 }
 
                 const data = await response.json();
-                renderDrawers(data.drawers ?? []);
+                const drawers = data.drawers ?? [];
+                renderDrawers(drawers);
+                renderStats(drawers);
             } catch (error) {
-                setInventoryStatus(error.message, 'error');
+                setStatus(inventoryStatus, error.message, 'error');
             }
         }
 
@@ -747,9 +344,9 @@
 
                 const data = await response.json();
                 renderLogs(data.logs ?? []);
-                setLogsStatus(`Showing ${data.logs?.length ?? 0} recent requests.`, 'success');
+                setStatus(logsStatus, `Showing ${data.logs?.length ?? 0} recent requests.`, 'success');
             } catch (error) {
-                setLogsStatus(error.message, 'error');
+                setStatus(logsStatus, error.message, 'error');
             }
         }
 
@@ -777,40 +374,15 @@
                     throw new Error(data.error || 'Unable to save tool.');
                 }
 
-                setInventoryStatus(`Saved ${data.tool.name}.`, 'success');
+                setStatus(inventoryStatus, `Saved ${data.tool.name}.`, 'success');
                 form.reset();
                 form.querySelector('[name="quantity"]').value = '1';
                 await loadInventory();
                 await loadLogs();
             } catch (error) {
-                setInventoryStatus(error.message, 'error');
+                setStatus(inventoryStatus, error.message, 'error');
             }
         }
-
-        drawerForm.addEventListener('submit', async (event) => {
-            event.preventDefault();
-
-            try {
-                const response = await fetch('/api/drawers', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ name: drawerNameInput.value })
-                });
-
-                const data = await response.json();
-
-                if (!response.ok) {
-                    throw new Error(data.error || 'Unable to create drawer.');
-                }
-
-                drawerNameInput.value = '';
-                setInventoryStatus(`Added drawer: ${data.drawer.name}.`, 'success');
-                await loadInventory();
-                await loadLogs();
-            } catch (error) {
-                setInventoryStatus(error.message, 'error');
-            }
-        });
 
         refreshLogsButton.addEventListener('click', () => {
             loadLogs();
@@ -836,10 +408,10 @@
                 transcriptionProvider.value = data.settings.provider;
                 nasUrl.value = data.settings.nasUrl;
                 updateTranscriptionFields(data.settings.openaiApiKeyConfigured);
-                setTranscriptionStatus('Transcription settings saved.', 'success');
+                setStatus(transcriptionStatus, 'Transcription settings saved.', 'success');
                 await loadLogs();
             } catch (error) {
-                setTranscriptionStatus(error.message, 'error');
+                setStatus(transcriptionStatus, error.message, 'error');
             }
         });
 
@@ -855,19 +427,14 @@
                     throw new Error(data.error || 'Unable to test transcription provider.');
                 }
 
-                setTranscriptionStatus(data.message, 'success');
+                setStatus(transcriptionStatus, data.message, 'success');
                 await loadLogs();
             } catch (error) {
-                setTranscriptionStatus(error.message, 'error');
+                setStatus(transcriptionStatus, error.message, 'error');
             }
         });
 
-        // Check API health
-        fetch('/health')
-            .then(r => r.json())
-            .then(data => console.log('✓ API healthy:', data))
-            .catch(err => console.error('✗ API error:', err));
-
+        startHealthIndicator();
         loadInventory();
         loadLogs();
         loadTranscriptionSettings();
