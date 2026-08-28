@@ -133,8 +133,14 @@ bool matrixEyesClosed = false;
 // one case where a lit row and the digit 1 look alike, so showing both in turn
 // removes the ambiguity without giving up the spatial cue.
 const uint16_t MATRIX_RESULT_ROW_MS = 2000;
-const uint16_t MATRIX_RESULT_DIGIT_MS = 2000;
+// The digit gets twice the row's time. It is the part you actually have to read
+// and carry to the box, and two seconds was gone before you had looked up.
+const uint16_t MATRIX_RESULT_DIGIT_MS = 4000;
 const uint16_t MATRIX_RESULT_HOLD_MS = MATRIX_RESULT_ROW_MS + MATRIX_RESULT_DIGIT_MS;
+
+// The faces and the alert band have no second phase and nothing to read, so
+// they keep their own hold rather than inheriting the digit's.
+const uint16_t MATRIX_NOTICE_HOLD_MS = 4000;
 const uint16_t MATRIX_BLINK_CLOSED_MS = 130;
 
 // Four phases: none, one, two, three dots. Slow enough to read as deliberate
@@ -222,13 +228,17 @@ void drawFace(bool eyesClosed) {
 void drawThinkingFace(uint8_t phase) {
   matrixClear();
 
-  const uint8_t eyeColumns[] = {1, 5};
-  for (uint8_t eye = 0; eye < 2; eye++) {
-    const uint8_t x = eyeColumns[eye];
-    matrixSetPixel(x, 2, EYE_COLOR);
-    matrixSetPixel(x + 1, 2, EYE_COLOR);
-    matrixSetPixel(x, 3, EYE_COLOR);
-    matrixSetPixel(x + 1, 3, EYE_COLOR);
+  // Mismatched eyes: the left one is a row taller than the right. That
+  // asymmetry is what makes the face read as quizzical rather than just awake -
+  // the same trick Cozmo and Vector use. Both sit on the same baseline at y=3,
+  // so the left eye reads as widening rather than the whole face sliding up.
+  for (uint8_t y = 1; y <= 3; y++) {
+    matrixSetPixel(1, y, EYE_COLOR);
+    matrixSetPixel(2, y, EYE_COLOR);
+  }
+  for (uint8_t y = 2; y <= 3; y++) {
+    matrixSetPixel(5, y, EYE_COLOR);
+    matrixSetPixel(6, y, EYE_COLOR);
   }
 
   for (uint8_t dot = 0; dot < phase && dot < 3; dot++) {
@@ -383,7 +393,7 @@ void showMatrixSad(uint8_t color) {
   matrixResultRow = 0;
   matrixResultDigitDrawn = true; // No row, so no digit follows.
   matrixMode = MATRIX_RESULT;
-  matrixResultUntil = millis() + MATRIX_RESULT_HOLD_MS;
+  matrixResultUntil = millis() + MATRIX_NOTICE_HOLD_MS;
   matrixPush();
 }
 
@@ -393,7 +403,7 @@ void showMatrixUnknown(uint8_t color) {
   matrixResultRow = 0;
   matrixResultDigitDrawn = true;
   matrixMode = MATRIX_RESULT;
-  matrixResultUntil = millis() + MATRIX_RESULT_HOLD_MS;
+  matrixResultUntil = millis() + MATRIX_NOTICE_HOLD_MS;
   matrixPush();
 }
 
@@ -405,7 +415,7 @@ void showMatrixAlert(uint8_t color) {
   matrixResultRow = 0;
   matrixResultDigitDrawn = true; // An alert has no row, so no digit follows.
   matrixMode = MATRIX_RESULT;
-  matrixResultUntil = millis() + MATRIX_RESULT_HOLD_MS;
+  matrixResultUntil = millis() + MATRIX_NOTICE_HOLD_MS;
   matrixPush();
 }
 

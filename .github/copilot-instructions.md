@@ -1238,15 +1238,23 @@ Three modes: `MATRIX_EYES`, `MATRIX_THINKING`, `MATRIX_RESULT`.
 | State | Shown | Colour | Meaning |
 |---|---|---|---|
 | Idle | Face with a smile, blinking every 2-6s | Purple | Nothing happening |
-| Thinking | Same eyes, mouth cycling through 0-3 dots every 280ms | Purple | A lookup is in flight |
-| Found | The lit row for 2s, then the row digit for 2s | Green / orange by certainty | The tool is in that row |
+| Thinking | Mismatched eyes - the left a row taller than the right - and a mouth cycling through 0-3 dots every 280ms | Purple | A lookup is in flight |
+| Found | The lit row for 2s, then the row digit for 4s | Green / orange by certainty | The tool is in that row |
 | Found, no row | The whole indicator band | Green / orange by certainty | Known drawer, no row assigned |
 | Not found | Face with a frown | Red | Understood the word, the tool is in no drawer |
 | Not understood | Question mark | Orange | The Pi could not interpret the request |
 | No response | The whole indicator band | Red | The Pi never answered within the timeout |
 
-Purple stays out of the result palette so the idle and thinking faces can never be
-read as an answer. The thinking face is held for exactly as long as `awaitingResponse`
+The digit gets twice the row's time: it is the half you have to read and carry to the
+box, and two seconds was gone before you had looked up. The faces and the alert band
+have no second phase and nothing to read, so they hold on `MATRIX_NOTICE_HOLD_MS`
+rather than inheriting the digit's.
+
+The thinking face's eyes are deliberately mismatched, the trick Cozmo and Vector use:
+asymmetry reads as quizzical where two matched eyes read as merely awake. Both eyes
+share a baseline so the left one looks like it is widening, not like the face is
+sliding. Purple stays out of the result palette so the idle and thinking faces can
+never be read as an answer. The thinking face is held for exactly as long as `awaitingResponse`
 - every exit from it (answer, rejection, timeout) sets another mode, so there is no
 timer to fall out of sync.
 
