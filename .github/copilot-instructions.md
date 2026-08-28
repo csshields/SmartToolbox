@@ -79,7 +79,7 @@ Updated 2026-08-27. This table is the single place to check what is physically w
 | Grove Vision AI V2 link | Connected | Stacked on the expansion header; I2C link up |
 | SenseCraft model | Not deployed | **Blocks Feature 3.** Nothing to detect until a model is trained and flashed |
 | OLED (Grove SSD1315 0.96") | Verified | On the I2C connector, GPIO5/GPIO6. Driven with U8g2 (`U8G2_SSD1306_128X64_NONAME_F_HW_I2C`); the SSD1315 is SSD1306-compatible. Shows lookup status and the exact drawer label |
-| Grove 8x8 matrix | Verified | Wired and working. Shows an idle purple face, and on a lookup the lit row for 2s then the row digit for 2s. Mounted a quarter turn out, so the firmware sets `DISPLAY_ROTATE_270` every boot - that setting lives on the panel and survives power cycles |
+| Grove 8x8 matrix | Verified | Wired and working. Idle purple face; thinking face while a lookup is in flight; then the outcome - see Matrix States. Mounted a quarter turn out, so the firmware sets `DISPLAY_ROTATE_270` every boot - that setting lives on the panel and survives power cycles |
 | Microphone | On board, unused | The XIAO's own PDM mic. No sketch has initialised it yet, so it is unproven in this project - bring it up alone before building on it. See `docs/PLAN-voice-lookup.md` |
 | PIR motion sensor | Deferred | Needs two GPIO. No longer necessarily blocked - the Pi's 40-pin header is free; see the Open Hardware Question |
 | Grove Red LED Button | **Mis-wired** | Currently plugged into the Grove I2C Hub, where it cannot work: it is a passive switch and LED with no I2C chip, so its two pins land on SDA and SCL. The LED is lit only because a bus line idles high. **Pressing it disturbs the I2C bus** the OLED and matrix depend on. Unplug it until it has real GPIO |
@@ -1230,6 +1230,36 @@ Add to Arduino Library Manager:
       The driver is frame-based, not pixel-addressed: `displayFrames` takes 64 bytes,
       one **palette index** per pixel, and blank is `0xFF` - zeroing the buffer lights
       the panel red.
+#### Matrix States
+
+**Status: Implemented** - `updateMatrix` in `firmware/smarttoolbox/smarttoolbox.ino`.
+Three modes: `MATRIX_EYES`, `MATRIX_THINKING`, `MATRIX_RESULT`.
+
+| State | Shown | Colour | Meaning |
+|---|---|---|---|
+| Idle | Face with a smile, blinking every 2-6s | Purple | Nothing happening |
+| Thinking | Same eyes, mouth cycling through 0-3 dots every 280ms | Purple | A lookup is in flight |
+| Found | The lit row for 2s, then the row digit for 2s | Green / orange by certainty | The tool is in that row |
+| Found, no row | The whole indicator band | Green / orange by certainty | Known drawer, no row assigned |
+| Not found | Face with a frown | Red | Understood the word, the tool is in no drawer |
+| Not understood | Question mark | Orange | The Pi could not interpret the request |
+| No response | The whole indicator band | Red | The Pi never answered within the timeout |
+
+Purple stays out of the result palette so the idle and thinking faces can never be
+read as an answer. The thinking face is held for exactly as long as `awaitingResponse`
+- every exit from it (answer, rejection, timeout) sets another mode, so there is no
+timer to fall out of sync.
+
+**Not found and not understood are different answers and must look different.** All
+three failure paths used to draw the same red band, so "it isn't in any drawer", "I
+could not make sense of that", and "the Pi is not responding" were indistinguishable
+from across a workshop. The frown is the idle smile inverted, which reads as the box's
+own reaction; the question mark is deliberately *not* a face, because failing to
+understand the word is a different kind of statement from having no answer to it.
+
+Once voice lands, a failed transcription surfaces as a `success: false` response and so
+gets the question mark for free - that is the case it was drawn for.
+
 - [ ] FastLED or Adafruit_NeoPixel - **not needed.** These are for the deferred WS2813
       strip only; the matrix is I2C and does not use them.
 

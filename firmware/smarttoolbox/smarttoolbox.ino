@@ -116,7 +116,11 @@ uint32_t blinkPhaseStart = 0;
 // The idle face and a lookup result are mutually exclusive, so they can share
 // pixels. Results are what the box is for; the face is what it does the rest of
 // the time.
-enum MatrixMode { MATRIX_EYES, MATRIX_RESULT };
+// A lookup used to end three different ways and look identical doing it: a red
+// band meant "not in any drawer", "the Pi could not make sense of the request",
+// and "the Pi never answered". Each has its own picture now, and the wait before
+// them has one too.
+enum MatrixMode { MATRIX_EYES, MATRIX_THINKING, MATRIX_RESULT };
 
 MatrixMode matrixMode = MATRIX_EYES;
 uint32_t matrixResultUntil = 0;
@@ -132,6 +136,15 @@ const uint16_t MATRIX_RESULT_ROW_MS = 2000;
 const uint16_t MATRIX_RESULT_DIGIT_MS = 2000;
 const uint16_t MATRIX_RESULT_HOLD_MS = MATRIX_RESULT_ROW_MS + MATRIX_RESULT_DIGIT_MS;
 const uint16_t MATRIX_BLINK_CLOSED_MS = 130;
+
+// Four phases: none, one, two, three dots. Slow enough to read as deliberate
+// rather than flicker, fast enough that a lookup answered in 200ms still shows
+// one frame of it instead of a blip.
+const uint16_t MATRIX_THINK_STEP_MS = 280;
+const uint8_t MATRIX_THINK_PHASES = 4;
+
+uint32_t matrixThinkNextAt = 0;
+uint8_t matrixThinkPhase = 0;
 
 uint8_t matrixResultRow = 0;
 uint8_t matrixResultColor = 0;
@@ -199,6 +212,80 @@ void drawFace(bool eyesClosed) {
   matrixSetPixel(6, 5, EYE_COLOR);
   for (uint8_t x = 2; x <= 5; x++) {
     matrixSetPixel(x, 6, EYE_COLOR);
+  }
+}
+
+// Eyes open and still, with a mouth that fills in one dot at a time - the same
+// "..." anything else shows while it waits. Purple like the idle face, and for
+// the same reason: this is the box thinking, not an answer, and the result
+// palette has to stay unambiguous.
+void drawThinkingFace(uint8_t phase) {
+  matrixClear();
+
+  const uint8_t eyeColumns[] = {1, 5};
+  for (uint8_t eye = 0; eye < 2; eye++) {
+    const uint8_t x = eyeColumns[eye];
+    matrixSetPixel(x, 2, EYE_COLOR);
+    matrixSetPixel(x + 1, 2, EYE_COLOR);
+    matrixSetPixel(x, 3, EYE_COLOR);
+    matrixSetPixel(x + 1, 3, EYE_COLOR);
+  }
+
+  for (uint8_t dot = 0; dot < phase && dot < 3; dot++) {
+    matrixSetPixel(2 + dot * 2, 6, EYE_COLOR);
+  }
+}
+
+// The idle smile inverted: the middle of the mouth sits one row above its
+// corners instead of below. Same face, so it reads as the box's own reaction
+// rather than a new symbol to learn.
+void drawSadFace(uint8_t color) {
+  matrixClear();
+
+  const uint8_t eyeColumns[] = {1, 5};
+  for (uint8_t eye = 0; eye < 2; eye++) {
+    const uint8_t x = eyeColumns[eye];
+    matrixSetPixel(x, 2, color);
+    matrixSetPixel(x + 1, 2, color);
+    matrixSetPixel(x, 3, color);
+    matrixSetPixel(x + 1, 3, color);
+  }
+
+  for (uint8_t x = 2; x <= 5; x++) {
+    matrixSetPixel(x, 5, color);
+  }
+  matrixSetPixel(1, 6, color);
+  matrixSetPixel(6, 6, color);
+}
+
+// Bigger than the 3x5 digits in both directions: a question mark needs five
+// columns before it stops looking like a stray hook, and seven rows to fit the
+// curve, the gap, and the dot that make it one. It is a symbol rather than a
+// face on purpose - "I did not understand you" is a different statement from
+// "I understood, and the answer is nothing", so it should not look like a mood.
+const uint8_t QUESTION_HEIGHT = 7;
+const uint8_t QUESTION_GLYPH[QUESTION_HEIGHT] = {
+  0b01110,
+  0b10001,
+  0b00001,
+  0b00010,
+  0b00100,
+  0b00000,
+  0b00100,
+};
+
+const uint8_t QUESTION_ORIGIN_X = 2; // 5 wide in 8 columns.
+const uint8_t QUESTION_ORIGIN_Y = 1; // 7 tall, leaving the top row clear.
+
+void drawQuestionMark(uint8_t color) {
+  matrixClear();
+
+  for (uint8_t row = 0; row < QUESTION_HEIGHT; row++) {
+    for (uint8_t column = 0; column < 5; column++) {
+      if (QUESTION_GLYPH[row] & (1 << (4 - column))) {
+        matrixSetPixel(QUESTION_ORIGIN_X + column, QUESTION_ORIGIN_Y + row, color);
+      }
+    }
   }
 }
 
@@ -279,6 +366,37 @@ void showMatrixRow(int rowNumber, bool hasCertainty, int certainty) {
   matrixPush();
 }
 
+// Held until a response replaces it rather than for a fixed time: the box is
+// thinking for exactly as long as it is waiting, and every exit from
+// awaitingResponse - answer, rejection, or timeout - sets another mode.
+void startMatrixThinking() {
+  matrixMode = MATRIX_THINKING;
+  matrixThinkPhase = 0;
+  matrixThinkNextAt = millis() + MATRIX_THINK_STEP_MS;
+  drawThinkingFace(matrixThinkPhase);
+  matrixPush();
+}
+
+// Understood the word, found nothing.
+void showMatrixSad(uint8_t color) {
+  drawSadFace(color);
+  matrixResultRow = 0;
+  matrixResultDigitDrawn = true; // No row, so no digit follows.
+  matrixMode = MATRIX_RESULT;
+  matrixResultUntil = millis() + MATRIX_RESULT_HOLD_MS;
+  matrixPush();
+}
+
+// Did not understand the word at all.
+void showMatrixUnknown(uint8_t color) {
+  drawQuestionMark(color);
+  matrixResultRow = 0;
+  matrixResultDigitDrawn = true;
+  matrixMode = MATRIX_RESULT;
+  matrixResultUntil = millis() + MATRIX_RESULT_HOLD_MS;
+  matrixPush();
+}
+
 void showMatrixAlert(uint8_t color) {
   matrixClear();
   for (uint8_t y = MATRIX_FIRST_ROW_Y; y <= MATRIX_LAST_ROW_Y; y++) {
@@ -293,6 +411,16 @@ void showMatrixAlert(uint8_t color) {
 
 void updateMatrix() {
   if (!matrixReady) {
+    return;
+  }
+
+  if (matrixMode == MATRIX_THINKING) {
+    if (millis() >= matrixThinkNextAt) {
+      matrixThinkPhase = (uint8_t)((matrixThinkPhase + 1) % MATRIX_THINK_PHASES);
+      matrixThinkNextAt = millis() + MATRIX_THINK_STEP_MS;
+      drawThinkingFace(matrixThinkPhase);
+      matrixPush();
+    }
     return;
   }
 
@@ -693,6 +821,7 @@ void sendToolLookupRequest(const char* toolName) {
   awaitingResponse = true;
 
   showStatus("Looking up", pendingToolName, "");
+  startMatrixThinking();
 }
 
 void pollSerialResponses() {
@@ -740,9 +869,9 @@ void handleIncomingLine(const String& line) {
 
   const bool success = doc["success"] | false;
   if (!success) {
-    showStatus("Error", pendingToolName, doc["error"]["code"] | "lookup failed");
+    showStatus("Didn't catch that", pendingToolName, doc["error"]["code"] | "lookup failed");
     startBlinkPlan(1, 1000, 1000); // Long blink: error.
-    showMatrixAlert(red);
+    showMatrixUnknown(orange);
     return;
   }
 
@@ -750,7 +879,7 @@ void handleIncomingLine(const String& line) {
   if (!found) {
     showStatus("Not found", pendingToolName, "");
     startBlinkPlan(3, 150, 150); // Fast blinks: not found.
-    showMatrixAlert(red);
+    showMatrixSad(red);
     return;
   }
 
