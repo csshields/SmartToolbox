@@ -262,6 +262,9 @@ CREATE TABLE IF NOT EXISTS drawer_observations (
   confidence INTEGER NOT NULL CHECK (confidence >= 0 AND confidence <= 100),
   model_version TEXT NOT NULL DEFAULT '',
   observed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  -- Set when the tool is moved out of this drawer. Non-null rows are history:
+  -- excluded from current-location and canonical-name queries, never deleted.
+  superseded_at TEXT,
   FOREIGN KEY(drawer_id) REFERENCES drawers(id) ON DELETE CASCADE
 );
 
@@ -347,7 +350,7 @@ framework; Hono is a dependency but is not currently used for routing.
 | DELETE | `/api/drawers/:id` | Delete a drawer. **Cascades** to its tools *and* its `drawer_observations` history. 404 if the id does not exist |
 | DELETE | `/api/drawers/:id/tools/:toolId` | Delete one tool **and its observations** for that drawer, in one transaction. Scoped by drawer, so a mismatched pair is a 404 rather than deleting a tool in another drawer |
 | GET | `/api/tools/lookup?query=` | **Primary lookup.** Returns exact drawers plus rows collapsed by certainty |
-| POST | `/api/tools/assign` | Move a tool to a drawer by name |
+| POST | `/api/tools/assign` | **Move an existing tool to another drawer**, by `toolId`. 400 on a missing/invalid id, 404 on an unknown tool or drawer, 409 when the target drawer already holds that name. Does not create tools |
 | POST | `/api/vision/observations` | Record camera detections for a drawer |
 | GET | `/api/firmware/latest?currentVersion=` | **OTA update check.** Requires an `X-Device-Key` header. 200 streams the newer `.bin`, 204 means already current, 401 rejects a bad key, 503 means `DEVICE_KEY` is unconfigured |
 | GET | `/api/devices` | Device status: last contact, firmware version, boot count, plus the latest firmware on disk and whether the serial listener is running |
@@ -524,6 +527,23 @@ empty - the device would keep pointing at a tool the user believes is gone, with
 nothing in the UI revealing it. `deleteTool` handles both in one transaction; deleting
 a drawer was never affected, since observations cascade on `drawer_id`. Guarded by
 `api/src/db.test.ts`.
+
+**Moving a tool must also supersede its old drawer's observations.** Same hazard as
+deletion, on the other path. `selectToolLocations` admits a drawer when *either* a tool
+row or a live observation points at it, so reassigning the tool row alone left the source
+drawer reported as a current location - and reported as the *more confident* of the two,
+because the stale observation carries the camera's confidence while the freshly moved
+tool has none. The device would light the drawer the tool had just left. `assignToolToDrawer`
+now sets `superseded_at` on the source drawer's observations in the same transaction as
+the move, but only when no same-named tool remains there (`tools` is unique on
+`(drawer_id, name)` under BINARY collation, so "Hammer" and "hammer" can share a drawer).
+
+**Assignment is keyed on `toolId`, not on a name.** A tool name is not unique across
+drawers, and the old name-based lookup took the lowest `id`, so asking to move "hammer"
+could move a different drawer's "Hammer" - and then return `null`, because the read-back
+was by `(drawer, name)` with no `COLLATE NOCASE`, which surfaced as a 400 for a write
+that had already committed. The endpoint no longer creates tools by name; that is
+`POST /api/drawers/:id/tools`. All of this is guarded by `api/src/db.test.ts`.
 
 Deletes sit behind a `confirm()` on both pages. The drawer dialog, now on Drawer
 Management, names the tool count and says that the observation history goes too,

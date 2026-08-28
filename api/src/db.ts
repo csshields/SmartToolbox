@@ -135,6 +135,15 @@ database.exec(`
   CREATE INDEX IF NOT EXISTS idx_observations_tool_drawer ON drawer_observations(tool_name, drawer_id, id DESC);
 `);
 
+const observationColumns = database.query("PRAGMA table_info(drawer_observations)").all() as Array<{ name: string }>;
+
+// Reassigning a tool supersedes the observations that pinned it to its old
+// drawer. They are kept rather than deleted: the camera did see the tool there,
+// and that history is worth having - it just is not a current location.
+if (!observationColumns.some((column) => column.name === "superseded_at")) {
+  database.exec("ALTER TABLE drawer_observations ADD COLUMN superseded_at TEXT");
+}
+
 const drawerColumns = database.query("PRAGMA table_info(drawers)").all() as Array<{ name: string }>;
 
 if (!drawerColumns.some((column) => column.name === "label")) {
@@ -230,6 +239,30 @@ const deleteObservationsForTool = database.query(`
   WHERE drawer_id = ?1 AND tool_name = ?2 COLLATE NOCASE
 `);
 
+const selectToolById = database.query(`
+  SELECT id, drawer_id AS drawerId, name, quantity, notes, created_at AS createdAt
+  FROM tools
+  WHERE id = ?1
+`);
+
+// "Is there some other tool called this in that drawer?" - asked twice during a
+// reassignment, of the target drawer and then of the source. Case-insensitive
+// because the unique index on (drawer_id, name) uses BINARY, so "Hammer" and
+// "hammer" can both sit in one drawer and both have to count. Excluding the
+// moving tool by id keeps a move into its own drawer from colliding with itself.
+const selectOtherToolNamed = database.query(`
+  SELECT id
+  FROM tools
+  WHERE drawer_id = ?1 AND name = ?2 COLLATE NOCASE AND id <> ?3
+  LIMIT 1
+`);
+
+const supersedeObservationsForTool = database.query(`
+  UPDATE drawer_observations
+  SET superseded_at = CURRENT_TIMESTAMP
+  WHERE drawer_id = ?1 AND tool_name = ?2 COLLATE NOCASE AND superseded_at IS NULL
+`);
+
 const upsertTool = database.query(`
   INSERT INTO tools (drawer_id, name, quantity, notes)
   VALUES (?1, ?2, ?3, ?4)
@@ -256,9 +289,9 @@ const selectToolByName = database.query(`
 const selectToolLocations = database.query(`
   WITH latest_observations AS (
     SELECT drawer_id, tool_name, quantity, confidence, observed_at,
-           ROW_NUMBER() OVER (PARTITION BY drawer_id, tool_name ORDER BY id DESC) AS position
+           ROW_NUMBER() OVER (PARTITION BY drawer_id ORDER BY id DESC) AS position
     FROM drawer_observations
-    WHERE tool_name = ?1 COLLATE NOCASE
+    WHERE tool_name = ?1 COLLATE NOCASE AND superseded_at IS NULL
   )
   SELECT drawer.id AS drawerId,
          COALESCE(drawer.label, drawer.name) AS label,
@@ -282,7 +315,7 @@ const selectCanonicalToolName = database.query(`
   UNION
   SELECT tool_name AS name
   FROM drawer_observations
-  WHERE tool_name = ?1 COLLATE NOCASE
+  WHERE tool_name = ?1 COLLATE NOCASE AND superseded_at IS NULL
   LIMIT 1
 `);
 
@@ -461,28 +494,65 @@ export function findToolDrawer(toolName: string) {
   };
 }
 
-export function assignToolToDrawer(drawerId: number, tool: { name: string; quantity?: number; notes?: string }) {
+export class ToolNameConflictError extends Error {}
+
+// Moves an existing tool between drawers. Keyed on the tool's id, not its name:
+// a name is not unique across drawers, and the old name-based lookup took the
+// lowest id, so asking to move "hammer" could silently move a different drawer's
+// "Hammer" instead. There is no create-by-name here either - use addToolToDrawer.
+//
+// The observations matter as much as the tool row. selectToolLocations admits a
+// drawer when *either* a tool row or a live observation points at it, so moving
+// the row alone leaves the source drawer reported as a current location - and,
+// because the stale row carries the camera's confidence while the freshly moved
+// tool has none, reported as the *more* confident of the two. The device would
+// light the drawer the tool just left.
+export function assignToolToDrawer(drawerId: number, tool: { toolId: number; quantity?: number; notes?: string }) {
   const existingDrawer = selectDrawerById.get(drawerId) as Omit<DrawerRecord, "toolCount" | "tools"> | null;
 
   if (!existingDrawer) {
     throw new Error("Drawer not found.");
   }
 
-  const normalizedToolName = normalizeName(tool.name, "Tool name");
-  const quantity = Number.isInteger(tool.quantity) && (tool.quantity as number) > 0 ? (tool.quantity as number) : 1;
-  const notes = (tool.notes ?? "").trim();
-  const existingTool = selectToolByName.get(normalizedToolName) as ToolRecord | null;
-
-  if (existingTool) {
-    updateToolAssignment.run(existingTool.id, drawerId, quantity, notes);
-    return selectToolByDrawerAndName.get(drawerId, normalizedToolName) as ToolRecord;
+  if (!Number.isInteger(tool.toolId) || tool.toolId < 1) {
+    throw new Error("Tool id is required.");
   }
 
-  return addToolToDrawer(drawerId, {
-    name: normalizedToolName,
-    quantity,
-    notes,
+  const existingTool = selectToolById.get(tool.toolId) as ToolRecord | null;
+
+  if (!existingTool) {
+    throw new Error("Tool not found.");
+  }
+
+  if (selectOtherToolNamed.get(drawerId, existingTool.name, existingTool.id)) {
+    throw new ToolNameConflictError("A tool with that name is already in the target drawer.");
+  }
+
+  const quantity = Number.isInteger(tool.quantity) && (tool.quantity as number) > 0 ? (tool.quantity as number) : existingTool.quantity;
+  const notes = tool.notes === undefined ? existingTool.notes : tool.notes.trim();
+  const sourceDrawerId = existingTool.drawerId;
+
+  // One transaction: a moved tool whose old observations survived would be worse
+  // than not having moved it at all, since both drawers would then claim it.
+  const move = database.transaction(() => {
+    updateToolAssignment.run(existingTool.id, drawerId, quantity, notes);
+
+    // Only when nothing of that name is left behind. A case variant still in the
+    // source drawer means the camera's sighting there is still about a real tool.
+    const sourceNowEmptyOfThisName = sourceDrawerId !== drawerId
+      && !selectOtherToolNamed.get(sourceDrawerId, existingTool.name, existingTool.id);
+
+    if (sourceNowEmptyOfThisName) {
+      supersedeObservationsForTool.run(sourceDrawerId, existingTool.name);
+    }
   });
+
+  move();
+
+  // Read back by id. The old code read back by (drawer, name) without COLLATE
+  // NOCASE, so a case-variant move returned null and the caller reported a
+  // failure for a write that had already happened.
+  return selectToolById.get(existingTool.id) as ToolRecord;
 }
 
 export function recordRequestLog(log: {

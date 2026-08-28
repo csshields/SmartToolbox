@@ -1,6 +1,6 @@
 import { serve } from "bun";
 import { join } from "node:path";
-import { addToolToDrawer, assignToolToDrawer, createDrawer, deleteDrawer, deleteTool, findDrawerByLabel, findToolDrawer, findToolLocations, getDeviceStatus, getTranscriptionSettings, listDrawers, listRequestLogs, recordDeviceContact, recordDrawerObservation, recordRequestLog, saveTranscriptionSettings } from "./db";
+import { addToolToDrawer, assignToolToDrawer, createDrawer, deleteDrawer, deleteTool, findDrawerByLabel, findToolDrawer, findToolLocations, getDeviceStatus, getTranscriptionSettings, listDrawers, listRequestLogs, recordDeviceContact, recordDrawerObservation, recordRequestLog, saveTranscriptionSettings, ToolNameConflictError } from "./db";
 import { parseSerialRequest, serialError, serialSuccess, serializeSerialResponse, type SerialRequest, type SerialResponse } from "./serialProtocol";
 import { startSerialTransport } from "./serialTransport";
 import { FIRMWARE_DIR, findLatestFirmware, isUpdateAvailable } from "./firmware";
@@ -552,13 +552,15 @@ serve({
       }
     }
 
+    // Takes a toolId, not a tool name. A name is not unique across drawers, so
+    // the old signature could only guess which row the caller meant.
     if (pathname === '/api/tools/assign' && req.method === 'POST') {
-      let body: { tool?: string; drawerNumber?: number; quantity?: number; notes?: string } | null = null;
+      let body: { toolId?: number; drawerNumber?: number; quantity?: number; notes?: string } | null = null;
 
       try {
-        body = await readJsonBody(req) as { tool?: string; drawerNumber?: number; quantity?: number; notes?: string };
+        body = await readJsonBody(req) as { toolId?: number; drawerNumber?: number; quantity?: number; notes?: string };
         const assignedTool = assignToolToDrawer(Number(body.drawerNumber), {
-          name: body.tool ?? '',
+          toolId: Number(body.toolId),
           quantity: body.quantity,
           notes: body.notes,
         });
@@ -573,16 +575,20 @@ serve({
         });
         return jsonResponse({
           message: 'Tool assigned',
+          toolId: assignedTool.id,
           tool: assignedTool.name,
           drawerNumber: assignedTool.drawerId,
         }, { status: 201 });
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unable to assign tool.';
-        const status = message === 'Drawer not found.' ? 404 : 400;
+        const status = error instanceof ToolNameConflictError
+          ? 409
+          : message === 'Drawer not found.' || message === 'Tool not found.'
+            ? 404
+            : 400;
         writeRequestLog({
           method: req.method,
           path: pathname,
-          tool: body?.tool,
           drawerNumber: body?.drawerNumber ?? null,
           statusCode: status,
           result: 'Tool assignment failed',
