@@ -24,7 +24,7 @@
 // api/scripts/release-firmware.ps1 on release, and compared against the Pi's
 // drop folder to decide whether an OTA update is available - keep the exact
 // `#define FIRMWARE_VERSION "x.y.z"` shape so the script can find it.
-#define FIRMWARE_VERSION "0.10.0"
+#define FIRMWARE_VERSION "0.11.0"
 
 const int LED_PIN = LED_BUILTIN; // Active-low: LOW = on, HIGH = off.
 const int LED_ON = LOW;
@@ -124,8 +124,19 @@ uint32_t matrixNextBlinkAt = 0;
 uint32_t matrixEyesClosedUntil = 0;
 bool matrixEyesClosed = false;
 
-const uint16_t MATRIX_RESULT_HOLD_MS = 4000;
+// A result shows in two phases: the lit row first, which maps spatially onto the
+// physical box, then the digit, which names the row unambiguously. Row 1 is the
+// one case where a lit row and the digit 1 look alike, so showing both in turn
+// removes the ambiguity without giving up the spatial cue.
+const uint16_t MATRIX_RESULT_ROW_MS = 2000;
+const uint16_t MATRIX_RESULT_DIGIT_MS = 2000;
+const uint16_t MATRIX_RESULT_HOLD_MS = MATRIX_RESULT_ROW_MS + MATRIX_RESULT_DIGIT_MS;
 const uint16_t MATRIX_BLINK_CLOSED_MS = 130;
+
+uint8_t matrixResultRow = 0;
+uint8_t matrixResultColor = 0;
+uint32_t matrixResultDigitAt = 0;
+bool matrixResultDigitDrawn = true;
 
 void matrixClear() {
   memset(matrixFrame, black, sizeof(matrixFrame));
@@ -195,6 +206,40 @@ void scheduleNextBlink() {
   matrixNextBlinkAt = millis() + random(2000, 6000);
 }
 
+// 3x5 digits, one bit per pixel, most significant bit leftmost. Drawn into our
+// own frame buffer rather than using the driver's displayNumber(): that renders
+// on the device, where orientation is applied separately from user frames, so a
+// built-in digit and the face would not agree on which way is up.
+const uint8_t DIGIT_GLYPHS[10][5] = {
+  {0b111, 0b101, 0b101, 0b101, 0b111}, // 0
+  {0b010, 0b110, 0b010, 0b010, 0b111}, // 1
+  {0b111, 0b001, 0b111, 0b100, 0b111}, // 2
+  {0b111, 0b001, 0b111, 0b001, 0b111}, // 3
+  {0b101, 0b101, 0b111, 0b001, 0b001}, // 4
+  {0b111, 0b100, 0b111, 0b001, 0b111}, // 5
+  {0b111, 0b100, 0b111, 0b101, 0b111}, // 6
+  {0b111, 0b001, 0b001, 0b001, 0b001}, // 7
+  {0b111, 0b101, 0b111, 0b101, 0b111}, // 8
+  {0b111, 0b101, 0b111, 0b001, 0b111}, // 9
+};
+
+const uint8_t DIGIT_ORIGIN_X = 3; // 3 wide in 8 columns.
+const uint8_t DIGIT_ORIGIN_Y = 2; // 5 tall in 8 rows.
+
+void drawDigit(uint8_t digit, uint8_t color) {
+  if (digit > 9) {
+    return;
+  }
+  for (uint8_t row = 0; row < 5; row++) {
+    const uint8_t bits = DIGIT_GLYPHS[digit][row];
+    for (uint8_t column = 0; column < 3; column++) {
+      if (bits & (0b100 >> column)) {
+        matrixSetPixel(DIGIT_ORIGIN_X + column, DIGIT_ORIGIN_Y + row, color);
+      }
+    }
+  }
+}
+
 // Certainty is null for any tool the camera has never seen, which is currently
 // every tool in the box - so null gets its own colour rather than a fallback.
 uint8_t certaintyColor(bool hasCertainty, int certainty) {
@@ -204,12 +249,31 @@ uint8_t certaintyColor(bool hasCertainty, int certainty) {
   return certainty >= 75 ? green : orange;
 }
 
+// Shows the row as a digit rather than a lit row. On an 8x8 a digit is simply
+// easier to read than counting rows, and it cannot be misread when the panel is
+// mounted in an unexpected orientation. Rows outside 1-6 are not a valid
+// toolbox row, so they fall through to the alert pattern instead of drawing a
+// digit the box cannot mean.
 void showMatrixRow(int rowNumber, bool hasCertainty, int certainty) {
+  const uint8_t color = certaintyColor(hasCertainty, certainty);
+  const bool validRow = rowNumber >= 1 && rowNumber <= 6;
+
   matrixClear();
-  const uint8_t y = (uint8_t)rowNumber;
-  if (y >= MATRIX_FIRST_ROW_Y && y <= MATRIX_LAST_ROW_Y) {
-    matrixFillRow(y, certaintyColor(hasCertainty, certainty));
+  if (validRow) {
+    matrixFillRow((uint8_t)rowNumber, color);
+  } else {
+    // Found, but in a drawer with no row assigned. There is no row to point at
+    // and no digit to show, so light the whole indicator band instead.
+    for (uint8_t y = MATRIX_FIRST_ROW_Y; y <= MATRIX_LAST_ROW_Y; y++) {
+      matrixFillRow(y, color);
+    }
   }
+
+  matrixResultRow = validRow ? (uint8_t)rowNumber : 0;
+  matrixResultColor = color;
+  matrixResultDigitDrawn = !validRow; // Nothing to follow up with for an unknown row.
+  matrixResultDigitAt = millis() + MATRIX_RESULT_ROW_MS;
+
   matrixMode = MATRIX_RESULT;
   matrixResultUntil = millis() + MATRIX_RESULT_HOLD_MS;
   matrixPush();
@@ -220,6 +284,8 @@ void showMatrixAlert(uint8_t color) {
   for (uint8_t y = MATRIX_FIRST_ROW_Y; y <= MATRIX_LAST_ROW_Y; y++) {
     matrixFillRow(y, color);
   }
+  matrixResultRow = 0;
+  matrixResultDigitDrawn = true; // An alert has no row, so no digit follows.
   matrixMode = MATRIX_RESULT;
   matrixResultUntil = millis() + MATRIX_RESULT_HOLD_MS;
   matrixPush();
@@ -231,6 +297,14 @@ void updateMatrix() {
   }
 
   if (matrixMode == MATRIX_RESULT) {
+    if (!matrixResultDigitDrawn && millis() >= matrixResultDigitAt) {
+      matrixClear();
+      drawDigit(matrixResultRow, matrixResultColor);
+      matrixResultDigitDrawn = true;
+      matrixPush();
+      return;
+    }
+
     if (millis() >= matrixResultUntil) {
       matrixMode = MATRIX_EYES;
       matrixEyesClosed = false;
