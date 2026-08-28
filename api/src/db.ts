@@ -244,6 +244,13 @@ const selectDrawerByLabel = database.query(`
   WHERE COALESCE(label, name) = ?1 COLLATE NOCASE
 `);
 
+const selectDrawersAboveRow = database.query(`
+  SELECT name, row_number AS rowNumber
+  FROM drawers
+  WHERE row_number > ?1
+  ORDER BY row_number ASC
+`);
+
 const insertDrawer = database.query(`
   INSERT INTO drawers (name, label, row_number)
   VALUES (?1, ?2, ?3)
@@ -486,9 +493,7 @@ export function listDrawers(): DrawerRecord[] {
 export function createDrawer(name: string, location?: { label?: string; rowNumber?: number }) {
   const normalizedName = normalizeName(name, "Drawer name");
   const label = (location?.label ?? normalizedName).trim() || normalizedName;
-  const rowNumber = Number.isInteger(location?.rowNumber) && (location?.rowNumber as number) > 0
-    ? location?.rowNumber as number
-    : null;
+  const rowNumber = normalizeRowNumber(location?.rowNumber);
 
   try {
     const result = insertDrawer.run(normalizedName, label, rowNumber) as { lastInsertRowid: number | bigint };
@@ -672,6 +677,58 @@ export function listRequestLogs(limit = 50) {
 function getConfigValue(key: string, fallback: string) {
   const row = selectConfigValue.get(key) as { value: string } | null;
   return row?.value ?? fallback;
+}
+
+// How many indicator rows the toolbox in front of the panel actually has. Not a
+// constant, because a seven- or eight-drawer-row box is a perfectly reasonable
+// thing to own - but the 8x8 matrix is a hard ceiling, since a panel with eight
+// rows cannot point at a ninth however big the box is.
+export const MAX_TOOLBOX_ROWS = 8;
+export const DEFAULT_TOOLBOX_ROWS = 6;
+
+export function getToolboxRowCount(): number {
+  const stored = Number(getConfigValue("toolbox_row_count", String(DEFAULT_TOOLBOX_ROWS)));
+
+  return Number.isInteger(stored) && stored >= 1 && stored <= MAX_TOOLBOX_ROWS
+    ? stored
+    : DEFAULT_TOOLBOX_ROWS;
+}
+
+export function saveToolboxRowCount(rowCount: number) {
+  if (!Number.isInteger(rowCount) || rowCount < 1 || rowCount > MAX_TOOLBOX_ROWS) {
+    throw new Error(`Toolbox rows must be a whole number between 1 and ${MAX_TOOLBOX_ROWS}.`);
+  }
+
+  // Shrinking past a drawer that is already using a high row would strand it:
+  // the row would stay in the database and simply stop being indicatable. Refuse
+  // and name the drawers, rather than silently orphaning them.
+  const stranded = selectDrawersAboveRow.all(rowCount) as Array<{ name: string; rowNumber: number }>;
+
+  if (stranded.length > 0) {
+    const named = stranded.map((drawer) => `${drawer.name} (row ${drawer.rowNumber})`).join(", ");
+    throw new Error(`Cannot reduce to ${rowCount} rows while these drawers use a higher row: ${named}.`);
+  }
+
+  upsertConfigValue.run("toolbox_row_count", String(rowCount));
+
+  return getToolboxRowCount();
+}
+
+// A drawer's row has to be one the panel can actually light. The bound is read
+// at call time rather than captured, so changing the setting takes effect
+// without a restart.
+function normalizeRowNumber(rowNumber: number | undefined | null) {
+  if (rowNumber === undefined || rowNumber === null) {
+    return null;
+  }
+
+  const rowCount = getToolboxRowCount();
+
+  if (!Number.isInteger(rowNumber) || rowNumber < 1 || rowNumber > rowCount) {
+    throw new Error(`Matrix row must be a whole number between 1 and ${rowCount}.`);
+  }
+
+  return rowNumber;
 }
 
 export function getTranscriptionSettings(): TranscriptionSettings {

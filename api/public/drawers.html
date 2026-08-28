@@ -53,7 +53,7 @@
                         <div class="field">
                             <label for="drawerRowInput">Matrix row <span class="muted">(optional)</span></label>
                             <input id="drawerRowInput" type="number" min="1" placeholder="1">
-                            <span class="field-hint">Row the device lights on a lookup.</span>
+                            <span id="drawerRowHint" class="field-hint">Row the device lights on a lookup.</span>
                         </div>
                     </div>
                     <div class="form-actions" style="margin-top: 18px;">
@@ -61,6 +61,30 @@
                     </div>
                 </form>
                 <div id="drawerStatus" class="status" aria-live="polite"></div>
+            </div>
+        </section>
+
+        <section class="card">
+            <div class="card-head">
+                <div>
+                    <h2>Toolbox Layout</h2>
+                    <p>How many indicator rows the toolbox has. The 8x8 panel cannot point at more than eight.</p>
+                </div>
+            </div>
+            <div class="card-body">
+                <form id="toolboxForm">
+                    <div class="form-grid">
+                        <div class="field">
+                            <label for="rowCountInput">Rows</label>
+                            <input id="rowCountInput" type="number" min="1" max="8" required>
+                            <span class="field-hint">Drawers may share a row: row 1 spans 1A, 1B and 1C.</span>
+                        </div>
+                    </div>
+                    <div class="form-actions" style="margin-top: 18px;">
+                        <button class="btn btn-secondary" type="submit">Save layout</button>
+                    </div>
+                </form>
+                <div id="toolboxStatus" class="status" aria-live="polite"></div>
             </div>
         </section>
 
@@ -90,6 +114,55 @@
         const drawerTable = document.getElementById('drawerTable');
         const drawerCount = document.getElementById('drawerCount');
         const refreshDrawersButton = document.getElementById('refreshDrawersButton');
+        const toolboxForm = document.getElementById('toolboxForm');
+        const rowCountInput = document.getElementById('rowCountInput');
+        const toolboxStatus = document.getElementById('toolboxStatus');
+        const drawerRowHint = document.getElementById('drawerRowHint');
+
+        // The add-drawer form takes its bound from the setting rather than a
+        // hardcoded 6, so a bigger toolbox needs no code change.
+        function applyRowCount(settings) {
+            rowCountInput.value = settings.rowCount;
+            rowCountInput.max = settings.maxRowCount;
+            drawerRowInput.max = settings.rowCount;
+            drawerRowHint.textContent = `Row the device lights on a lookup, 1 to ${settings.rowCount}.`;
+        }
+
+        async function loadToolboxSettings() {
+            try {
+                const response = await fetch('/api/settings/toolbox');
+
+                if (!response.ok) {
+                    throw new Error('Unable to load the toolbox layout.');
+                }
+
+                applyRowCount((await response.json()).settings);
+            } catch (error) {
+                setStatus(toolboxStatus, error.message, 'error');
+            }
+        }
+
+        toolboxForm.addEventListener('submit', async (event) => {
+            event.preventDefault();
+
+            try {
+                const response = await fetch('/api/settings/toolbox', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ rowCount: Number(rowCountInput.value) })
+                });
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Unable to save the toolbox layout.');
+                }
+
+                applyRowCount(data.settings);
+                setStatus(toolboxStatus, `Toolbox set to ${data.settings.rowCount} rows.`, 'success');
+            } catch (error) {
+                setStatus(toolboxStatus, error.message, 'error');
+            }
+        });
 
         function renderDrawers(drawers) {
             drawerCount.textContent = drawers.length
@@ -231,6 +304,7 @@
         });
 
         startHealthIndicator();
+        loadToolboxSettings();
         loadDrawers();
     </script>
 </body>

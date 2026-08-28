@@ -13,17 +13,21 @@ process.chdir(workingDirectory);
 const {
   addToolToDrawer,
   createDrawer,
+  DEFAULT_TOOLBOX_ROWS,
   deleteDrawer,
   deleteTool,
   assignToolToDrawer,
   findToolLocations,
   getDeviceStatus,
+  getToolboxRowCount,
+  MAX_TOOLBOX_ROWS,
   listDrawers,
   recordDeviceContact,
   recordDrawerObservation,
   recordDrawerObservations,
   pruneRequestLogs,
   recordRequestLog,
+  saveToolboxRowCount,
   ToolNameConflictError,
 } = await import("./db");
 
@@ -36,7 +40,11 @@ let uniqueSuffix = 0;
 
 function makeDrawer(rowNumber: number) {
   uniqueSuffix++;
-  return createDrawer(`Drawer ${uniqueSuffix}`, { label: `L${uniqueSuffix}`, rowNumber });
+  // Matrix rows are bounded by the toolbox row count now, and drawers are
+  // allowed to share one, so fold rather than demanding every test pick a
+  // distinct in-range number.
+  const foldedRow = ((rowNumber - 1) % DEFAULT_TOOLBOX_ROWS) + 1;
+  return createDrawer(`Drawer ${uniqueSuffix}`, { label: `L${uniqueSuffix}`, rowNumber: foldedRow });
 }
 
 test("deleteTool removes the tool's observations, not just the tool row", () => {
@@ -155,7 +163,7 @@ test("moving an observed tool stops its old drawer being reported", () => {
   assignToolToDrawer(target.id, { toolId: tool.id });
 
   expect(findToolLocations("Pliers")?.drawers.map((d) => d.drawerId)).toEqual([target.id]);
-  expect(findToolLocations("Pliers")?.rows.map((r) => r.rowNumber)).toEqual([12]);
+  expect(findToolLocations("Pliers")?.rows.map((r) => r.rowNumber)).toEqual([target.rowNumber!]);
 });
 
 test("a superseded observation is kept as history, not deleted", () => {
@@ -264,11 +272,11 @@ test("primaryLocation pairs a row with its own drawer's label", () => {
 
   // The old pairing, reconstructed: it would have shown this row beside this label.
   expect(lookup.drawers[0]?.rowNumber).toBeNull();
-  expect(lookup.rows[0]?.rowNumber).toBe(5);
+  expect(lookup.rows[0]?.rowNumber).toBe(numbered.rowNumber!);
 
   // The primary is one object, so its row and label always agree.
   expect(lookup.primaryLocation?.drawerId).toBe(numbered.id);
-  expect(lookup.primaryLocation?.rowNumber).toBe(5);
+  expect(lookup.primaryLocation?.rowNumber).toBe(numbered.rowNumber!);
   expect(lookup.primaryLocation?.label).toBe(numbered.label);
   expect(lookup.hasMultipleLocations).toBe(true);
 });
@@ -363,4 +371,46 @@ test("pruneRequestLogs drops entries past the retention window and keeps the res
 
   expect(ancient.n).toBe(0);
   expect(fresh.n).toBe(1);
+});
+
+test("a drawer cannot claim a row the panel has no indicator for", () => {
+  const rowCount = getToolboxRowCount();
+
+  expect(() => createDrawer(`TooHigh ${++uniqueSuffix}`, { rowNumber: rowCount + 1 }))
+    .toThrow(`Matrix row must be a whole number between 1 and ${rowCount}.`);
+  expect(() => createDrawer(`TooLow ${++uniqueSuffix}`, { rowNumber: 0 }))
+    .toThrow(`Matrix row must be a whole number between 1 and ${rowCount}.`);
+
+  // No row at all stays legal - the drawer is simply not indicatable.
+  expect(createDrawer(`NoRow ${++uniqueSuffix}`).rowNumber).toBeNull();
+});
+
+// The bound follows the setting rather than a constant, so a bigger toolbox
+// just works once its row count is recorded.
+test("raising the toolbox row count admits rows that were rejected before", () => {
+  const drawerName = `Seven ${++uniqueSuffix}`;
+
+  expect(() => createDrawer(drawerName, { rowNumber: 7 })).toThrow();
+
+  saveToolboxRowCount(7);
+  const seventh = createDrawer(drawerName, { rowNumber: 7 });
+  expect(seventh.rowNumber).toBe(7);
+
+  // The drawer has to go before the count can come back down - which is the
+  // strand guard, exercised here as cleanup.
+  expect(() => saveToolboxRowCount(DEFAULT_TOOLBOX_ROWS)).toThrow(drawerName);
+  deleteDrawer(seventh.id);
+  expect(saveToolboxRowCount(DEFAULT_TOOLBOX_ROWS)).toBe(DEFAULT_TOOLBOX_ROWS);
+});
+
+test("the row count is capped by the panel and refuses to strand a drawer", () => {
+  expect(() => saveToolboxRowCount(MAX_TOOLBOX_ROWS + 1)).toThrow(/between 1 and/);
+  expect(() => saveToolboxRowCount(2.5)).toThrow(/whole number/);
+
+  const drawer = createDrawer(`Stranded ${++uniqueSuffix}`, { rowNumber: DEFAULT_TOOLBOX_ROWS });
+
+  expect(() => saveToolboxRowCount(1)).toThrow(drawer.name);
+  // A refused change must leave the setting untouched, not half-applied.
+  expect(getToolboxRowCount()).toBe(DEFAULT_TOOLBOX_ROWS);
+  deleteDrawer(drawer.id);
 });

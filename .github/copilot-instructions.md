@@ -355,7 +355,8 @@ adding a column: additive, idempotent, safe to run on every boot.
 
 **Status: Implemented** - this list is generated from the router in
 `api/src/index.ts`. The router is a plain `if` chain on pathname and method, not a
-framework; Hono is a dependency but is not currently used for routing.
+framework. Hono was once a dependency and was never used for routing; it has been
+removed, and the API now has no runtime dependencies at all.
 
 ### HTTP Endpoints
 
@@ -363,7 +364,7 @@ framework; Hono is a dependency but is not currently used for routing.
 |---|---|---|
 | GET | `/health` | Liveness check. Returns `{"status":"Ok"}` |
 | GET | `/api/drawers` | All drawers with their tools and tool counts |
-| POST | `/api/drawers` | Create a drawer (`name`, optional `label`, `rowNumber`) |
+| POST | `/api/drawers` | Create a drawer (`name`, optional `label`, `rowNumber`). 400 when `rowNumber` is outside the configured row count |
 | POST | `/api/drawers/:id/tools` | Add or update a tool in a drawer (upsert on name) |
 | DELETE | `/api/drawers/:id` | Delete a drawer. **Cascades** to its tools *and* its `drawer_observations` history. 404 if the id does not exist |
 | DELETE | `/api/drawers/:id/tools/:toolId` | Delete one tool **and its observations** for that drawer, in one transaction. Scoped by drawer, so a mismatched pair is a 404 rather than deleting a tool in another drawer |
@@ -373,6 +374,8 @@ framework; Hono is a dependency but is not currently used for routing.
 | GET | `/api/firmware/latest?currentVersion=` | **OTA update check.** Requires an `X-Device-Key` header. 200 streams the newer `.bin`, 204 means already current, 401 rejects a bad key, 503 means `DEVICE_KEY` is unconfigured |
 | GET | `/api/devices` | Device status: last contact, firmware version, boot count, plus the latest firmware on disk and whether the serial listener is running |
 | GET | `/api/logs?limit=` | Recent request log (default 50, capped at 200). Includes serial traffic, logged with method `SERIAL` and path `serial:<endpoint>` |
+| GET | `/api/settings/toolbox` | Toolbox row count and the panel's ceiling |
+| PUT | `/api/settings/toolbox` | Set the row count. 400 outside 1-8, or when a drawer already uses a higher row |
 | GET | `/api/settings/transcription` | Current transcription provider settings |
 | PUT | `/api/settings/transcription` | Save provider and NAS URL |
 | POST | `/api/settings/transcription/test` | Probe the configured provider |
@@ -565,6 +568,25 @@ tool has none. The device would light the drawer the tool had just left. `assign
 now sets `superseded_at` on the source drawer's observations in the same transaction as
 the move, but only when no same-named tool remains there (`tools` is unique on
 `(drawer_id, name)` under BINARY collation, so "Hammer" and "hammer" can share a drawer).
+
+**A drawer's row must be one the panel can light, and the bound is configurable.**
+Six is a fact about the toolbox in front of the matrix, not about the software, so it
+lives in `config` as `toolbox_row_count` (default 6) rather than in the code. The API
+rejected nothing before: a drawer could be created on row 99, the dashboard would show
+it, and the device would silently fall into its "no row assigned" branch and light the
+whole indicator band - saying *unknown* while the database said *row 99*.
+
+`normalizeRowNumber` reads the setting at call time, so raising the count takes effect
+without a restart, and the Drawers page takes the form's `max` from the same value.
+`MAX_TOOLBOX_ROWS` is 8 because the panel is 8x8 - that ceiling *is* a property of the
+hardware. Lowering the count is refused while a drawer still uses a higher row, naming
+the drawers, rather than silently stranding them.
+
+**The firmware still hardcodes rows 1-6** (`showMatrixRow`, and `MATRIX_FIRST_ROW_Y` /
+`MATRIX_LAST_ROW_Y`, which reserve y=0 and y=7 as margins). Setting 7 or 8 rows is
+therefore accepted and stored by the API but cannot yet be indicated by the device -
+those rows fall into the same "no row" band. Teaching the sketch the count, and remapping
+y to use the full panel when it exceeds 6, is outstanding work.
 
 **An observation batch is all or nothing.** Both vision paths - HTTP and serial - go
 through `recordDrawerObservations`, which validates every detection and every drawer id

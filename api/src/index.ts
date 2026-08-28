@@ -1,6 +1,6 @@
 import { serve } from "bun";
 import { join } from "node:path";
-import { addToolToDrawer, assignToolToDrawer, createDrawer, deleteDrawer, deleteTool, findDrawerByLabel, findToolDrawer, findToolLocations, getDeviceStatus, getTranscriptionSettings, listDrawers, listRequestLogs, recordDeviceContact, recordDrawerObservations, recordRequestLog, saveTranscriptionSettings, ToolNameConflictError } from "./db";
+import { addToolToDrawer, assignToolToDrawer, createDrawer, deleteDrawer, deleteTool, findDrawerByLabel, findToolDrawer, findToolLocations, getDeviceStatus, getToolboxRowCount, getTranscriptionSettings, MAX_TOOLBOX_ROWS, listDrawers, listRequestLogs, recordDeviceContact, recordDrawerObservations, recordRequestLog, saveToolboxRowCount, saveTranscriptionSettings, ToolNameConflictError } from "./db";
 import { parseSerialRequest, serialError, serialSuccess, serializeSerialResponse, type SerialRequest, type SerialResponse } from "./serialProtocol";
 import { startSerialTransport } from "./serialTransport";
 import { FIRMWARE_DIR, findLatestFirmware, isUpdateAvailable } from "./firmware";
@@ -329,6 +329,38 @@ serve({
     if (pathname === '/api/logs' && req.method === 'GET') {
       const requestedLimit = Number(url.searchParams.get('limit') ?? '50');
       return jsonResponse({ logs: listRequestLogs(requestedLimit) });
+    }
+
+    if (pathname === '/api/settings/toolbox' && req.method === 'GET') {
+      return jsonResponse({
+        settings: { rowCount: getToolboxRowCount(), maxRowCount: MAX_TOOLBOX_ROWS },
+      });
+    }
+
+    if (pathname === '/api/settings/toolbox' && req.method === 'PUT') {
+      try {
+        const body = await readJsonBody(req) as { rowCount?: number };
+        const rowCount = saveToolboxRowCount(Number(body.rowCount));
+
+        writeRequestLog({
+          method: req.method,
+          path: pathname,
+          statusCode: 200,
+          result: 'Toolbox rows saved',
+          details: String(rowCount),
+        });
+        return jsonResponse({ settings: { rowCount, maxRowCount: MAX_TOOLBOX_ROWS } });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unable to save toolbox rows.';
+        writeRequestLog({
+          method: req.method,
+          path: pathname,
+          statusCode: 400,
+          result: 'Toolbox rows save failed',
+          details: message,
+        });
+        return errorResponse(message);
+      }
     }
 
     if (pathname === '/api/settings/transcription' && req.method === 'GET') {
