@@ -754,17 +754,29 @@ void handleIncomingLine(const String& line) {
     return;
   }
 
-  const int rowNumber = doc["body"]["rows"][0]["rowNumber"] | 0;
+  // Every field below comes from primaryLocation, deliberately. Reading the row
+  // from rows[0] and the label from drawers[0] mixed two different drawers: the
+  // arrays are ordered independently, and SQLite sorts NULL row numbers first,
+  // so a tool in an unnumbered drawer and a numbered one displayed the second
+  // drawer's row beside the first drawer's label. The Pi now picks one location
+  // and this reads only that.
+  JsonObject primary = doc["body"]["primaryLocation"];
+  const int rowNumber = primary["rowNumber"] | 0;
 
-  // The row number is all the LED (and eventually the 8x8 matrix) can convey.
-  // The drawer label is the half only the OLED can show - see Physical Layout
-  // in the spec, where row 1 spans drawers 1A/1B/1C.
-  const char* drawerLabel = doc["body"]["drawers"][0]["label"] | "";
-  showStatus("Found", pendingToolName, "Row " + String(rowNumber) + "  Drawer " + drawerLabel);
+  // The row number is all the LED and the 8x8 matrix can convey. The drawer
+  // label is the half only the OLED can show - see Physical Layout in the spec,
+  // where row 1 spans drawers 1A/1B/1C.
+  const char* drawerLabel = primary["label"] | "";
+  const bool ambiguous = doc["body"]["hasMultipleLocations"] | false;
+
+  // Say so when the tool is on record in more than one drawer, rather than
+  // showing one of them as though it were the answer.
+  showStatus("Found", pendingToolName,
+             "Row " + String(rowNumber) + "  Drawer " + drawerLabel + (ambiguous ? " +" : ""));
 
   // certainty is null for a tool the camera has never observed - distinguish
   // "no reading" from a low reading rather than collapsing both to a number.
-  JsonVariant certainty = doc["body"]["rows"][0]["certainty"];
+  JsonVariant certainty = primary["confidence"];
   showMatrixRow(rowNumber, !certainty.isNull(), certainty | 0);
 
   if (rowNumber > 0) {

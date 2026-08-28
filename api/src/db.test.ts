@@ -236,3 +236,51 @@ test("assignment rejects unknown tool and drawer ids", () => {
   expect(() => assignToolToDrawer(999_999, { toolId: tool.id })).toThrow("Drawer not found.");
   expect(() => assignToolToDrawer(drawer.id, { toolId: 0 })).toThrow("Tool id is required.");
 });
+
+// The bug this guards: the firmware read rowNumber from rows[0] and label from
+// drawers[0]. Those arrays are ordered independently - drawers comes back
+// ordered by row_number ASC, and SQLite sorts NULLs first, while rows skips
+// null row numbers entirely. A tool in an unnumbered drawer and a numbered one
+// therefore paired the numbered drawer's row with the unnumbered one's label.
+test("primaryLocation pairs a row with its own drawer's label", () => {
+  const unnumbered = createDrawer(`Unnumbered ${++uniqueSuffix}`, { label: `U${uniqueSuffix}` });
+  const numbered = makeDrawer(5);
+  addToolToDrawer(unnumbered.id, { name: "Bradawl", quantity: 1 });
+  addToolToDrawer(numbered.id, { name: "Bradawl", quantity: 1 });
+
+  const lookup = findToolLocations("Bradawl")!;
+
+  // The old pairing, reconstructed: it would have shown this row beside this label.
+  expect(lookup.drawers[0]?.rowNumber).toBeNull();
+  expect(lookup.rows[0]?.rowNumber).toBe(5);
+
+  // The primary is one object, so its row and label always agree.
+  expect(lookup.primaryLocation?.drawerId).toBe(numbered.id);
+  expect(lookup.primaryLocation?.rowNumber).toBe(5);
+  expect(lookup.primaryLocation?.label).toBe(numbered.label);
+  expect(lookup.hasMultipleLocations).toBe(true);
+});
+
+test("primaryLocation prefers the drawer the camera is most confident about", () => {
+  const quiet = makeDrawer(6);
+  const confident = makeDrawer(7);
+  addToolToDrawer(quiet.id, { name: "Bradawl2", quantity: 1 });
+  addToolToDrawer(confident.id, { name: "Bradawl2", quantity: 1 });
+  recordDrawerObservation({ drawerId: quiet.id, toolName: "Bradawl2", confidence: 40 });
+  recordDrawerObservation({ drawerId: confident.id, toolName: "Bradawl2", confidence: 95 });
+
+  const lookup = findToolLocations("Bradawl2")!;
+
+  expect(lookup.primaryLocation?.drawerId).toBe(confident.id);
+  expect(lookup.primaryLocation?.confidence).toBe(95);
+});
+
+test("a single location is the primary and is not flagged ambiguous", () => {
+  const only = makeDrawer(8);
+  addToolToDrawer(only.id, { name: "Bradawl3", quantity: 1 });
+
+  const lookup = findToolLocations("Bradawl3")!;
+
+  expect(lookup.primaryLocation?.drawerId).toBe(only.id);
+  expect(lookup.hasMultipleLocations).toBe(false);
+});

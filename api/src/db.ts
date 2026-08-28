@@ -41,6 +41,11 @@ export type ToolLocation = {
 
 export type ToolLookupResult = {
   tool: string;
+  // The one location a caller should act on. Everything a display needs comes
+  // from this single object, so a row and a label can never describe different
+  // drawers. Null only when the tool is known but has no location at all.
+  primaryLocation: ToolLocation | null;
+  hasMultipleLocations: boolean;
   drawers: ToolLocation[];
   rows: Array<{ rowNumber: number; certainty: number | null }>;
 };
@@ -600,6 +605,40 @@ export function saveTranscriptionSettings(settings: TranscriptionSettings) {
   return getTranscriptionSettings();
 }
 
+// Which of several candidate drawers to point the user at.
+//
+// 1. A drawer with a row number beats one without. The device indicates a row
+//    and nothing else, so a location it cannot show is useless as the primary.
+// 2. Then the highest confidence, matching how `rows` already collapses. A null
+//    confidence means the camera has never seen the tool there, so it sorts
+//    last rather than counting as certainty.
+// 3. Then lowest row number, then lowest drawer id, purely so the answer is
+//    stable rather than dependent on SQLite's row order.
+function pickPrimaryLocation(locations: ToolLocation[]): ToolLocation | null {
+  if (locations.length === 0) {
+    return null;
+  }
+
+  return [...locations].sort((a, b) => {
+    const aHasRow = a.rowNumber != null;
+    const bHasRow = b.rowNumber != null;
+
+    if (aHasRow !== bHasRow) {
+      return aHasRow ? -1 : 1;
+    }
+
+    const confidenceGap = (b.confidence ?? -1) - (a.confidence ?? -1);
+
+    if (confidenceGap !== 0) {
+      return confidenceGap;
+    }
+
+    const rowGap = (a.rowNumber ?? Number.MAX_SAFE_INTEGER) - (b.rowNumber ?? Number.MAX_SAFE_INTEGER);
+
+    return rowGap !== 0 ? rowGap : a.drawerId - b.drawerId;
+  })[0]!;
+}
+
 export function findToolLocations(toolName: string): ToolLookupResult | null {
   const normalizedToolName = normalizeName(toolName, "Tool name");
   const canonicalTool = selectCanonicalToolName.get(normalizedToolName) as { name: string } | null;
@@ -624,6 +663,8 @@ export function findToolLocations(toolName: string): ToolLookupResult | null {
 
   return {
     tool: canonicalTool.name,
+    primaryLocation: pickPrimaryLocation(drawers),
+    hasMultipleLocations: drawers.length > 1,
     drawers,
     rows: [...rowsByNumber.entries()].map(([rowNumber, certainty]) => ({ rowNumber, certainty })),
   };

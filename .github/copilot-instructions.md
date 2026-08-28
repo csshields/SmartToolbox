@@ -349,7 +349,7 @@ framework; Hono is a dependency but is not currently used for routing.
 | POST | `/api/drawers/:id/tools` | Add or update a tool in a drawer (upsert on name) |
 | DELETE | `/api/drawers/:id` | Delete a drawer. **Cascades** to its tools *and* its `drawer_observations` history. 404 if the id does not exist |
 | DELETE | `/api/drawers/:id/tools/:toolId` | Delete one tool **and its observations** for that drawer, in one transaction. Scoped by drawer, so a mismatched pair is a 404 rather than deleting a tool in another drawer |
-| GET | `/api/tools/lookup?query=` | **Primary lookup.** Returns exact drawers plus rows collapsed by certainty |
+| GET | `/api/tools/lookup?query=` | **Primary lookup.** Returns `primaryLocation` (the one location to act on), `hasMultipleLocations`, plus `drawers` and `rows` collapsed by certainty |
 | POST | `/api/tools/assign` | **Move an existing tool to another drawer**, by `toolId`. 400 on a missing/invalid id, 404 on an unknown tool or drawer, 409 when the target drawer already holds that name. Does not create tools |
 | POST | `/api/vision/observations` | Record camera detections for a drawer |
 | GET | `/api/firmware/latest?currentVersion=` | **OTA update check.** Requires an `X-Device-Key` header. 200 streams the newer `.bin`, 204 means already current, 401 rejects a bad key, 503 means `DEVICE_KEY` is unconfigured |
@@ -380,6 +380,9 @@ remains the fallback for anything else.
 {
   "found": true,
   "tool": "Needle-nose Pliers",
+  "primaryLocation": { "drawerId": 1, "label": "1A", "rowNumber": 1, "quantity": 2,
+                       "confidence": 95, "observedAt": "2026-08-27 11:04:12" },
+  "hasMultipleLocations": false,
   "drawers": [
     { "drawerId": 1, "label": "1A", "rowNumber": 1, "quantity": 2,
       "confidence": 95, "observedAt": "2026-08-27 11:04:12" }
@@ -388,10 +391,17 @@ remains the fallback for anything else.
 }
 ```
 
-`drawers` feeds the OLED (exact labels). `rows` feeds the 8x8 matrix, already
-collapsed so that several matching drawers in one row produce a single entry at the
-highest confidence. `confidence` is null when the tool is known from manual entry but
-has never been observed by the camera.
+**Display from `primaryLocation` and nothing else.** It is one location object, so the
+row and the label it carries always describe the same drawer - which reading across
+`rows` and `drawers` did not guarantee. See the invariant under Dashboard for what that
+cost. `hasMultipleLocations` is true when the tool is on record in more than one drawer,
+and the firmware appends a `+` to the OLED line rather than presenting one candidate as
+the answer. `primaryLocation` is null only for a known tool with no location at all.
+
+`drawers` and `rows` remain for callers that want every candidate: `drawers` carries the
+exact labels, `rows` is collapsed so several matching drawers in one row produce a single
+entry at the highest confidence. `confidence` is null when the tool is known from manual
+entry but has never been observed by the camera.
 
 Not found returns `{"found": false, "message": "Tool not found."}` with HTTP 200 -
 a lookup that matched nothing is a successful lookup, not an error.
@@ -537,6 +547,22 @@ tool has none. The device would light the drawer the tool had just left. `assign
 now sets `superseded_at` on the source drawer's observations in the same transaction as
 the move, but only when no same-named tool remains there (`tools` is unique on
 `(drawer_id, name)` under BINARY collation, so "Hammer" and "hammer" can share a drawer).
+
+**A displayed row and label must come from the same location object.** `drawers` and
+`rows` are ordered independently: `drawers` comes back ordered by `row_number ASC` and
+SQLite sorts NULLs *first*, while `rows` skips null row numbers entirely. Reading
+`rows[0].rowNumber` beside `drawers[0].label` therefore paired a numbered drawer's row
+with an unnumbered drawer's name - the OLED would read "Row 3  Drawer Odds and Ends" for
+a tool that is in row 3 of a different drawer. `findToolLocations` now returns
+`primaryLocation`, and the firmware reads label, row, and confidence from that object
+alone. `hasMultipleLocations` marks the display with a `+` rather than presenting one
+of several candidates as the answer.
+
+The choice is `pickPrimaryLocation` in `api/src/db.ts`: a drawer with a row number beats
+one without (the device can only indicate a row), then highest confidence with null
+sorting last (never observed is not certainty), then lowest row number and drawer id so
+the answer is stable rather than dependent on SQLite's row order. `drawers` and `rows`
+are unchanged, so a device on older firmware behaves exactly as it did.
 
 **Assignment is keyed on `toolId`, not on a name.** A tool name is not unique across
 drawers, and the old name-based lookup took the lowest `id`, so asking to move "hammer"
