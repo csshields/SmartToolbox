@@ -1,7 +1,8 @@
 ---
 title: Plan of Attack - Startup Readiness (wait for the Pi, and look like you mean it)
 scope: implementation plan, written 2026-08-28 - boot handshake, spinner, alert triangle
-status: written 2026-08-29, compiles, NOT yet run on hardware - Steps 1-5 all implemented
+status: RUNNING on hardware since 0.19.0 - promotion proven on every boot since. Two
+  things still unexercised: a whole-box cold start, and the 90-second no-reply face.
 ---
 
 # Plan: don't say "Ready" until the Pi can actually answer
@@ -338,11 +339,31 @@ its own outcome on the OLED, which is the wrong screen for a box that is still w
 only reachable if the Pi is still absent at the two-minute mark, but that is exactly the
 case this plan is about.
 
-**Still to prove on hardware**, and none of it can be checked from Windows: the Pi's log
-showing `device/status` roughly two seconds apart from a cold boot and stopping once
-answered; the dashboard showing a firmware version after a whole-box power cycle; the
-spinner turning the right way; the 90-second face; and a touch at second 10 producing no
-`No response`.
+### Running on hardware - from 0.19.0, 2026-08-29
+
+Promotion works, and the log proves it is the *new* path doing it:
+
+```
+[serial] request id=status-1 endpoint=device/status
+[serial] response written id=status-1
+[serial-debug] OTA last result: up to date at v0.19.0
+```
+
+That last line only comes from `reportLastOtaResult`, which is only reachable from
+`promoteToReady`. It appears **after** the response - under the old code it fired from
+`pollDeviceStatus` before the send, so it would have printed before the request. Its
+position is the proof that the reordered parse in `handleIncomingLine` is reading replies
+that used to be discarded. Every boot since has done the same.
+
+Heartbeat spacing confirms the handover: `status-1` through `status-4` spanned ~30s
+apart, not the 2s of the waiting retry.
+
+**Still unexercised**, and neither can be checked from Windows:
+
+- **A whole-box cold start.** Every boot so far has been the device restarting against a
+  Pi that was already up, which is the easy case - promotion happens on the first retry.
+  The race this plan exists for needs both halves powered on together.
+- **The 90-second face.** Needs the Pi's service stopped while the device boots.
 
 ## What the review changed
 
