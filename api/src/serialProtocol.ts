@@ -1,4 +1,4 @@
-export type SerialEndpoint = "device/status" | "tools/lookup" | "vision/observe";
+export type SerialEndpoint = "device/status" | "tools/lookup" | "vision/observe" | "voice/audio";
 
 export type SerialRequest = {
   id: string;
@@ -30,6 +30,7 @@ const serialEndpoints = new Set<SerialEndpoint>([
   "device/status",
   "tools/lookup",
   "vision/observe",
+  "voice/audio",
 ]);
 
 export function parseSerialRequest(line: string): SerialRequest {

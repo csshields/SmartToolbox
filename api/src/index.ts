@@ -1,5 +1,6 @@
 import { serve } from "bun";
 import { join } from "node:path";
+import { pcmToWav, parseVoiceAudioBody, transcribeAudio } from "./voice";
 import { addToolToDrawer, assignToolToDrawer, createDrawer, deleteDrawer, deleteTool, findDrawerByLabel, findToolDrawer, findToolLocations, getDeviceStatus, getToolboxRowCount, getTranscriptionSettings, MAX_TOOLBOX_ROWS, listDrawers, listRequestLogs, recordDeviceContact, recordDrawerObservations, recordRequestLog, saveToolboxRowCount, saveTranscriptionSettings, ToolNameConflictError } from "./db";
 import { parseSerialRequest, serialError, serialSuccess, serializeSerialResponse, type SerialRequest, type SerialResponse } from "./serialProtocol";
 import { startSerialTransport } from "./serialTransport";
@@ -126,6 +127,34 @@ async function handleSerialRequest(request: SerialRequest): Promise<SerialRespon
       });
     }
 
+    if (request.endpoint === "voice/audio") {
+      const audio = parseVoiceAudioBody(request.body);
+      const settings = getTranscriptionSettings();
+      const startedAt = Date.now();
+
+      const { transcript, provider } = await transcribeAudio(
+        pcmToWav(audio.pcm, audio.sampleRate, audio.channels),
+        settings,
+      );
+
+      // Logged here rather than left to the request log, because the request log
+      // deliberately never sees the audio and this is the only place the two
+      // numbers that matter - how long the clip was, how long the transcription
+      // took - exist together.
+      console.log(
+        `[voice] ${audio.durationMs}ms audio -> ${provider} in ${Date.now() - startedAt}ms: ${JSON.stringify(transcript)}`,
+      );
+
+      // No tool matching. This endpoint returns what was heard and nothing more;
+      // turning a transcript into a drawer is docs/PLAN-voice-lookup.md's job and
+      // is deliberately a separate change. See docs/PLAN-mic-bringup.md.
+      return serialSuccess(request.id, {
+        transcript,
+        provider,
+        durationMs: audio.durationMs,
+      });
+    }
+
     if (request.endpoint === "tools/lookup") {
       const body = request.body as { query?: unknown };
       if (typeof body.query !== "string") {
@@ -174,7 +203,13 @@ async function handleSerialLine(line: string): Promise<SerialResponse | null> {
   if (!line.trim().startsWith("{")) {
     // Surfaced rather than dropped so the sketch's TOUCH_DEBUG output is readable
     // from the Pi's journal; set TOUCH_DEBUG to 0 in the sketch to quiet it.
-    console.log(`[serial-debug] ${line}`);
+    //
+    // Truncated because this branch takes anything that is not JSON, and a
+    // voice/audio line that arrives mangled - a device reset mid-send, a dropped
+    // byte - lands here as ~427 KB of base64. One of those in service.log is
+    // worse than useless: it buries every line around it, which are the ones
+    // that say what went wrong.
+    console.log(`[serial-debug] ${line.length > 300 ? `${line.slice(0, 300)}... (${line.length} chars)` : line}`);
     return null;
   }
 
@@ -203,10 +238,19 @@ async function handleSerialLine(line: string): Promise<SerialResponse | null> {
     // ~2,880 rows a day and bury the requests a person actually wants to read.
     // The devices table already holds everything a heartbeat carries.
     if (request.endpoint !== "device/status") {
+      // For voice the transcript is the query - it is what the user actually
+      // said, and it is the one field that makes a voice row in the dashboard
+      // worth reading. The audio itself is never written anywhere.
+      const transcript = response.success
+        ? (response.body as { transcript?: unknown }).transcript
+        : undefined;
+
       writeRequestLog({
         method: "SERIAL",
         path: `serial:${request.endpoint}`,
-        tool: typeof body.query === "string" ? body.query : undefined,
+        tool: typeof body.query === "string"
+          ? body.query
+          : (typeof transcript === "string" ? transcript : undefined),
         statusCode: response.success ? 200 : 400,
         result: response.success ? "Serial request handled" : "Serial request rejected",
         details: response.success ? "" : response.error.message,
