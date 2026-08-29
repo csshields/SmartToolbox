@@ -1766,6 +1766,15 @@ a `firmware_updates` table). What is actually built is deliberately smaller:
 - No AP-mode provisioning and no update history table. Credentials come from
   `arduino_secrets.h` at compile time.
 
+**No recovery path from a bad build.** An application-level update needs working
+firmware to receive it, so a build that crashes in `setup()`, wedges the loop, or breaks
+the serial link cannot be replaced over the air - the thing that would accept the next
+update is the thing that is broken. Today the recovery is a person, a USB cable, and a
+trip to the box. `docs/PLAN-usb-flashing.md` proposes closing that with `esptool` from the
+Pi over the cable already carrying `/dev/ttyACM0`, talking to the ROM bootloader, which
+runs before the application and therefore survives its own bad output. **Status: Planned**
+- nothing is built and Step 0 of that plan is an experiment that may yet say no.
+
 **Untested:** recovery from a transfer interrupted mid-write. The mechanism is sound -
 the ESP32 writes to the inactive OTA slot and `Update.end(true)` only marks it bootable
 after verifying the image - but that path has not been deliberately exercised.
