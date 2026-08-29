@@ -80,7 +80,7 @@ Updated 2026-08-27. This table is the single place to check what is physically w
 | SenseCraft model | Not deployed | **Blocks Feature 3.** Nothing to detect until a model is trained and flashed |
 | OLED (Grove SSD1315 0.96") | Verified | On the I2C connector, GPIO5/GPIO6. Driven with U8g2 (`U8G2_SSD1306_128X64_NONAME_F_HW_I2C`); the SSD1315 is SSD1306-compatible. Shows lookup status and the exact drawer label |
 | Grove 8x8 matrix | Verified | Wired and working. Idle purple face; thinking face while a lookup is in flight; then the outcome - see Matrix States. Mounted a quarter turn out, so the firmware sets `DISPLAY_ROTATE_270` every boot - that setting lives on the panel and survives power cycles |
-| Microphone | On board, unused | The XIAO's own PDM mic. No sketch has initialised it yet, so it is unproven in this project - bring it up alone before building on it. See `docs/PLAN-voice-lookup.md` |
+| Microphone | On board, unused | The XIAO's own PDM mic. No sketch has initialised it yet, so it is unproven in this project - bring it up alone before building on it, which is what `docs/PLAN-mic-bringup.md` is for. The feature it feeds is `docs/PLAN-voice-lookup.md` |
 | PIR motion sensor | Deferred | Needs two GPIO. No longer necessarily blocked - the Pi's 40-pin header is free; see the Open Hardware Question |
 | Grove Red LED Button | **Mis-wired** | Currently plugged into the Grove I2C Hub, where it cannot work: it is a passive switch and LED with no I2C chip, so its two pins land on SDA and SCL. The LED is lit only because a bus line idles high. **Pressing it disturbs the I2C bus** the OLED and matrix depend on. Unplug it until it has real GPIO |
 | Pi 40-pin GPIO header | Free, unpopulated | 26 usable GPIO, nothing in this project uses them. `gpioget`/`gpiomon` (libgpiod) are installed and `/dev/gpiochip0` is present - confirmed 2026-08-27 |
@@ -942,11 +942,15 @@ ssh -i "$env:USERPROFILE\.ssh\smarttoolbox_pi_ed25519" shields@192.168.50.30
 - **Interface**: I2C through the Grove - I2C Hub (6 Port)
 - **Use Cases**: Status, errors, and exact drawer labels, such as `1A` and `3`.
 
-**WS2813 Strip (Future)**:
-- **Type**: Grove WS2813 RGB LED Strip Waterproof, 30 LEDs/m, 1 m (SKU 104020108)
-- **Interface**: Single-wire GPIO data signal; not I2C
-- **Power**: External regulated 5V supply, sized for up to 1.8A at full white
-- **Status**: Deferred until a compatible GPIO breakout/expansion design is selected.
+**WS2813 Strip (Planned - this is where row indication is going)**:
+- **Type**: Grove WS2813 RGB LED Strip Waterproof, 30 LEDs/m, 1 m (SKU 104020108). Owned.
+- **Interface**: Single-wire data signal **from the Pi**, not the XIAO. See the Row
+  Indication decision under Open Hardware Question.
+- **Power**: External regulated 5V supply, sized for up to 1.8A at full white. Common
+  ground with the Pi. Do not run the strip from the Pi's 5V pin.
+- **Levels**: the Pi drives 3.3V and the strip wants 5V logic. Usually works, sometimes
+  flaky; a 74AHCT125 is the proper fix.
+- **Status**: Planned. Not wired, no code.
 
 **Camera Illumination LED**:
 - **Type**: High-brightness white LED or LED ring
@@ -999,7 +1003,8 @@ resolved - not before.
 - **No per-row LED GPIO pins.** Row indication is the I2C 8x8 RGB matrix, addressed
   over the shared bus. Earlier drafts of this document defined `ROW_LED_1`..`ROW_LED_6`
   as GPIO data pins; that design was replaced by the matrix and those defines should
-  not reappear. The WS2813 strip, which would need a real GPIO data pin, is deferred.
+  not reappear. The WS2813 strip needs a real data pin and is planned on the *Pi's*
+  header, not the XIAO's - see the Row Indication decision under Open Hardware Question.
 - **No per-drawer sensors.** Drawer open/close detection is one of three candidate
   methods in Feature 3 and no hardware has been chosen.
 
@@ -1024,6 +1029,55 @@ underside connector. Only one can be there.
 | Seeed Expansion Board Base (SKU 103030356, owned) | Verify it mates with the Sense board first | Grove I2C and a digital port without soldering |
 | Solder to the XIAO's exposed pads | One soldering session | Everything on one device, no cross-device coordination |
 | Move the Vision AI V2 to a Grove cable | A cable | Frees the header - but the hub currently chains off the Vision AI's Grove port, so this also moves the I2C path |
+
+### Decision: row indication moves to the LED strip, driven from the Pi
+
+**Status: Planned** - decided 2026-08-28. Nothing is wired and no code exists.
+
+The 8x8 matrix indicates a row by lighting matrix row N for toolbox row N. That has two
+faults, and they are the same fault seen from different sides:
+
+- **It caps at eight.** The unit of meaning is the panel's own height, so a toolbox with
+  more rows than the panel has cannot be addressed at all. `MAX_TOOLBOX_ROWS` is 8 for
+  this reason - it is a symptom of the design, not a hardware limit worth keeping.
+- **It is hard to read.** A single lit row gives the eye no scale to count against, so it
+  reads as "higher" or "lower" rather than as row 3. Every fix for that - a ruler column,
+  a sweep animation, filling to the row - adds machinery to make a number legible that
+  the box should not have been asking anyone to read.
+
+The WS2813 strip removes both by not encoding position at all. One LED sits beside each
+row, so the light **is** the answer; nobody counts anything, and thirty LEDs is thirty
+rows. Grid coordinates on the matrix were considered - the existing `1A`/`1B`/`1C` labels
+are already a row and a column - and rejected: it scales only to 64, still has to be
+read, and costs a schema change for a column concept the strip makes unnecessary.
+
+**The strip hangs off the Pi, not the XIAO.** The XIAO's expansion header is occupied by
+the Vision AI V2, which is the same wall the PIR and the Red LED Button hit, and the
+answer is the same one this section already reached: the Pi's 40-pin header is unused.
+
+**This needs no protocol change, which is the surprising part.** Everything else
+interactive is blocked on the device speaking first - see Communication Protocol. Row
+indication is not. The Pi already receives `tools/lookup`, already computes the `rows`
+array, and can light the strip inside `handleSerialRequest` before it composes the
+response. The one output that ought to be hardest to move is the one that moves for free.
+
+**Drive it over SPI, not `rpi_ws281x`.** The usual library uses PWM+DMA on GPIO18 and
+ships as a native addon; the API is Bun, and native Node addons under Bun are a gamble
+worth not taking. Encoding each WS2812 bit as three SPI bits at ~2.4MHz and writing the
+buffer to `/dev/spidev0.0` is plain file I/O - no native module, no root, and the strip
+stays inside the existing Bun process instead of behind a Python sidecar.
+
+**What this does to the other outputs.** Each ends up with one job and no overlap:
+
+| Output | Job |
+|---|---|
+| WS2813 strip | Points at the row, physically |
+| 8x8 matrix | The face: idle, thinking, not found, not understood |
+| OLED | Names the exact drawer - `1A` against `1B`, which the strip cannot distinguish |
+
+Once the strip exists the matrix stops encoding numbers, so the digit phase and
+`MATRIX_RESULT_ROW_MS` can go. Do not invest further in making the matrix legible as a
+row indicator; that work is superseded by this decision.
 
 **Do not connect a passive Grove module to the I2C Hub.** Every Grove connector is the
 same four-pin shape, but an I2C port's two signal pins are SDA and SCL. A module with no
@@ -1258,6 +1312,10 @@ never be read as an answer. The thinking face is held for exactly as long as `aw
 - every exit from it (answer, rejection, timeout) sets another mode, so there is no
 timer to fall out of sync.
 
+**The row indicator is on its way out.** Lighting matrix row N for toolbox row N caps at
+eight rows and is hard to read - see the Row Indication decision under Open Hardware
+Question. The face states below are unaffected and are what the matrix keeps.
+
 **Not found and not understood are different answers and must look different.** All
 three failure paths used to draw the same red band, so "it isn't in any drawer", "I
 could not make sense of that", and "the Pi is not responding" were indistinguishable
@@ -1268,8 +1326,10 @@ understand the word is a different kind of statement from having no answer to it
 Once voice lands, a failed transcription surfaces as a `success: false` response and so
 gets the question mark for free - that is the case it was drawn for.
 
-- [ ] FastLED or Adafruit_NeoPixel - **not needed.** These are for the deferred WS2813
-      strip only; the matrix is I2C and does not use them.
+- [ ] FastLED or Adafruit_NeoPixel - **not needed, and now never will be.** These are
+      Arduino libraries for the WS2813 strip, which is planned on the Pi rather than the
+      XIAO; the Pi drives it over SPI from the Bun process. The matrix is I2C and has
+      never used them.
 
 ## Feature Specifications
 
