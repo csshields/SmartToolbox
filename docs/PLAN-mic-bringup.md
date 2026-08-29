@@ -2,8 +2,8 @@
 title: Plan of Attack - Microphone Bring-Up (say a word, read it on the OLED)
 scope: bring-up plan, written 2026-08-28 - PDM mic to Whisper to OLED, no tool matching
 references: https://wiki.seeedstudio.com/xiao_esp32s3_sense_mic/
-status: in progress - Step 1 running on hardware; mic proven alive, RMS gate not yet passed;
-  listening indicator added 2026-08-29, not started
+status: Step 1 COMPLETE - RMS gate passed on hardware 2026-08-29, 12x silence to speech.
+  Step 2 next; listening indicator designed 2026-08-29, not started
 ---
 
 # Plan: say a word, see the word
@@ -153,6 +153,28 @@ hiding inside the result.
 **Still unproven, and this is the actual gate:** that a DC-corrected RMS is small in a
 quiet room and multiplies when spoken into. Until that comparison is made, the mic is
 known to produce *data*, not known to produce *audio*.
+
+### The gate passed - 2026-08-29, in 0.19.0
+
+Two presses, deliberately compared, in a quiet room:
+
+```
+MIC samples=32000 min=1524 max=1783 mean=1685 rms=17     # silence
+MIC samples=32000 min=-1431 max=4068 mean=1665 rms=210   # "hammer"
+```
+
+**Twelve times.** The gate asked for "small in a quiet room, rising by an obvious
+multiple when spoken into", and that is what it did.
+
+The second line carries better evidence than the ratio, though. `min=-1431` is
+**negative**, and no previous recording in this project has ever gone below zero - that
+was the whole DC-bias discovery, samples riding on a +1665 offset and never crossing
+zero. To read -1431 the signal had to swing more than 1,665 counts below its own centre.
+Ambient noise does not do that. That is a voice.
+
+**Step 1 is complete.** The microphone is no longer merely alive; it is proven to carry
+audio. The four unproven links this plan was written to test are now three: recording
+works, and what remains is getting the audio to the Pi, through Whisper, and back.
 
 ## The listening indicator - an animated sound wave
 
