@@ -80,7 +80,7 @@ Updated 2026-08-27. This table is the single place to check what is physically w
 | SenseCraft model | Not deployed | **Blocks Feature 3.** Nothing to detect until a model is trained and flashed |
 | OLED (Grove SSD1315 0.96") | Verified | On the I2C connector, GPIO5/GPIO6. Driven with U8g2 (`U8G2_SSD1306_128X64_NONAME_F_HW_I2C`); the SSD1315 is SSD1306-compatible. Shows lookup status and the exact drawer label |
 | Grove 8x8 matrix | Verified | Wired and working. Idle purple face; thinking face while a lookup is in flight; then the outcome - see Matrix States. Mounted a quarter turn out, so the firmware sets `DISPLAY_ROTATE_270` every boot - that setting lives on the panel and survives power cycles |
-| Microphone | On board, unused | The XIAO's own PDM mic. No sketch has initialised it yet, so it is unproven in this project - bring it up alone before building on it, which is what `docs/PLAN-mic-bringup.md` is for. The feature it feeds is `docs/PLAN-voice-lookup.md` |
+| Microphone | Attached, uninitialised | The XIAO's own PDM mic on the Sense board, fitted 2026-08-28. GPIO 42 clock, GPIO 41 data. No sketch has initialised it yet, so it is unproven here - bring it up alone before building on it, which is what `docs/PLAN-mic-bringup.md` is for. The feature it feeds is `docs/PLAN-voice-lookup.md` |
 | PIR motion sensor | Deferred | Needs two GPIO. No longer necessarily blocked - the Pi's 40-pin header is free; see the Open Hardware Question |
 | Grove Red LED Button | **Mis-wired** | Currently plugged into the Grove I2C Hub, where it cannot work: it is a passive switch and LED with no I2C chip, so its two pins land on SDA and SCL. The LED is lit only because a bus line idles high. **Pressing it disturbs the I2C bus** the OLED and matrix depend on. Unplug it until it has real GPIO |
 | Pi 40-pin GPIO header | Free, unpopulated | 26 usable GPIO, nothing in this project uses them. `gpioget`/`gpiomon` (libgpiod) are installed and `/dev/gpiochip0` is present - confirmed 2026-08-27 |
@@ -846,7 +846,7 @@ ssh -i "$env:USERPROFILE\.ssh\smarttoolbox_pi_ed25519" shields@192.168.50.30
 - **Memory**: 8MB PSRAM, 8MB flash. **PSRAM is off in the shipped build** - `release-firmware.ps1` compiles a bare `esp32:esp32:XIAO_ESP32S3`, and the board's default PSRAM menu option is `disabled`. Anything needing a large buffer must set `:PSRAM=opi`.
 - **Power**: 3.3V, rechargeable battery support
 - **Built-in Sensors**: a **PDM digital microphone** and an **OV2640 camera**, both on the Sense expansion board that mates with the core board's underside connector. Neither has ever been initialised by this project's firmware. IMU is still external and unselected.
-- **Note**: the Sense expansion board and any module that mounts the XIAO from below are competing for the same physical space. Which is actually attached is recorded under Pin Mappings' Open Hardware Question, not assumed here.
+- **Note**: the Sense expansion board and any module that mounts the XIAO from below are competing for the same physical space. **The Sense board is the one fitted, as of 2026-08-28** - see Pin Mappings' Open Hardware Question for what that rules out.
 
 **Vision Hardware**: Seeed Grove Vision AI Module (V2), SKU 101021112, + OV5647 Camera
 - **Connection**: Stacked on the XIAO ESP32S3 expansion header, communicating over I2C. **Verified on hardware 2026-08-27** - the link is up. This also means the header is occupied; see the Open Hardware Question under Pin Mappings.
@@ -907,16 +907,35 @@ ssh -i "$env:USERPROFILE\.ssh\smarttoolbox_pi_ed25519" shields@192.168.50.30
 - **Library**: TBD
 
 ### Microphone (On board)
-- **Type**: The XIAO's own digital microphone. No external part is needed or planned.
-- **Interface**: PDM (Pulse Density Modulation). Confirm the clock and data GPIO numbers
-  against the Seeed board doc and record them in `docs/SOURCES.md` before hard-coding.
-- **Sample Rate**: 16 kHz mono, 16-bit - what Whisper wants; higher buys nothing.
+- **Type**: The XIAO's own digital microphone, on the **Sense expansion board**. No
+  external part is needed or planned. **The Sense board is attached as of 2026-08-28.**
+- **Interface**: PDM. Pins are fixed by the board, confirmed against Seeed's own
+  documentation: **GPIO 42 = clock, GPIO 41 = data.**
+- **Sample Rate**: 16 kHz mono, 16-bit. Not a preference - the ESP32-S3 supports *only*
+  PDM mono at 16-bit, so the bit width and slot mode are the chip's, not a choice. The
+  rate is adjustable; Seeed reports 16 kHz as the stable one, and it is also what Whisper
+  wants, so there is no reason to move it.
 - **Library**: `ESP_I2S.h` from the installed esp32 core (3.3.11), *not* the core-2.x
-  `I2S.h` that Seeed's published examples use. `I2SClass::recordWAV(seconds, &size)`
-  returns a malloc'd buffer with a WAV header already attached.
-- **Status**: never initialised by this project's firmware. Bring it up in isolation
-  first - an uninitialised mic and a mic returning silence are indistinguishable
-  everywhere else in this system.
+  `I2S.h` that Seeed's published examples still lead with. The two have different APIs
+  and picking the wrong page is the likely first failure:
+
+```cpp
+// Core 3.x - what this project has.
+I2S.setPinsPdmRx(42, 41);
+I2S.begin(I2S_MODE_PDM_RX, 16000, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO);
+```
+
+- **Two ways to read, and they are not interchangeable.** `recordWAV(seconds, &size)`
+  returns a `ps_malloc`'d buffer with a WAV header already attached, but takes a fixed
+  duration - fine for a bring-up, useless for hold-to-talk, where the length is not known
+  when recording starts. That path reads in a loop instead and lets the Pi write the
+  header. See `docs/PLAN-mic-bringup.md` and `docs/PLAN-voice-lookup.md`.
+- **Buffers go in PSRAM.** Seeed's own example uses `ps_malloc` for exactly this reason:
+  four seconds of 16 kHz 16-bit mono is 128 KB against the XIAO's 320 KB of SRAM, of
+  which this sketch already uses 49 KB.
+- **Status**: attached but never initialised by this project's firmware. Bring it up in
+  isolation first - an uninitialised mic and a mic returning silence are
+  indistinguishable everywhere else in this system.
 - **Use Cases**: push-to-talk tool lookup (Feature 2). A wake word is out of scope.
 
 ### PIR Motion Sensor (Grove PIR Sensor, SKU 101020020)
@@ -994,9 +1013,11 @@ resolved - not before.
 #define PIR_SENSOR_PIN    TBD   // Grove PIR motion sensor, digital in
 #define BUTTON_PIN        TBD   // Grove Red LED Button, push-to-talk
 #define BUTTON_LED_PIN    TBD   // Same module, status indicator
-#define MIC_DATA          TBD   // No microphone part selected yet
-#define MIC_CLK           TBD
 ```
+
+The microphone used to sit in this list. It does not belong here: it is on the Sense
+board's underside connector, not the expansion header, so it was never blocked by the
+Vision AI V2. Its pins are fixed by the board and recorded under Microphone below.
 
 ### Deliberately Absent
 
@@ -1020,13 +1041,28 @@ The real question is narrower: the Vision AI V2 occupies the XIAO's expansion he
 and the Sense expansion board that carries the microphone and OV2640 wants the same
 underside connector. Only one can be there.
 
+**Update 2026-08-28: the Sense board is fitted.** That settles the underside connector in
+favour of the microphone, and the mic's pins are no longer TBD - GPIO 42 clock, GPIO 41
+data, recorded under Microphone. Two consequences follow:
+
+- **The Expansion Board Base (SKU 103030356) is out while the Sense board is on.** Its
+  row below is kept for the record, not as a live option. That also answers the buzzer
+  question: the base board's onboard buzzer is the only sound hardware owned, and it
+  cannot be fitted alongside the microphone. Sound, if it is ever wanted, goes on the Pi
+  for the same reason the LED strip does.
+- **Whether the Vision AI V2 is still connected is unverified.** This section has always
+  said only one module can have that space; nobody has confirmed since the Sense board
+  went on. Check before assuming Feature 3 still has a camera - the vision path is
+  I2C, so its absence would not show up anywhere else until something asks it for a
+  frame.
+
 **Options, and what each costs:**
 
 | Option | Cost | Gets you |
 |---|---|---|
 | **Put GPIO parts on the Pi's header** | Two wires per part, or a Grove Base Hat for Pi Zero (SKU 103030276, ~$6) for solderless Grove ports | Button and PIR both work, with no XIAO surgery. Costs a Pi-to-XIAO message for anything the firmware must react to |
 | **Touch pads on the XIAO** | Nothing | A trigger with no connector at all. D0 is proven. Not a mechanical button feel |
-| Seeed Expansion Board Base (SKU 103030356, owned) | Verify it mates with the Sense board first | Grove I2C and a digital port without soldering |
+| ~~Seeed Expansion Board Base (SKU 103030356, owned)~~ | Ruled out 2026-08-28: it cannot be fitted while the Sense board is | Would have given Grove I2C and a digital port, plus the only buzzer owned |
 | Solder to the XIAO's exposed pads | One soldering session | Everything on one device, no cross-device coordination |
 | Move the Vision AI V2 to a Grove cable | A cable | Frees the header - but the hub currently chains off the Vision AI's Grove port, so this also moves the I2C path |
 

@@ -1,6 +1,7 @@
 ---
 title: Plan of Attack - Microphone Bring-Up (say a word, read it on the OLED)
 scope: bring-up plan, written 2026-08-28 - PDM mic to Whisper to OLED, no tool matching
+references: https://wiki.seeedstudio.com/xiao_esp32s3_sense_mic/
 status: not started
 ---
 
@@ -34,17 +35,16 @@ parts nobody has ever run:
 Everything this plan builds is reused by the voice-lookup plan. Nothing here is
 throwaway except the OLED display of the raw transcript, which becomes a lookup call.
 
-## Step 0 - is the microphone even attached?
+## Step 0 - is the microphone even attached? **Done 2026-08-28**
 
-**Do this first and do not skip it.** The PDM mic lives on the **Sense expansion board**,
-which mates with the XIAO's underside connector - the same connector any other
-bottom-mounting board wants. The spec is explicit that only one can be there and that
-which one is attached is not to be assumed.
+The Sense board is fitted. That settles the underside connector, and the pins are no
+longer TBD.
 
-Confirm physically that the Sense board is on. If it is not, this plan cannot start, and
-the answer is a hardware decision, not a code change.
-
-**Done when:** you have looked at the board and know.
+It also rules two things out, both recorded in the spec's Open Hardware Question: the
+Expansion Board Base cannot go on alongside it, which takes the only buzzer owned off the
+table; and **whether the Vision AI V2 is still connected has not been verified.** Check
+that before assuming the camera still works - it is on I2C, so its absence stays invisible
+until something asks it for a frame.
 
 ## Step 1 - the mic records, and you can prove it from the serial log
 
@@ -53,18 +53,34 @@ Firmware only. The Pi is not involved and no audio leaves the device.
 Initialise I2S in PDM mode, record a fixed two seconds into a buffer, and print
 **statistics, not audio**: sample count, min, max, and RMS amplitude.
 
-Facts already established in the spec, do not re-derive them:
+Confirmed against Seeed's own documentation - do not re-derive these:
 
-- Use `ESP_I2S.h` from the installed esp32 core (3.3.11). **Not** the core-2.x `I2S.h`
-  that Seeed's published examples use - those examples are for a core this project does
-  not have.
-- Confirm the PDM clock and data GPIO numbers against the Seeed board document indexed in
-  `docs/SOURCES.md` before trusting any numeric pin value.
+```cpp
+#include <ESP_I2S.h>            // Core 3.x. NOT the core-2.x <I2S.h>.
+I2S.setPinsPdmRx(42, 41);       // 42 = clock, 41 = data
+I2S.begin(I2S_MODE_PDM_RX, 16000, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO);
+```
 
-**Allocate the buffer in PSRAM.** Two seconds of 16 kHz 16-bit mono is 64 KB and four
-seconds is 128 KB; the sketch already uses 49 KB of the XIAO's 320 KB of SRAM. Use
-`ps_malloc` and check the result - a silent allocation failure here looks exactly like a
-silent microphone.
+**The library choice is the likeliest first failure.** Seeed's wiki still leads with the
+core-2.x `I2S.h` API - `setAllPins`, `PDM_MONO_MODE`, `esp_i2s::i2s_read` - and this
+project is on core 3.3.11, where none of that exists. If the first attempt does not
+compile, check which half of that page was copied before debugging anything else.
+
+**Mono and 16-bit are not choices.** The ESP32-S3 supports only PDM mono at 16-bit. The
+sample rate is adjustable, but 16 kHz is both what Seeed reports as stable and what
+Whisper wants, so leave it.
+
+**Use `recordWAV` for this step, and know why it will not survive.** For a fixed
+two-second recording it is one call and it returns a buffer with a WAV header already
+attached, which makes Step 2 trivial. It also takes a fixed duration, so it cannot serve
+hold-to-talk, where the length is unknown when recording starts - that path reads in a
+loop and lets the Pi write the header. Prove the microphone with the easy call first;
+swap the read strategy later, once it is the only thing changing.
+
+**Allocate in PSRAM.** Seeed's own example uses `ps_malloc` for this. Two seconds of
+16 kHz 16-bit mono is 64 KB and four is 128 KB, against the XIAO's 320 KB of SRAM, of
+which this sketch already uses 49 KB. Check the pointer - a silent allocation failure
+looks exactly like a silent microphone.
 
 **Done when:** RMS sits near a small constant in a quiet room and rises by an obvious
 multiple when you speak into it. That single number separates "no data", "wrong pins",
