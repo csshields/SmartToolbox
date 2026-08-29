@@ -1,9 +1,9 @@
 ---
 title: Plan of Attack - Flashing the XIAO from the Pi, over the cable already there
 scope: implementation plan, written 2026-08-29 - esptool over USB, and a way back from a brick
-status: Steps 0, 1 and 2 DONE on hardware 2026-08-29 - one command from Windows flashes
-  the device in ~48s. Step 3 (recover a real brick) not started, and it is the one that
-  turns this from a convenience into the recovery path it was written to be.
+status: COMPLETE - all four steps done on hardware 2026-08-29. A deliberately bricked
+  device, silent for three minutes, was recovered from Windows in 47s with nobody
+  touching the box.
 ---
 
 # Plan: the Pi flashes the device, over the wire it already talks on
@@ -246,7 +246,8 @@ A fresh `uptimeMs` can.
 
 **`.gitattributes` now pins `*.sh` to LF.** `core.autocrlf` is true on the Windows dev
 machine, so a committed shell script would be checked out with CRLF and copied to the Pi
-that way, where bash reports `$'': command not found` on line one - which reads like a
+that way, where bash reports `$'
+': command not found` on line one - which reads like a
 corrupt file rather than a line-ending problem.
 
 **esptool's progress output is thinned to one line in sixty.** It prints one
@@ -271,9 +272,44 @@ application-level update. Then recover it with Step 2's script.
 **Done when:** a device that answers nothing at all is brought back to a working build by
 a command typed from Windows, with nobody touching the box.
 
-If this cannot be made to work, say so in this document and keep the feature anyway for
-the convenience case - but stop describing it as a recovery path, because it would not be
-one.
+### It worked - 2026-08-29
+
+`BRICK_TEST` was added to the sketch for this and left in at `0`. With it set, `setup()`
+hangs on its **first line** - before `Serial.begin`, before the OLED, before the OTA
+check. Every software update path this project has is gone at once: no serial, no
+heartbeat, and `setup()` never reaches `checkForFirmwareUpdate()`, so Wi-Fi cannot help
+either.
+
+Built as 0.99.0 and deliberately never pushed to the drop folder, so no device could
+reach it by accident.
+
+**The brick, confirmed rather than assumed:**
+
+```
+flashed 22:01 -> last seen 22:01:17 -> checked 22:03:30
+uptimeMs: 504064   (frozen; the value from before the flash)
+version:  0.21.2   (stale - the chip was running 0.99.0 and could not say so)
+```
+
+Silent for over two minutes, which is four missed heartbeats, and not one `[serial]` line
+in the log across the whole window.
+
+**The recovery:** `flash-device.ps1 -Version 0.21.2`. Back at 22:04:45 on `bootCount 11`,
+with `Mic ready=1`, promotion on the first heartbeat, and
+`OTA last result: up to date at v0.21.2`. **47 seconds.**
+
+**Why it worked, and the condition it depends on.** `/dev/ttyACM0` was still enumerated
+throughout - checked during the brick, timestamped from just after the flash. This board
+builds with `cdc_on_boot=1`, so the core starts the USB CDC stack *before* `setup()` runs,
+and TinyUSB lives on its own FreeRTOS task that a spinning Arduino task cannot starve.
+
+That is the load-bearing fact. **A build compiled with CDC-on-boot disabled could hang
+before USB exists at all**, and then there is no port for esptool to open. This path is
+verified against a device whose USB is brought up by the core, which is the default and
+what every build here uses - but it is a dependency, not a law.
+
+This plan is now complete, and the claim it was written to make is true: the Pi can
+recover a device that nothing else can reach.
 
 ## Traps this plan already knows about
 
