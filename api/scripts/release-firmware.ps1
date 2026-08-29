@@ -18,6 +18,11 @@ why this script owns both rather than leaving the .ino edit to a human.
 
 .EXAMPLE
 .\release-firmware.ps1 -Version 0.3.0 -Push
+
+.EXAMPLE
+# Publish and have the device fetch it within one heartbeat, rather than
+# waiting up to 30 minutes for its next scheduled check.
+.\release-firmware.ps1 -Version 0.3.0 -Push -Now
 #>
 param(
 	[Parameter(Mandatory = $true)]
@@ -27,6 +32,10 @@ param(
 	[switch]$Push,
 	# Overwrite a version that already exists in the drop folder.
 	[switch]$Force,
+	# Queue a check-firmware command after publishing, so the device picks the
+	# build up on its next heartbeat instead of waiting up to 30 minutes for its
+	# next scheduled check. Requires -Push; there is nothing to collect without it.
+	[switch]$Now,
 	# Override when deploying to a different Pi; defaults match sync.ps1.
 	[string]$PiHost = "shields@192.168.50.30",
 	[string]$KeyPath = (Join-Path $env:USERPROFILE ".ssh\smarttoolbox_pi_ed25519")
@@ -148,7 +157,18 @@ if ($Push) {
 	}
 
 	Write-Host "$targetName is now available on the Pi." -ForegroundColor Green
-	Write-Host "Devices reporting a version below $Version will pull it on their next check."
+
+	if ($Now) {
+		Write-Host ""
+		& (Join-Path $PSScriptRoot "push-to-device.ps1") -Command check-firmware
+	} else {
+		Write-Host "Devices reporting a version below $Version will pull it on their next check."
+		Write-Host "Add -Now to have the device fetch it within one heartbeat instead."
+	}
 } else {
 	Write-Host "Local release only. Re-run with -Push to make it available to devices."
+
+	if ($Now) {
+		Write-Warning "-Now does nothing without -Push: there is no published build for the device to collect."
+	}
 }
