@@ -521,16 +521,14 @@ is usable at all while the firmware is unfinished.
 
 | Panel | Backed by |
 |---|---|
-| Stat tiles - firmware running, latest available, boots, last contact | `GET /api/devices` |
-| XIAO ESP32S3 - version, last contact, last endpoint, boot count | `GET /api/devices` |
+| Stat tiles - firmware running, latest available, boots detected, last contact | `GET /api/devices` |
+| XIAO ESP32S3 - version, last contact, last endpoint, uptime, boots detected | `GET /api/devices` |
 | Device Activity - the device's serial requests | `GET /api/logs?limit=200`, filtered to `method = 'SERIAL'` |
 
-The Devices page is **read-only and reports no live connection state.** The firmware
-sends `device/status` once in `setup()` and is otherwise silent until a touch pad or the
-camera is used, so "last contact" means the last boot or use. It is labelled that way on
-the page on purpose: an indicator that claimed "online" would be wrong most of the time.
-A periodic heartbeat in the firmware is the prerequisite for anything better, and for
-any control that has to reach the device - see the note under Serial Protocol.
+The Devices page is **read-only, but "last contact" now means something.** The firmware
+heartbeats every 30 seconds, so a last contact older than about a minute means the
+toolbox is unplugged or wedged rather than merely idle. Restarts are counted from uptime
+running backwards - see Communication Protocol for why the boot message is not trusted.
 
 When no device row exists the page distinguishes two causes, using `serialDevice` from
 `GET /api/devices`: the listener is running and the XIAO has not checked in, or this is
@@ -1150,18 +1148,30 @@ Hardware Bring-Up table for what that looks like in practice.
 - **Protocol**: Newline-delimited JSON. Every Xiao request has a unique `id`, `type: "request"`, a supported `endpoint`, and a `body`. The Pi echoes the same `id` in every response. The Bun implementation reads/writes the CDC ACM device directly without a native serial-port addon.
 - **The tty must be in raw mode.** Linux enumerates a ttyACM in *cooked* mode with echo on, which silently breaks the link in both directions: everything the XIAO transmits is echoed back into its own receive buffer, and `onlcr` rewrites outgoing newlines. The symptom is one-way traffic - the Pi logs `request` and `response written` normally while the XIAO times out having received nothing. `configureRawMode` in `api/src/serialTransport.ts` shells out to `stty -F <device> raw -echo` on every connect, because the settings reset each time the device re-enumerates on replug or reset.
 - **Initial endpoints**:
-  - `device/status`: Xiao reports its firmware version and readiness.
+  - `device/status`: heartbeat. Firmware version and `uptimeMs`, sent at boot and then
+    every 30 seconds. Fire and forget - the firmware does not wait on the reply.
   - `tools/lookup`: Xiao sends recognized or transcribed text; Pi returns matching drawer labels and row indicators.
   - `vision/observe`: Xiao sends `drawerLabel`, model version, and a `detections` array of tool-type labels, confidence, quantity, and optional bounding boxes.
 - **The device speaks first, always.** The protocol models requests from the XIAO and
   responses from the Pi; there is no Pi-initiated message type and the transport only
   ever writes responses. Nothing on the dashboard can push to the device. Any future
   control - "check for updates now", "use this Wi-Fi" - has to be queued and collected
-  on the device's next request. That is cheap to add, but it is close to useless until
-  the firmware sends a **periodic heartbeat**: today `device/status` goes out once in
-  `setup()` (a hardcoded string literal in `smarttoolbox.ino`), so a queued command
-  would wait for the next reboot or the next touch. **The heartbeat is the prerequisite
-  for every interactive device feature**, not an optimisation.
+  on the device's next request. **That is now practical**: `device/status` repeats every
+  30 seconds (`DEVICE_STATUS_INTERVAL_MS`), so a queued command waits at most one
+  interval instead of until the next reboot or touch.
+- **The boot announcement cannot be relied on, and the design assumes it will be lost.**
+  It is sent from `setup()`, while the USB serial port is still re-enumerating after a
+  reset, so the Pi is often mid-reconnect-backoff and never sees it. This is not
+  hypothetical: `boot_count` sat at zero through several confirmed reboots on hardware,
+  and the OTA debug output for one of those boots is absent from the journal for the same
+  reason. **Restarts are therefore detected from `uptimeMs` running backwards**, which
+  rides on every heartbeat and so survives a lost announcement. `recordDeviceContact`
+  owns that comparison; `millis()` wrapping at ~49.7 days reads as one spurious reboot,
+  which is the accepted cost.
+- **Heartbeats are not written to `request_logs`.** At one every 30 seconds they would
+  add ~2,880 rows a day and bury the requests a person actually wants to read. The
+  `devices` table already holds everything a heartbeat carries. Every other serial
+  endpoint is still logged.
 - **Every serial request is recorded.** `handleSerialLine` calls `recordDeviceContact`
   before dispatching - a request that is then rejected is still proof the XIAO is on the
   wire - and logs the outcome to `request_logs` with method `SERIAL`. Only

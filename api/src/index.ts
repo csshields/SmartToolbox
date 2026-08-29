@@ -186,10 +186,11 @@ async function handleSerialLine(line: string): Promise<SerialResponse | null> {
     // device/status once at boot and is otherwise silent until someone uses it.
     // Recorded before handling, because a request we go on to reject is still
     // proof the XIAO is on the wire.
-    const body = request.body as { firmwareVersion?: unknown; query?: unknown };
+    const body = request.body as { firmwareVersion?: unknown; query?: unknown; uptimeMs?: unknown };
     recordDeviceContact({
       endpoint: request.endpoint,
       firmwareVersion: typeof body.firmwareVersion === "string" ? body.firmwareVersion : undefined,
+      uptimeMs: typeof body.uptimeMs === "number" ? body.uptimeMs : undefined,
     });
 
     const response = await handleSerialRequest(request);
@@ -197,14 +198,20 @@ async function handleSerialLine(line: string): Promise<SerialResponse | null> {
     // Serial traffic used to exist only in the journal, which left the device's
     // activity invisible to the dashboard. SERIAL/serial: keeps it sortable
     // apart from HTTP in the same table.
-    writeRequestLog({
-      method: "SERIAL",
-      path: `serial:${request.endpoint}`,
-      tool: typeof body.query === "string" ? body.query : undefined,
-      statusCode: response.success ? 200 : 400,
-      result: response.success ? "Serial request handled" : "Serial request rejected",
-      details: response.success ? "" : response.error.message,
-    });
+    //
+    // device/status is excluded: at one heartbeat every 30 seconds it would add
+    // ~2,880 rows a day and bury the requests a person actually wants to read.
+    // The devices table already holds everything a heartbeat carries.
+    if (request.endpoint !== "device/status") {
+      writeRequestLog({
+        method: "SERIAL",
+        path: `serial:${request.endpoint}`,
+        tool: typeof body.query === "string" ? body.query : undefined,
+        statusCode: response.success ? 200 : 400,
+        result: response.success ? "Serial request handled" : "Serial request rejected",
+        details: response.success ? "" : response.error.message,
+      });
+    }
 
     return response;
   } catch (error) {

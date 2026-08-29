@@ -41,7 +41,7 @@
                 <div id="statLatest" class="stat-value">—</div>
             </div>
             <div class="stat">
-                <div class="stat-label">Boots recorded</div>
+                <div class="stat-label">Boots detected</div>
                 <div id="statBoots" class="stat-value">—</div>
             </div>
             <div class="stat">
@@ -93,6 +93,15 @@
             return Number.isNaN(parsed.getTime()) ? null : parsed;
         }
 
+        function formatUptime(ms) {
+            if (ms == null) return null;
+            const seconds = Math.floor(ms / 1000);
+            if (seconds < 60) return `${seconds}s`;
+            if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+            if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
+            return `${Math.floor(seconds / 86400)}d ${Math.floor((seconds % 86400) / 3600)}h`;
+        }
+
         function relativeTime(value) {
             const at = parseTimestamp(value);
 
@@ -137,7 +146,10 @@
                     : '<span class="muted">Never reported</span>'],
                 ['Last contact', `${escapeHtml(device.lastSeen)} <span class="muted">(${relativeTime(device.lastSeen)})</span>`],
                 ['Last request', `<code>${escapeHtml(device.lastEndpoint)}</code>`],
-                ['Boots recorded', escapeHtml(device.bootCount)],
+                ['Uptime', device.uptimeMs != null
+                    ? `${escapeHtml(formatUptime(device.uptimeMs))} <span class="muted">at last contact</span>`
+                    : '<span class="muted">Not reported</span>'],
+                ['Boots detected', escapeHtml(device.bootCount)],
                 ['First seen', escapeHtml(device.firstSeen)],
             ];
 
@@ -152,9 +164,10 @@
                     </table>
                 </div>
                 <p class="field-hint" style="margin-top: 14px;">
-                    The firmware sends <code>device/status</code> once at boot and is otherwise silent
-                    until a touch pad or the camera is used, so "last contact" is the last time the
-                    toolbox was booted or used - not a live connection check.
+                    The firmware sends <code>device/status</code> every 30 seconds, so a last contact
+                    older than about a minute means the toolbox is unplugged or wedged. Restarts are
+                    counted by watching uptime run backwards rather than by trusting the message sent
+                    at boot, which is often lost while the USB port is still re-enumerating.
                 </p>
             `;
         }
@@ -205,6 +218,7 @@
             document.getElementById('statVersion').textContent = device?.firmwareVersion || '—';
             document.getElementById('statLatest').textContent = data.firmware?.latestVersion || '—';
             document.getElementById('statBoots').textContent = device ? device.bootCount : '—';
+            const uptime = device ? formatUptime(device.uptimeMs) : null;
             document.getElementById('statLastSeen').textContent = device ? relativeTime(device.lastSeen) : '—';
         }
 

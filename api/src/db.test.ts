@@ -112,15 +112,54 @@ test("deleteDrawer reports false for an id that does not exist", () => {
   expect(deleteDrawer(999999)).toBe(false);
 });
 
-test("recordDeviceContact counts only device/status as a boot", () => {
-  recordDeviceContact({ endpoint: "device/status", firmwareVersion: "0.11.0" });
-  recordDeviceContact({ endpoint: "tools/lookup" });
+test("the first sighting of a device counts as one boot", () => {
+  recordDeviceContact({ endpoint: "device/status", firmwareVersion: "0.11.0", uptimeMs: 5_000 });
   recordDeviceContact({ endpoint: "tools/lookup" });
 
   const device = getDeviceStatus();
 
   expect(device?.bootCount).toBe(1);
   expect(device?.lastEndpoint).toBe("tools/lookup");
+});
+
+// The boot announcement goes out while the USB serial port is still
+// re-enumerating, so the Pi often misses it entirely - which is how boot_count
+// sat at zero through several confirmed reboots on real hardware. Uptime running
+// backwards is the signal that survives.
+test("a restart is counted from uptime going backwards, not from a boot message", () => {
+  recordDeviceContact({ endpoint: "device/status", firmwareVersion: "0.12.0", uptimeMs: 300_000 });
+  const before = getDeviceStatus()?.bootCount ?? 0;
+
+  // No device/status at all: the announcement was lost, and the next heartbeat
+  // is the first the Pi hears of the restart.
+  recordDeviceContact({ endpoint: "device/status", firmwareVersion: "0.12.0", uptimeMs: 4_000 });
+
+  expect(getDeviceStatus()?.bootCount).toBe(before + 1);
+  expect(getDeviceStatus()?.uptimeMs).toBe(4_000);
+});
+
+test("heartbeats from a device that has not restarted do not count as boots", () => {
+  recordDeviceContact({ endpoint: "device/status", firmwareVersion: "0.12.0", uptimeMs: 10_000 });
+  const before = getDeviceStatus()?.bootCount ?? 0;
+
+  recordDeviceContact({ endpoint: "device/status", firmwareVersion: "0.12.0", uptimeMs: 40_000 });
+  recordDeviceContact({ endpoint: "device/status", firmwareVersion: "0.12.0", uptimeMs: 70_000 });
+
+  expect(getDeviceStatus()?.bootCount).toBe(before);
+  expect(getDeviceStatus()?.uptimeMs).toBe(70_000);
+});
+
+// tools/lookup carries no uptime. If that were read as zero it would look like a
+// restart on every single touch.
+test("a request without uptime leaves the stored uptime and boot count alone", () => {
+  recordDeviceContact({ endpoint: "device/status", firmwareVersion: "0.12.0", uptimeMs: 90_000 });
+  const before = getDeviceStatus();
+
+  recordDeviceContact({ endpoint: "tools/lookup" });
+
+  const after = getDeviceStatus();
+  expect(after?.bootCount).toBe(before?.bootCount);
+  expect(after?.uptimeMs).toBe(90_000);
 });
 
 // tools/lookup and vision/observe send no firmwareVersion. If their empty

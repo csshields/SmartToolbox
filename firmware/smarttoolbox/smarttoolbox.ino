@@ -24,7 +24,7 @@
 // api/scripts/release-firmware.ps1 on release, and compared against the Pi's
 // drop folder to decide whether an OTA update is available - keep the exact
 // `#define FIRMWARE_VERSION "x.y.z"` shape so the script can find it.
-#define FIRMWARE_VERSION "0.12.0"
+#define FIRMWARE_VERSION "0.13.0"
 
 const int LED_PIN = LED_BUILTIN; // Active-low: LOW = on, HIGH = off.
 const int LED_ON = LOW;
@@ -94,6 +94,13 @@ const uint16_t RESPONSE_TIMEOUT_MS = 2000;
 const char* PI_HOST = "192.168.50.30";
 const uint16_t PI_PORT = 3000;
 const uint32_t WIFI_CONNECT_TIMEOUT_MS = 25000;
+
+// Thirty seconds is a compromise: often enough that the dashboard reads as live
+// and a reboot is noticed promptly, rare enough that it is not worth writing
+// every one of them to the request log.
+const uint32_t DEVICE_STATUS_INTERVAL_MS = 30000;
+uint32_t nextDeviceStatusAt = 0;
+unsigned long statusCounter = 0;
 
 uint8_t consecutiveTouched = 0;
 uint8_t consecutiveReleased = 0;
@@ -717,7 +724,7 @@ void setup() {
     touchBaseline[pinIndex] = total / 20;
   }
 
-  Serial.println("{\"id\":\"boot-1\",\"type\":\"request\",\"endpoint\":\"device/status\",\"body\":{\"firmwareVersion\":\"" FIRMWARE_VERSION "\"}}");
+  sendDeviceStatus();
 
   showStatus("SmartToolbox", "Ready", "Touch a pad");
 }
@@ -726,6 +733,7 @@ void loop() {
   pollTouch();
   pollSerialResponses();
   pollResponseTimeout();
+  pollDeviceStatus();
   updateBlinkPlan();
   updateMatrix();
 }
@@ -832,6 +840,45 @@ void sendToolLookupRequest(const char* toolName) {
 
   showStatus("Looking up", pendingToolName, "");
   startMatrixThinking();
+}
+
+// The Pi only ever hears from this device when someone uses it, so without a
+// heartbeat the dashboard cannot tell "idle" from "unplugged", and the firmware
+// version it reports is whatever it last managed to announce. That announcement
+// is unreliable by nature: it goes out while the USB serial port is still
+// re-enumerating after a reset, so the Pi is frequently not listening yet.
+// Repeating it fixes both - a lost boot message costs one interval, not a
+// version.
+void sendDeviceStatus() {
+  statusCounter++;
+  char idBuffer[24];
+  snprintf(idBuffer, sizeof(idBuffer), "status-%lu", (unsigned long)statusCounter);
+
+  JsonDocument doc;
+  doc["id"] = idBuffer;
+  doc["type"] = "request";
+  doc["endpoint"] = "device/status";
+  doc["body"]["firmwareVersion"] = FIRMWARE_VERSION;
+  // The Pi spots a restart by watching this run backwards, which works even when
+  // the message sent at boot never arrived.
+  doc["body"]["uptimeMs"] = millis();
+
+  serializeJson(doc, Serial);
+  Serial.print('\n');
+
+  nextDeviceStatusAt = millis() + DEVICE_STATUS_INTERVAL_MS;
+}
+
+// Deliberately does not set awaitingResponse or pendingRequestId. This is fire
+// and forget: the Pi's reply carries an id no one is waiting on, which
+// handleLookupResponse already ignores, and claiming the pending slot would make
+// a heartbeat cancel a lookup the user is waiting for.
+void pollDeviceStatus() {
+  if (awaitingResponse || millis() < nextDeviceStatusAt) {
+    return;
+  }
+
+  sendDeviceStatus();
 }
 
 void pollSerialResponses() {

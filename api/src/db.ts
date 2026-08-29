@@ -27,6 +27,7 @@ export type DeviceRecord = {
   lastEndpoint: string;
   lastSeen: string;
   bootCount: number;
+  uptimeMs: number | null;
   firstSeen: string;
 };
 
@@ -132,6 +133,7 @@ database.exec(`
     last_endpoint TEXT NOT NULL DEFAULT '',
     last_seen TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     boot_count INTEGER NOT NULL DEFAULT 0,
+    uptime_ms INTEGER,
     first_seen TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
 
@@ -139,6 +141,12 @@ database.exec(`
   CREATE INDEX IF NOT EXISTS idx_request_logs_created_at ON request_logs(created_at DESC);
   CREATE INDEX IF NOT EXISTS idx_observations_tool_drawer ON drawer_observations(tool_name, drawer_id, id DESC);
 `);
+
+const deviceColumns = database.query("PRAGMA table_info(devices)").all() as Array<{ name: string }>;
+
+if (deviceColumns.length > 0 && !deviceColumns.some((column) => column.name === "uptime_ms")) {
+  database.exec("ALTER TABLE devices ADD COLUMN uptime_ms INTEGER");
+}
 
 const observationColumns = database.query("PRAGMA table_info(drawer_observations)").all() as Array<{ name: string }>;
 
@@ -257,18 +265,23 @@ const insertDrawer = database.query(`
 `);
 
 const upsertDeviceContact = database.query(`
-  INSERT INTO devices (id, firmware_version, last_endpoint, last_seen, boot_count)
-  VALUES (?1, ?2, ?3, CURRENT_TIMESTAMP, ?4)
+  INSERT INTO devices (id, firmware_version, last_endpoint, last_seen, boot_count, uptime_ms)
+  VALUES (?1, ?2, ?3, CURRENT_TIMESTAMP, ?4, ?5)
   ON CONFLICT(id) DO UPDATE SET
     last_seen = CURRENT_TIMESTAMP,
     last_endpoint = excluded.last_endpoint,
     -- Only device/status carries a version. Every other endpoint sends an
-    -- empty string, which must not blank out what the last boot reported.
+    -- empty string, which must not blank out what the last heartbeat reported.
     firmware_version = CASE
       WHEN excluded.firmware_version <> '' THEN excluded.firmware_version
       ELSE devices.firmware_version
     END,
-    boot_count = devices.boot_count + excluded.boot_count
+    -- The caller works the count out; SQL cannot see the previous uptime.
+    boot_count = excluded.boot_count,
+    uptime_ms = CASE
+      WHEN excluded.uptime_ms IS NOT NULL THEN excluded.uptime_ms
+      ELSE devices.uptime_ms
+    END
 `);
 
 const selectDevice = database.query(`
@@ -277,6 +290,7 @@ const selectDevice = database.query(`
          last_endpoint AS lastEndpoint,
          last_seen AS lastSeen,
          boot_count AS bootCount,
+         uptime_ms AS uptimeMs,
          first_seen AS firstSeen
   FROM devices
   WHERE id = ?1
@@ -885,17 +899,42 @@ export function findDrawerByLabel(label: string) {
 // so every contact folds into this one row.
 export const DEVICE_ID = "xiao";
 
-export function recordDeviceContact(contact: { endpoint: string; firmwareVersion?: string }) {
-  // device/status is the firmware's boot announcement and nothing else sends it,
-  // so it is also the only thing that counts as a boot.
-  const isBoot = contact.endpoint === "device/status" ? 1 : 0;
+// Reboots are detected from uptime running backwards, not from a boot message.
+// The device announces itself while its USB serial port is still re-enumerating,
+// so the Pi is often not listening yet and the announcement is simply lost -
+// which is how boot_count sat at zero through several confirmed reboots. Uptime
+// rides on every heartbeat, so a restart is noticed within one interval whether
+// or not the announcement survived.
+export function recordDeviceContact(contact: {
+  endpoint: string;
+  firmwareVersion?: string;
+  uptimeMs?: number;
+}) {
+  const uptimeMs = Number.isFinite(contact.uptimeMs) ? Math.trunc(contact.uptimeMs as number) : null;
 
-  upsertDeviceContact.run(
-    DEVICE_ID,
-    (contact.firmwareVersion ?? "").trim(),
-    contact.endpoint,
-    isBoot,
-  );
+  const record = database.transaction(() => {
+    const existing = getDeviceStatus();
+    let bootCount = existing?.bootCount ?? 0;
+
+    if (!existing) {
+      bootCount = 1;
+    } else if (uptimeMs != null && existing.uptimeMs != null && uptimeMs < existing.uptimeMs) {
+      // millis() wraps after roughly 49.7 days, which reads as a reboot. That is
+      // a miscount once every seven weeks of unbroken uptime, against catching
+      // every real restart - the trade is worth making.
+      bootCount += 1;
+    }
+
+    upsertDeviceContact.run(
+      DEVICE_ID,
+      (contact.firmwareVersion ?? "").trim(),
+      contact.endpoint,
+      bootCount,
+      uptimeMs,
+    );
+  });
+
+  record();
 }
 
 export function getDeviceStatus(): DeviceRecord | null {
