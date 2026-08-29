@@ -1,8 +1,8 @@
 ---
 title: Plan of Attack - Flashing the XIAO from the Pi, over the cable already there
 scope: implementation plan, written 2026-08-29 - esptool over USB, and a way back from a brick
-status: Step 0 PASSED on hardware 2026-08-29 - esptool reaches the chip from the Pi.
-  Steps 1-3 not started, and are no longer provisional.
+status: Steps 0 and 1 PASSED on hardware 2026-08-29 - the Pi flashed the device over USB,
+  verified, in 51s. Steps 2 (scripts) and 3 (recover a brick) not started.
 ---
 
 # Plan: the Pi flashes the device, over the wire it already talks on
@@ -168,8 +168,37 @@ sudo systemctl start smarttoolbox
 ```
 
 **Done when:** the device reboots into the flashed version and `GET /api/devices` reports
-it. Prove it by flashing a version *older* than the one running - an upgrade could be
-explained by an OTA that happened to fire, a downgrade could not.
+it. Prove it with a version that **is not in the Pi's drop folder** - then OTA cannot be
+the explanation, whichever direction the version moved.
+
+### It worked - 2026-08-29
+
+0.21.1 was built locally with `release-firmware.ps1 -Version 0.21.1` and deliberately
+*not* pushed, so the Pi had never heard of it. After the flash the device reported it:
+
+```
+firmwareVersion: 0.21.1   bootCount: 8   uptimeMs: 5924
+firmware: { latestVersion: 0.21.0, updateAvailable: false }
+```
+
+The device is now ahead of the newest thing OTA has, which is the cleanest possible proof
+that the bytes came over the cable.
+
+| | |
+|---|---|
+| image | 8,388,608 bytes, **735,919 compressed** |
+| write | 25.9s at 2,596 kbit/s |
+| wall clock | **51s**, including connect, erase and reset |
+| verification | `Hash of data verified` |
+
+**Both worries about this step were unfounded.** The 8 MB image is mostly `0xFF` padding
+and compresses about 11:1, so it is not the transfer cost it looks like. And the
+`--no-stub` ROM loader, flagged above as a thing to time rather than assume, runs at
+~2.6 Mbit/s - perfectly usable. Fifty-one seconds is slower than an OTA pull, and it does
+not matter for a path that exists for recovery rather than for routine releases.
+
+It came back clean: `Mic ready=1`, promotion fired on the first heartbeat, and
+`OTA last result: up to date at v0.21.1`.
 
 ## Step 2 - the scripts
 
