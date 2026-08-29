@@ -39,6 +39,7 @@ as strapping pins) and cross-reference it against Seeed's D-numbering.
 | Seeed_Arduino_SSCMA | Arduino library API for the Vision AI V2 link | `https://github.com/Seeed-Studio/Seeed_Arduino_SSCMA` | not verified | — |
 | Grove OLED Display 0.96" (SSD1315) | I2C address, init sequence, U8g2 constructor | `https://wiki.seeedstudio.com/Grove-OLED-Display-0.96K/` | not verified | — |
 | Grove 8x8 RGB LED Matrix w/ Driver | I2C address, frame format, brightness control | `https://wiki.seeedstudio.com/Grove-RGB_LED_Matrix_w-Driver/` | not verified | — |
+| Seeed XIAO ESP32S3 Sense - product photo | The physical stack: camera and mic face up on the board-to-board connector, leaving the expansion header free for the Vision AI V2. Evidence that the two boards do not compete | Amazon listing, saved locally | 2026-08-28 | `xiao-screenshot.PNG` |
 | Seeed XIAO ESP32S3 Sense - PDM microphone | On-board mic: GPIO 42 clock / 41 data, `ESP_I2S.h` init calls, PDM-mono-16-bit-only constraint, `ps_malloc` buffering. **Documents core 2.x and 3.x side by side and leads with 2.x — read the 3.0.x half** | `https://wiki.seeedstudio.com/xiao_esp32s3_sense_mic/` | 2026-08-28 | — (web) |
 | OV5647 camera sensor | Resolution modes, MIPI interface (used via the Vision AI V2, not driven directly) | vendor datasheet — source not yet identified | not verified | — |
 

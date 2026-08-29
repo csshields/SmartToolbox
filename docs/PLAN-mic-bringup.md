@@ -37,14 +37,13 @@ throwaway except the OLED display of the raw transcript, which becomes a lookup 
 
 ## Step 0 - is the microphone even attached? **Done 2026-08-28**
 
-The Sense board is fitted. That settles the underside connector, and the pins are no
-longer TBD.
+The Sense board is fitted, camera and mic facing up on the board-to-board connector, with
+the Vision AI V2 still stacked on the expansion header below. **Both are on at once.**
 
-It also rules two things out, both recorded in the spec's Open Hardware Question: the
-Expansion Board Base cannot go on alongside it, which takes the only buzzer owned off the
-table; and **whether the Vision AI V2 is still connected has not been verified.** Check
-that before assuming the camera still works - it is on I2C, so its absence stays invisible
-until something asks it for a frame.
+An earlier revision of this plan and of the spec said only one of them could be present
+and treated the camera as possibly displaced. That was wrong: they use different
+connectors. Nothing here is blocked on it, and the pins are fixed by the board - GPIO 42
+clock, GPIO 41 data.
 
 ## Step 1 - the mic records, and you can prove it from the serial log
 

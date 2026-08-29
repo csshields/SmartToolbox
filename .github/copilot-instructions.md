@@ -845,8 +845,23 @@ ssh -i "$env:USERPROFILE\.ssh\smarttoolbox_pi_ed25519" shields@192.168.50.30
 - **Connectivity**: Wi-Fi and BLE are available; the MVP connects to the Pi Zero 2 over **wired USB serial** (USB-C, CDC/ACM), not Wi-Fi
 - **Memory**: 8MB PSRAM, 8MB flash. **PSRAM is off in the shipped build** - `release-firmware.ps1` compiles a bare `esp32:esp32:XIAO_ESP32S3`, and the board's default PSRAM menu option is `disabled`. Anything needing a large buffer must set `:PSRAM=opi`.
 - **Power**: 3.3V, rechargeable battery support
-- **Built-in Sensors**: a **PDM digital microphone** and an **OV2640 camera**, both on the Sense expansion board that mates with the core board's underside connector. Neither has ever been initialised by this project's firmware. IMU is still external and unselected.
-- **Note**: the Sense expansion board and any module that mounts the XIAO from below are competing for the same physical space. **The Sense board is the one fitted, as of 2026-08-28** - see Pin Mappings' Open Hardware Question for what that rules out.
+- **Physical stack, confirmed 2026-08-28.** Three boards, three different connectors, all
+  fitted at once. Recorded because an earlier revision of this document asserted they
+  competed and that assertion drove decisions for weeks:
+
+```
+   Sense board        camera (OV2640) + PDM mic, facing up
+        |             board-to-board connector
+   XIAO ESP32S3       the core board
+        |             expansion header
+   Grove Vision AI V2 stacked below, I2C
+```
+
+  `docs/xiao-screenshot.PNG` is the vendor photo showing the camera on the top face. The
+  Sense board does **not** use the expansion header, so it has never been in competition
+  with the Vision AI V2.
+
+- **Built-in Sensors**: a **PDM digital microphone** and an **OV2640 camera**, both on the Sense board, which mates through the dedicated board-to-board connector rather than the expansion header - see the stack above. Neither has ever been initialised by this project's firmware. IMU is still external and unselected.
 
 **Vision Hardware**: Seeed Grove Vision AI Module (V2), SKU 101021112, + OV5647 Camera
 - **Connection**: Stacked on the XIAO ESP32S3 expansion header, communicating over I2C. **Verified on hardware 2026-08-27** - the link is up. This also means the header is occupied; see the Open Hardware Question under Pin Mappings.
@@ -908,7 +923,8 @@ ssh -i "$env:USERPROFILE\.ssh\smarttoolbox_pi_ed25519" shields@192.168.50.30
 
 ### Microphone (On board)
 - **Type**: The XIAO's own digital microphone, on the **Sense expansion board**. No
-  external part is needed or planned. **The Sense board is attached as of 2026-08-28.**
+  external part is needed or planned. **Attached as of 2026-08-28, alongside the Vision
+  AI V2** - they use different connectors and do not conflict.
 - **Interface**: PDM. Pins are fixed by the board, confirmed against Seeed's own
   documentation: **GPIO 42 = clock, GPIO 41 = data.**
 - **Sample Rate**: 16 kHz mono, 16-bit. Not a preference - the ESP32-S3 supports *only*
@@ -1037,24 +1053,26 @@ of an assumption nobody had stated: **that GPIO has to come from the XIAO.** It 
 not. The Pi Zero 2 W's 40-pin header is entirely unused - 26 usable pins - and the Pi is
 already in the box, already running, and already talking to the XIAO.
 
-The real question is narrower: the Vision AI V2 occupies the XIAO's expansion header,
-and the Sense expansion board that carries the microphone and OV2640 wants the same
-underside connector. Only one can be there.
+**Corrected 2026-08-28.** This section used to say the Vision AI V2 and the Sense board
+compete for the same space and that only one could be there. **That was wrong, and it had
+been shaping decisions.** They use different connectors: the Sense board mates with the
+XIAO's dedicated board-to-board connector and carries the camera and mic on top, while
+the Vision AI V2 stacks on the expansion header below. **Both are fitted and both work.**
 
-**Update 2026-08-28: the Sense board is fitted.** That settles the underside connector in
-favour of the microphone, and the mic's pins are no longer TBD - GPIO 42 clock, GPIO 41
-data, recorded under Microphone. Two consequences follow:
+What remains true is narrower and unchanged: **the Vision AI V2 occupies the expansion
+header**, so parts wanting GPIO from it - the PIR, the Red LED Button - still have
+nowhere to go. That is the only conflict, and the options below address it.
 
-- **The Expansion Board Base (SKU 103030356) is out while the Sense board is on.** Its
-  row below is kept for the record, not as a live option. That also answers the buzzer
-  question: the base board's onboard buzzer is the only sound hardware owned, and it
-  cannot be fitted alongside the microphone. Sound, if it is ever wanted, goes on the Pi
-  for the same reason the LED strip does.
-- **Whether the Vision AI V2 is still connected is unverified.** This section has always
-  said only one module can have that space; nobody has confirmed since the Sense board
-  went on. Check before assuming Feature 3 still has a camera - the vision path is
-  I2C, so its absence would not show up anywhere else until something asks it for a
-  frame.
+Two things follow from the correction:
+
+- **The microphone was never blocked.** Its pins are fixed by the Sense board - GPIO 42
+  clock, GPIO 41 data - and are recorded under Microphone. `docs/PLAN-mic-bringup.md`
+  can start.
+- **The Expansion Board Base (SKU 103030356) is still out, but not for the reason
+  recorded earlier.** It is a carrier the XIAO plugs into, so it wants the expansion
+  header the Vision AI V2 is using; it has no quarrel with the Sense board. The buzzer it
+  carries is the only sound hardware owned, so sound still means putting a transducer on
+  the Pi - the same conclusion as the LED strip, reached by a different route.
 
 **Options, and what each costs:**
 
@@ -1062,7 +1080,7 @@ data, recorded under Microphone. Two consequences follow:
 |---|---|---|
 | **Put GPIO parts on the Pi's header** | Two wires per part, or a Grove Base Hat for Pi Zero (SKU 103030276, ~$6) for solderless Grove ports | Button and PIR both work, with no XIAO surgery. Costs a Pi-to-XIAO message for anything the firmware must react to |
 | **Touch pads on the XIAO** | Nothing | A trigger with no connector at all. D0 is proven. Not a mechanical button feel |
-| ~~Seeed Expansion Board Base (SKU 103030356, owned)~~ | Ruled out 2026-08-28: it cannot be fitted while the Sense board is | Would have given Grove I2C and a digital port, plus the only buzzer owned |
+| Seeed Expansion Board Base (SKU 103030356, owned) | Wants the expansion header the Vision AI V2 is on - so it costs the camera, not the mic | Grove I2C and a digital port without soldering, plus the only buzzer owned |
 | Solder to the XIAO's exposed pads | One soldering session | Everything on one device, no cross-device coordination |
 | Move the Vision AI V2 to a Grove cable | A cable | Frees the header - but the hub currently chains off the Vision AI's Grove port, so this also moves the I2C path |
 
