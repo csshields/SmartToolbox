@@ -1,7 +1,8 @@
 ---
 title: Plan of Attack - Flashing the XIAO from the Pi, over the cable already there
 scope: implementation plan, written 2026-08-29 - esptool over USB, and a way back from a brick
-status: not started - Step 0 is an experiment and everything after it is provisional
+status: Step 0 PASSED on hardware 2026-08-29 - esptool reaches the chip from the Pi.
+  Steps 1-3 not started, and are no longer provisional.
 ---
 
 # Plan: the Pi flashes the device, over the wire it already talks on
@@ -61,9 +62,9 @@ when the convenient one cannot.
 decides whether the feature exists.
 
 ```bash
-pip3 install esptool
+sudo apt-get install -y esptool           # not pip: PEP 668, see the findings below
 sudo systemctl stop smarttoolbox          # frees /dev/ttyACM0
-esptool.py --port /dev/ttyACM0 chip_id
+/usr/bin/esptool --port /dev/ttyACM0 --no-stub chip_id
 sudo systemctl start smarttoolbox
 ```
 
@@ -74,7 +75,7 @@ sudo systemctl start smarttoolbox
 esptool's usual trick for entering download mode is toggling DTR and RTS, which works
 through a bridge chip that has those lines wired to EN and IO0. Here there is no bridge.
 The S3 supports a reset-to-bootloader over native USB, and esptool knows how to ask - but
-that is a claim to test, not to design around.
+that was a claim to test, not to design around. (It held. See the result below.)
 
 **If it fails**, the likely fixes in order of preference:
 
@@ -90,6 +91,49 @@ that is a claim to test, not to design around.
 **Do not skip to Step 1 on a partial result.** "esptool connected but only after I held
 the button" is a different feature - it still needs a person at the box, which is the one
 thing this plan exists to remove.
+
+### It passed - 2026-08-29
+
+```
+esptool.py v4.7.0
+Connecting...
+Detecting chip type... ESP32-S3
+Chip is ESP32-S3 (QFN56) (revision v0.2)
+Features: WiFi, BLE, Embedded PSRAM 8MB (AP_3v3)
+MAC: e8:f6:0a:8a:0d:64
+Hard resetting via RTS pin...
+```
+
+Exit 0, nobody near the board. **The risk this step was written around did not
+materialise**: esptool resets the S3 into download mode over native USB unaided, and the
+absence of a bridge chip turned out not to matter. It even reports resetting "via RTS
+pin" afterwards, so the native-USB path covers both directions of the reset.
+
+Two things the experiment found that the plan did not anticipate:
+
+**1. Debian's esptool has no stub flashers, and `--no-stub` is mandatory.** Install with
+`sudo apt-get install esptool` (4.7.0) rather than pip - the Pi's Python is externally
+managed under PEP 668, and `--break-system-packages` is not worth it for a tool apt
+already has. But the package is `4.7.0+dfsg`, and the *dfsg* part matters: Debian strips
+the precompiled stub flasher blobs as non-free. Without `--no-stub` every command dies
+with:
+
+```
+FileNotFoundError: .../esptool/targets/stub_flasher/stub_flasher_32s3.json
+```
+
+That reads like a corrupt installation rather than a licensing decision, and would send
+anyone looking in the wrong place entirely. **It is also diagnostic in a useful way:**
+reaching `run_stub()` proves the connect and the download-mode reset already succeeded,
+which is how this step was known to have passed before it was made to work.
+
+The ROM loader is slower than the stub. Irrelevant for `chip_id`; it will matter for an
+8 MB `write_flash`, and Step 1 should time it rather than assume.
+
+**2. The binary is `/usr/bin/esptool`, not `esptool.py`,** and it is not on the PATH of a
+non-interactive SSH shell. Scripts must use the absolute path; `ssh pi "esptool ..."`
+fails with `No such file or directory` while the same command in an interactive session
+works.
 
 ## Step 1 - flash the merged image, by hand
 
@@ -118,7 +162,7 @@ The 8 MB size is not the cost it appears to be: it is mostly `0xFF` padding, and
 
 ```bash
 sudo systemctl stop smarttoolbox
-esptool.py --chip esp32s3 --port /dev/ttyACM0 --baud 460800 \
+/usr/bin/esptool --chip esp32s3 --port /dev/ttyACM0 --baud 460800 --no-stub \
   write_flash -z 0x0 smarttoolbox-<version>.merged.bin
 sudo systemctl start smarttoolbox
 ```
@@ -183,6 +227,10 @@ one.
   device that boots, connects, and behaves wrongly. Do not build the recovery path so it
   only triggers on "the Pi has not heard from the device" - it has to be runnable on
   demand, against a device that looks fine.
+- **`--no-stub` is not optional on this Pi, and it fails late.** The command connects,
+  resets the chip into download mode, identifies it, and only then dies on a missing file -
+  so the error appears after everything that could plausibly go wrong has already gone
+  right.
 - **Do not diagnose the flash from the Pi's service log.** The service is stopped during
   it, by design. esptool's own stdout is the record, and the script should keep it.
 
