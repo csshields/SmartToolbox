@@ -25,7 +25,7 @@
 // api/scripts/release-firmware.ps1 on release, and compared against the Pi's
 // drop folder to decide whether an OTA update is available - keep the exact
 // `#define FIRMWARE_VERSION "x.y.z"` shape so the script can find it.
-#define FIRMWARE_VERSION "0.20.0"
+#define FIRMWARE_VERSION "0.21.0"
 
 const int LED_PIN = LED_BUILTIN; // Active-low: LOW = on, HIGH = off.
 const int LED_ON = LOW;
@@ -1555,6 +1555,12 @@ void handleIncomingLine(const String& line) {
   // works end to end, not about the Pi liking the message.
   promoteToReady();
 
+  // The Pi cannot start a conversation - there is no Pi-initiated message type
+  // and the transport only ever writes responses - so anything it wants this
+  // device to do rides back on a reply the device asked for. The heartbeat is
+  // the vehicle: every 30s when running, every 2s while still waiting at boot.
+  handleDeviceCommand(doc);
+
   if (!awaitingResponse) {
     return;
   }
@@ -1625,6 +1631,40 @@ void handleIncomingLine(const String& line) {
     // duration, so use the not-found pattern instead: the LED cannot express
     // "somewhere unknown", and the OLED is already showing the drawer label.
     startBlinkPlan(3, 150, 150);
+  }
+}
+
+// Acts on a command the Pi left waiting. The Pi delivers each one exactly once,
+// so there is nothing to acknowledge and nothing to clear - collecting it is the
+// acknowledgement.
+void handleDeviceCommand(JsonDocument& doc) {
+  const char* command = doc["body"]["command"] | "";
+  if (strlen(command) == 0) {
+    return;
+  }
+
+  Serial.print("CMD ");
+  Serial.println(command);
+
+  if (strcmp(command, "check-firmware") == 0) {
+#if OTA_ENABLED
+    // Due now. pollFirmwareUpdate still refuses to run mid-lookup, so this asks
+    // for the check at the next idle moment rather than forcing one here - the
+    // check can block for the whole Wi-Fi timeout and doing that underneath a
+    // lookup would read as the device freezing.
+    nextFirmwareCheckAt = millis();
+    showStatus("Update check", "Requested", "v" FIRMWARE_VERSION);
+#else
+    Serial.println("CMD check-firmware ignored: OTA_ENABLED=0");
+#endif
+    return;
+  }
+
+  if (strcmp(command, "reboot") == 0) {
+    showStatus("Rebooting", "Asked by the Pi", "v" FIRMWARE_VERSION);
+    Serial.flush(); // The restart is immediate; without this the line above is lost.
+    delay(100);
+    ESP.restart();
   }
 }
 

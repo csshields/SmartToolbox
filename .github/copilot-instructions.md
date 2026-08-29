@@ -1155,11 +1155,23 @@ Hardware Bring-Up table for what that looks like in practice.
   - `vision/observe`: Xiao sends `drawerLabel`, model version, and a `detections` array of tool-type labels, confidence, quantity, and optional bounding boxes.
 - **The device speaks first, always.** The protocol models requests from the XIAO and
   responses from the Pi; there is no Pi-initiated message type and the transport only
-  ever writes responses. Nothing on the dashboard can push to the device. Any future
-  control - "check for updates now", "use this Wi-Fi" - has to be queued and collected
-  on the device's next request. **That is now practical**: `device/status` repeats every
-  30 seconds (`DEVICE_STATUS_INTERVAL_MS`), so a queued command waits at most one
-  interval instead of until the next reboot or touch.
+  ever writes responses. Nothing on the dashboard can push to the device. Control is
+  therefore *queued and collected*, never sent.
+
+  **Status: Implemented** 2026-08-29 (0.21.0) - `api/src/deviceCommands.ts`,
+  `handleDeviceCommand` in the sketch, and `api/scripts/push-to-device.ps1`.
+  `POST /api/devices/command` takes `check-firmware` or `reboot`; the command rides back
+  on the body of the next `device/status` reply, which is why the heartbeat had to exist
+  first. It waits at most one interval - 30 seconds normally, 2 seconds while the device
+  is still waiting for the Pi at boot - instead of until the next reboot or touch.
+
+  **Delivered exactly once, and there is no acknowledgement.** Collecting it *is* the
+  acknowledgement: the Pi clears the command when it hands it over, because there is no
+  Pi-initiated retry to build on and re-delivering on every heartbeat until something
+  confirmed would turn a missed `reboot` into a reboot loop. The retry for a command that
+  did not land is queueing it again. Commands are held in memory, not SQLite, and expire
+  after five minutes - a command is an instruction about *now*, and one that survived a
+  service restart to fire hours later would be a surprise rather than a feature.
 - **The boot announcement cannot be relied on, and the design assumes it will be lost.**
   It is sent from `setup()`, while the USB serial port is still re-enumerating after a
   reset, so the Pi is often mid-reconnect-backoff and never sees it. This is not
@@ -1809,7 +1821,7 @@ physical access or manual re-flashing.
 **Configuration**:
 - OTA check interval: configurable via serial (default 3600 seconds / 1 hour)
 - Automatic update: opt-in via serial config
-- Update can be triggered manually from dashboard or via serial `device/ota-reset` command
+- Update can be triggered on demand with `api/scripts/push-to-device.ps1 check-firmware`, or `release-firmware.ps1 -Push -Now` to publish and fetch in one step. **There is no `device/ota-reset` command** - an earlier draft of this section named one and it was never built. See the device command queue under Communication Protocol for what actually exists.
 
 **Safety Features**:
 - Checksum validation mandatory before flash (SHA256)

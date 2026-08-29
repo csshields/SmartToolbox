@@ -1,6 +1,7 @@
 import { serve } from "bun";
 import { join } from "node:path";
 import { pcmToWav, parseVoiceAudioBody, transcribeAudio } from "./voice";
+import { collectDeviceCommand, DEVICE_COMMANDS, isDeviceCommand, peekDeviceCommand, queueDeviceCommand } from "./deviceCommands";
 import { addToolToDrawer, assignToolToDrawer, createDrawer, deleteDrawer, deleteTool, findDrawerByLabel, findToolDrawer, findToolLocations, getDeviceStatus, getToolboxRowCount, getTranscriptionSettings, MAX_TOOLBOX_ROWS, listDrawers, listRequestLogs, recordDeviceContact, recordDrawerObservations, recordRequestLog, saveToolboxRowCount, saveTranscriptionSettings, ToolNameConflictError } from "./db";
 import { parseSerialRequest, serialError, serialSuccess, serializeSerialResponse, type SerialRequest, type SerialResponse } from "./serialProtocol";
 import { startSerialTransport } from "./serialTransport";
@@ -121,9 +122,19 @@ async function handleSerialRequest(request: SerialRequest): Promise<SerialRespon
   try {
     if (request.endpoint === "device/status") {
       const body = request.body as { firmwareVersion?: unknown };
+
+      // The one place the Pi gets to say something the device did not ask for.
+      // Collected here rather than merely read, so it is delivered once - see
+      // collectDeviceCommand for why re-delivery would be worse than a miss.
+      const command = collectDeviceCommand();
+      if (command) {
+        console.log(`[command] delivered ${command} to the device`);
+      }
+
       return serialSuccess(request.id, {
         acknowledged: true,
         firmwareVersion: typeof body.firmwareVersion === "string" ? body.firmwareVersion : null,
+        ...(command ? { command } : {}),
       });
     }
 
@@ -362,12 +373,15 @@ serve({
       const device = getDeviceStatus();
       const latest = findLatestFirmware(join(process.cwd(), FIRMWARE_DIR));
 
+      const queued = peekDeviceCommand();
+
       return jsonResponse({
         device,
         // Whether the listener runs at all is the difference between "the XIAO
         // is unplugged" and "this is Windows, so nothing was ever listening".
         // The page cannot tell those apart without being told.
         serialDevice: serialDevice ?? null,
+        pendingCommand: queued ? { command: queued.command, queuedAt: new Date(queued.queuedAt).toISOString() } : null,
         firmware: latest
           ? {
               latestVersion: latest.version,
@@ -375,6 +389,34 @@ serve({
             }
           : null,
       });
+    }
+
+    if (pathname === '/api/devices/command' && req.method === 'POST') {
+      try {
+        const body = await readJsonBody(req) as { command?: unknown };
+
+        if (!isDeviceCommand(body.command)) {
+          throw new Error(`command must be one of: ${DEVICE_COMMANDS.join(', ')}`);
+        }
+
+        const queued = queueDeviceCommand(body.command);
+
+        // Not "sent". The device collects this on its next heartbeat, and
+        // saying otherwise would invite someone to treat a queue as a delivery.
+        writeRequestLog({
+          method: req.method,
+          path: pathname,
+          statusCode: 202,
+          result: `Queued ${queued.command} for the device`,
+        });
+
+        return jsonResponse({
+          queued: { command: queued.command, queuedAt: new Date(queued.queuedAt).toISOString() },
+          message: 'Queued. The device collects it on its next heartbeat.',
+        }, { status: 202 });
+      } catch (error) {
+        return errorResponse(error instanceof Error ? error.message : 'Unable to queue the command.');
+      }
     }
 
     if (pathname === '/api/logs' && req.method === 'GET') {
