@@ -99,6 +99,19 @@ bool pendingIsVoice = false;
 // Wi-Fi is used for OTA updates only, and only during setup(). USB serial stays
 // the link for everything else, so the radio is switched off before loop() runs
 // rather than left associated for the device's whole uptime.
+// Deliberately breaks the device, to prove the USB recovery path works on
+// something that is actually broken rather than on a device that was fine all
+// along. See docs/PLAN-usb-flashing.md Step 3.
+//
+// With this set, setup() hangs on its first line - before Serial.begin, before
+// the OLED, before anything. No serial link, no heartbeat, no OTA check: every
+// software update path this project has is dead, which is the whole point. Only
+// the ROM bootloader can help, and that is exactly the claim being tested.
+//
+// **This must never be released.** It exists to be set to 1 by hand, flashed
+// over USB, and then flashed back over.
+#define BRICK_TEST 0
+
 #define OTA_ENABLED 1
 const char* PI_HOST = "192.168.50.30";
 const uint16_t PI_PORT = 3000;
@@ -1195,6 +1208,15 @@ void recordAndReportMic(size_t pinIndex) {
 }
 
 void setup() {
+#if BRICK_TEST
+  // First line of setup, before USB serial is even opened. The core has already
+  // started the USB CDC stack by this point (cdc_on_boot=1 for this board) and
+  // TinyUSB runs on its own FreeRTOS task, so the port stays enumerated - but
+  // nothing in this sketch will ever answer on it again.
+  while (true) {
+  }
+#endif
+
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LED_OFF);
 

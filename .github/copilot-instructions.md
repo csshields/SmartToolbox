@@ -1770,15 +1770,23 @@ a `firmware_updates` table). What is actually built is deliberately smaller:
 firmware to receive it, so a build that crashes in `setup()`, wedges the loop, or breaks
 the serial link cannot be replaced over the air - the thing that would accept the next
 update is the thing that is broken. Today the recovery is a person, a USB cable, and a
-trip to the box. `docs/PLAN-usb-flashing.md` closes that with `esptool` from the Pi over
-the cable already carrying `/dev/ttyACM0`, talking to the ROM bootloader, which runs
-before the application and therefore survives its own bad output. **Status: Planned** -
-nothing is built, but the plan's Step 0 **passed on hardware 2026-08-29**: esptool reaches
-the chip and resets it into download mode over native USB with nobody touching the board,
-despite the XIAO having no USB-to-UART bridge for the usual DTR/RTS trick. Two traps are
-recorded there - Debian's `esptool` is `+dfsg` and has its stub flashers stripped, so
-`--no-stub` is mandatory and its absence fails *late*, after connect and chip detection;
-and the binary is `/usr/bin/esptool`, absent from a non-interactive SSH shell's PATH.
+trip to the box. **Status: Implemented** 2026-08-29 -
+`api/scripts/flash-device.ps1` and `flash-device.sh`, per `docs/PLAN-usb-flashing.md`.
+The Pi flashes the device with `esptool` over the cable already carrying `/dev/ttyACM0`,
+talking to the ROM bootloader, which runs before the application and therefore survives
+its own bad output.
+
+**Proven against a real brick**, not a hypothetical one: a build that hangs on the first
+line of `setup()` - no serial, no heartbeat, and never reaching the OTA check - was
+silent for three minutes and recovered from Windows in 47 seconds with nobody touching
+the box. `BRICK_TEST` in the sketch reproduces it.
+
+Traps recorded in the plan: Debian's `esptool` is `+dfsg` with its stub flashers stripped,
+so `--no-stub` is mandatory and its absence fails *late*, after connect and chip
+detection; the binary is `/usr/bin/esptool`, absent from a non-interactive SSH shell's
+PATH; the **merged** image must be flashed, never the app binary, which at `0x0` would
+overwrite the bootloader; and the whole path depends on `cdc_on_boot=1` keeping USB alive
+when the application hangs.
 
 **Untested:** recovery from a transfer interrupted mid-write. The mechanism is sound -
 the ESP32 writes to the inactive OTA slot and `Update.end(true)` only marks it bootable
