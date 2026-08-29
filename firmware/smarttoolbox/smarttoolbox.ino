@@ -18,13 +18,14 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <Update.h>
+#include <ESP_I2S.h>
 #include "arduino_secrets.h"
 
 // Single source of truth for the version this build reports. Rewritten by
 // api/scripts/release-firmware.ps1 on release, and compared against the Pi's
 // drop folder to decide whether an OTA update is available - keep the exact
 // `#define FIRMWARE_VERSION "x.y.z"` shape so the script can find it.
-#define FIRMWARE_VERSION "0.13.0"
+#define FIRMWARE_VERSION "0.17.0"
 
 const int LED_PIN = LED_BUILTIN; // Active-low: LOW = on, HIGH = off.
 const int LED_ON = LOW;
@@ -101,6 +102,60 @@ const uint32_t WIFI_CONNECT_TIMEOUT_MS = 25000;
 const uint32_t DEVICE_STATUS_INTERVAL_MS = 30000;
 uint32_t nextDeviceStatusAt = 0;
 unsigned long statusCounter = 0;
+
+// The boot check alone let three releases go by unnoticed: the device only
+// looked for an update in the first seconds after power-on, so a box that
+// stayed up never learned a new version existed. Re-checking on an interval is
+// what makes a release actually reach a running device.
+//
+// Thirty minutes, and only while idle. The check costs up to
+// WIFI_CONNECT_TIMEOUT_MS of blocked loop when the radio cannot associate, so
+// it must never land in the middle of a lookup the user is waiting on.
+const uint32_t FIRMWARE_CHECK_INTERVAL_MS = 30UL * 60UL * 1000UL;
+
+// The boot check cannot succeed when the whole box is powered on at once, and
+// this is measured rather than suspected: the Pi takes 36.6s to finish booting
+// (5.2s kernel + 31.4s userspace) before its API accepts anything, while this
+// device starts asking ~3.5s in and gives up after the 25s Wi-Fi timeout, at
+// roughly 30s. It loses by about ten seconds, every time, by construction.
+//
+// So the first re-check is deliberately soon rather than a full interval: by
+// two minutes the Pi is up with a wide margin. Updates used to work only
+// because the XIAO was being reset by itself against an already-running Pi.
+const uint32_t FIRMWARE_FIRST_CHECK_MS = 2UL * 60UL * 1000UL;
+uint32_t nextFirmwareCheckAt = 0;
+
+// What the last update check actually did. Kept because the check runs before
+// the Pi has opened the port: on the S3's native USB CDC, anything printed
+// while no host is attached is discarded, so the boot-time OTA log is lost
+// every time. Holding the outcome and printing it once the link is up is the
+// difference between a diagnosable failure and silence.
+String lastOtaResult = "not checked";
+bool lastOtaResultReported = false;
+
+// --- Microphone (PDM, on the XIAO Sense expansion board) ---------------------
+//
+// Bring-up only. With MIC_BRINGUP set, pad D0 records a fixed clip and prints
+// statistics instead of running a tool lookup - see docs/PLAN-mic-bringup.md
+// Step 1. The point is a number that separates "no data", "wrong pins", and
+// "working", three failures that are otherwise identical from the outside.
+// Set this back to 0 to get the lookup pad behaviour back.
+#define MIC_BRINGUP 1
+
+// Fixed by the Sense board's board-to-board connector - not free choices.
+const int8_t MIC_CLOCK_PIN = 42;
+const int8_t MIC_DATA_PIN = 41;
+
+// None of these three are choices either: the ESP32-S3 supports PDM only as
+// 16-bit mono, and 16 kHz is both what Seeed reports as stable and the rate
+// Whisper wants, so resampling never enters the picture.
+const uint32_t MIC_SAMPLE_RATE = 16000;
+const uint8_t MIC_BYTES_PER_SAMPLE = 2;
+const uint32_t MIC_BRINGUP_SECONDS = 2;
+const size_t MIC_BRINGUP_BYTES = MIC_SAMPLE_RATE * MIC_BYTES_PER_SAMPLE * MIC_BRINGUP_SECONDS;
+
+I2SClass mic;
+bool micReady = false;
 
 uint8_t consecutiveTouched = 0;
 uint8_t consecutiveReleased = 0;
@@ -499,6 +554,7 @@ void showStatus(const char* title, const String& line2, const String& line3) {
 // or interrupted download costs a boot delay, not the device.
 bool checkForFirmwareUpdate() {
   if (strlen(SECRET_SSID) == 0) {
+    lastOtaResult = "skipped - no Wi-Fi credentials";
     return false; // No credentials configured - not an error, just nothing to do.
   }
 
@@ -561,6 +617,7 @@ bool checkForFirmwareUpdate() {
     Serial.print(" visible networks=");
     Serial.println(found); // Reuse the scan above; rescanning here costs seconds.
 
+    lastOtaResult = "no Wi-Fi - status " + String(WiFi.status()) + ", " + String(found) + " networks visible";
     showStatus("Update check", "No Wi-Fi", "status " + String(WiFi.status()));
     WiFi.disconnect(true, true);
     WiFi.mode(WIFI_OFF);
@@ -590,6 +647,7 @@ bool checkForFirmwareUpdate() {
   Serial.println(status);
 
   if (status == 204) {
+    lastOtaResult = "up to date at v" FIRMWARE_VERSION;
     showStatus("Up to date", "v" FIRMWARE_VERSION, "");
     http.end();
     WiFi.disconnect(true, true);
@@ -600,6 +658,7 @@ bool checkForFirmwareUpdate() {
   if (status != 200) {
     // 401 means the device key disagrees with the Pi; 503 means the Pi has no
     // key configured. Both are worth showing rather than silently skipping.
+    lastOtaResult = "server said HTTP " + String(status);
     showStatus("Update failed", "HTTP " + String(status), "");
     http.end();
     WiFi.disconnect(true, true);
@@ -612,6 +671,7 @@ bool checkForFirmwareUpdate() {
   const String newVersion = http.header("X-Firmware-Version");
 
   if (contentLength <= 0 || !Update.begin(contentLength)) {
+    lastOtaResult = "cannot begin write, content-length " + String(contentLength);
     showStatus("Update failed", "No space", String(contentLength));
     http.end();
     WiFi.disconnect(true, true);
@@ -647,6 +707,7 @@ bool checkForFirmwareUpdate() {
   if (written != (size_t)contentLength || !Update.end(true)) {
     Serial.print("OTA failed: ");
     Serial.println(Update.errorString());
+    lastOtaResult = "write failed after " + String(written) + " of " + String(contentLength) + " bytes: " + String(Update.errorString());
     showStatus("Update failed", "Keeping v" FIRMWARE_VERSION, String(Update.errorString()));
     Update.abort();
     WiFi.disconnect(true, true);
@@ -662,6 +723,106 @@ bool checkForFirmwareUpdate() {
   return true; // Not reached - restart() does not return.
 }
 #endif
+
+bool beginMicrophone() {
+  mic.setPinsPdmRx(MIC_CLOCK_PIN, MIC_DATA_PIN);
+
+  // PDM_MONO is the only mode the S3 offers; see the constants above.
+  if (!mic.begin(I2S_MODE_PDM_RX, MIC_SAMPLE_RATE, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO)) {
+    return false;
+  }
+
+  return true;
+}
+
+// Records a fixed clip and prints sample count, min, max and RMS. Deliberately
+// prints statistics rather than audio: RMS near a small constant in a quiet room
+// that rises by an obvious multiple when spoken into is what proves the mic, and
+// it is one number rather than 32,000.
+//
+// This blocks for MIC_BRINGUP_SECONDS. That is fine here - nothing else in the
+// sketch is time-critical over two seconds, and the heartbeat simply goes out
+// late. The hold-to-talk path in Step 2 reads in a loop instead, because there
+// the length is not known when recording starts.
+void recordAndReportMic() {
+  if (!micReady) {
+    Serial.println("MIC error=not-initialised");
+    showStatus("Microphone", "Not initialised", "");
+    return;
+  }
+
+  // PSRAM, not the heap: 64 KB is a fifth of the S3's SRAM, and this sketch
+  // already holds 49 KB of it. Checked because a failed allocation and a dead
+  // microphone produce exactly the same silence otherwise.
+  int16_t* samples = (int16_t*)ps_malloc(MIC_BRINGUP_BYTES);
+  if (samples == nullptr) {
+    // Almost always the build rather than the board: the XIAO has 8 MB of PSRAM,
+    // but the Arduino default for this fqbn is PSRAM disabled, and ps_malloc
+    // then returns null on every call. Compile with PSRAM=opi.
+    Serial.println("MIC error=psram-alloc-failed");
+    showStatus("Microphone", "No PSRAM", "Build PSRAM=opi");
+    return;
+  }
+
+  showStatus("Microphone", "Recording...", "");
+  const size_t bytesRead = mic.readBytes((char*)samples, MIC_BRINGUP_BYTES);
+  const size_t sampleCount = bytesRead / MIC_BYTES_PER_SAMPLE;
+
+  int16_t minSample = 0;
+  int16_t maxSample = 0;
+  int32_t mean = 0;
+  uint32_t rms = 0;
+
+  if (sampleCount > 0) {
+    minSample = samples[0];
+    maxSample = samples[0];
+
+    // The PDM mic rides on a large positive DC bias, so the samples never cross
+    // zero: the first real readings ran from +981 to +2568, centred near +1745.
+    // RMS of the raw samples measures that bias rather than the sound, and read
+    // 1745 then 1751 on two separate recordings - a number that barely moves is
+    // the offset, not the room. Centre on the mean before squaring so the result
+    // is how far the signal actually swings.
+    int64_t sum = 0;
+    for (size_t index = 0; index < sampleCount; index++) {
+      const int16_t sample = samples[index];
+      if (sample < minSample) {
+        minSample = sample;
+      }
+      if (sample > maxSample) {
+        maxSample = sample;
+      }
+      sum += sample;
+    }
+    mean = (int32_t)(sum / (int64_t)sampleCount);
+
+    // Sum of squares of 32,000 samples overflows 32 bits, so accumulate in 64.
+    uint64_t sumOfSquares = 0;
+    for (size_t index = 0; index < sampleCount; index++) {
+      const int32_t centred = (int32_t)samples[index] - mean;
+      sumOfSquares += (uint64_t)((int64_t)centred * centred);
+    }
+
+    rms = (uint32_t)sqrt((double)(sumOfSquares / sampleCount));
+  }
+
+  free(samples);
+
+  // Plain text, not JSON: the Pi echoes unrecognised lines to its journal via
+  // [serial-debug], which is exactly where these want to land during bring-up.
+  Serial.print("MIC samples=");
+  Serial.print(sampleCount);
+  Serial.print(" min=");
+  Serial.print(minSample);
+  Serial.print(" max=");
+  Serial.print(maxSample);
+  Serial.print(" mean=");
+  Serial.print(mean);
+  Serial.print(" rms=");
+  Serial.println(rms);
+
+  showStatus("Microphone", "rms " + String(rms), String(sampleCount) + " samples");
+}
 
 void setup() {
   pinMode(LED_PIN, OUTPUT);
@@ -724,9 +885,18 @@ void setup() {
     touchBaseline[pinIndex] = total / 20;
   }
 
+  // The boot check has already run by here, and on a cold whole-box start it
+  // will have failed for the reason given at FIRMWARE_FIRST_CHECK_MS. Re-check
+  // shortly rather than after a full interval.
+  nextFirmwareCheckAt = millis() + FIRMWARE_FIRST_CHECK_MS;
+
+  micReady = beginMicrophone();
+  Serial.print("Mic ready=");
+  Serial.println(micReady ? 1 : 0);
+
   sendDeviceStatus();
 
-  showStatus("SmartToolbox", "Ready", "Touch a pad");
+  showStatus("SmartToolbox", "Ready", MIC_BRINGUP ? "Hold D0 to record" : "Touch a pad");
 }
 
 void loop() {
@@ -734,6 +904,9 @@ void loop() {
   pollSerialResponses();
   pollResponseTimeout();
   pollDeviceStatus();
+#if OTA_ENABLED
+  pollFirmwareUpdate();
+#endif
   updateBlinkPlan();
   updateMatrix();
 }
@@ -811,12 +984,20 @@ void onTouchStart(int pinIndex) {
     return;
   }
 
+#if MIC_BRINGUP
+  // Bring-up takes the pad over entirely. The lookup path is proven and is not
+  // being changed here - it comes back by setting MIC_BRINGUP to 0.
+  (void)pinIndex;
+  recordAndReportMic();
+  return;
+#else
   const char* toolName = TOUCH_TOOL_NAMES[pinIndex];
   if (toolName == nullptr) {
     return;
   }
 
   sendToolLookupRequest(toolName);
+#endif
 }
 
 void sendToolLookupRequest(const char* toolName) {
@@ -878,8 +1059,38 @@ void pollDeviceStatus() {
     return;
   }
 
+  reportLastOtaResult();
   sendDeviceStatus();
 }
+
+// The boot-time OTA log never survives: the check runs before the Pi has the
+// port open, and the S3's USB CDC discards writes with no host attached. By the
+// first heartbeat the link is proven - the Pi is reading, because it answered
+// something - so this is the earliest point the outcome can actually be seen.
+// Plain text, so it lands in the Pi's [serial-debug] with no API change.
+void reportLastOtaResult() {
+  if (lastOtaResultReported) {
+    return;
+  }
+  lastOtaResultReported = true;
+
+  Serial.print("OTA last result: ");
+  Serial.println(lastOtaResult);
+}
+
+#if OTA_ENABLED
+// Idle-only, for the reason given at FIRMWARE_CHECK_INTERVAL_MS: a failed
+// association blocks the loop for the whole Wi-Fi timeout, and doing that
+// underneath a lookup would read as the device freezing.
+void pollFirmwareUpdate() {
+  if (awaitingResponse || blinkRemaining > 0 || millis() < nextFirmwareCheckAt) {
+    return;
+  }
+
+  nextFirmwareCheckAt = millis() + FIRMWARE_CHECK_INTERVAL_MS;
+  checkForFirmwareUpdate(); // Reboots into the new image if one was written.
+}
+#endif
 
 void pollSerialResponses() {
   while (Serial.available() > 0) {

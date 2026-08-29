@@ -2,7 +2,7 @@
 title: Plan of Attack - Microphone Bring-Up (say a word, read it on the OLED)
 scope: bring-up plan, written 2026-08-28 - PDM mic to Whisper to OLED, no tool matching
 references: https://wiki.seeedstudio.com/xiao_esp32s3_sense_mic/
-status: not started
+status: in progress - Step 1 running on hardware; mic proven alive, RMS gate not yet passed
 ---
 
 # Plan: say a word, see the word
@@ -69,23 +69,89 @@ compile, check which half of that page was copied before debugging anything else
 sample rate is adjustable, but 16 kHz is both what Seeed reports as stable and what
 Whisper wants, so leave it.
 
-**Use `recordWAV` for this step, and know why it will not survive.** For a fixed
-two-second recording it is one call and it returns a buffer with a WAV header already
-attached, which makes Step 2 trivial. It also takes a fixed duration, so it cannot serve
-hold-to-talk, where the length is unknown when recording starts - that path reads in a
-loop and lets the Pi write the header. Prove the microphone with the easy call first;
-swap the read strategy later, once it is the only thing changing.
+**`recordWAV` was the plan here, and it was dropped. Read this before putting it back.**
+The intent was that one call returning a WAV-headered buffer would make Step 2 trivial.
+Reading the core's implementation killed it: `recordWAV` allocates with plain `malloc`,
+not `ps_malloc`, which directly contradicts the PSRAM instruction below - it takes the
+64 KB from the S3's internal SRAM, of which this sketch already holds 49 KB of 320 KB.
+It also takes a fixed duration, so it could never serve hold-to-talk anyway.
+
+So Step 1 reads with `mic.readBytes()` into a `ps_malloc` buffer instead. That is fewer
+moving parts for statistics, which need no header at all, and it is exactly the loop
+hold-to-talk needs in Step 2 - the 44-byte header becomes the Pi's job, as Step 2
+already assumed. Nothing is lost by the swap.
 
 **Allocate in PSRAM.** Seeed's own example uses `ps_malloc` for this. Two seconds of
 16 kHz 16-bit mono is 64 KB and four is 128 KB, against the XIAO's 320 KB of SRAM, of
 which this sketch already uses 49 KB. Check the pointer - a silent allocation failure
 looks exactly like a silent microphone.
 
+**The build had PSRAM switched off, and still would have.** `ps_malloc` returns null on
+every call unless `-DBOARD_HAS_PSRAM` is defined, and that comes from a board menu
+option. `release-firmware.ps1` compiled with a bare `esp32:esp32:XIAO_ESP32S3`, and a
+bare fqbn takes the *first* entry of each menu - which for PSRAM is `Disabled`. Every
+binary ever released from this repo therefore had PSRAM off. The script now builds
+`esp32:esp32:XIAO_ESP32S3:PSRAM=opi`.
+
+This is the trap the paragraph above describes, arriving from the build rather than the
+board, and it would have presented as a dead microphone. The firmware prints
+`MIC error=psram-alloc-failed` and puts `Build PSRAM=opi` on the OLED rather than
+letting a null pointer look like silence.
+
+**Note for the OTA path:** this changes the binary for every build, not just mic ones.
+The first release after this flag is the first PSRAM-enabled image the device will run.
+
 **Done when:** RMS sits near a small constant in a quiet room and rises by an obvious
 multiple when you speak into it. That single number separates "no data", "wrong pins",
 and "working" - three failures that are otherwise identical.
 
 **If it fails:** you have one variable. Nothing else in this plan has run yet.
+
+### What was built - 2026-08-28
+
+Firmware only, in `firmware/smarttoolbox/smarttoolbox.ino`:
+
+- `MIC_BRINGUP`, a compile flag at the top of the sketch. While it is `1`, pad D0
+  records and reports instead of running a tool lookup. The lookup path is proven and
+  is untouched behind the `#else`; setting the flag to `0` restores it.
+- `beginMicrophone()` - PDM RX on GPIO 42 clock / GPIO 41 data, 16 kHz, 16-bit, mono,
+  via core 3.x `<ESP_I2S.h>`. Reports `Mic ready=0|1` at boot, the same shape as the
+  existing `Matrix ready=` line.
+- `recordAndReportMic()` - two seconds into PSRAM, then prints
+  `MIC samples=N min=N max=N rms=N`. Plain text rather than JSON, so the Pi's existing
+  `[serial-debug]` branch echoes it straight to the journal with no API change at all.
+  RMS accumulates in a `uint64_t`: 32,000 squared 16-bit samples overflow 32 bits.
+
+### First hardware run - 2026-08-28, in 0.15.0
+
+It reached the device (the OTA story that took to get there is in
+`docs/PLAN-ota-updates.md`) and the microphone came up:
+
+```
+Mic ready=1
+MIC samples=32000 min=1025 max=2568 rms=1745
+MIC samples=32000 min=981  max=2480 rms=1751
+```
+
+**What is proven:** PDM I2S initialises on GPIO 42/41, the PSRAM buffer allocates
+(so `PSRAM=opi` is doing its job), and a full two seconds - all 32,000 samples -
+reads back. Three of the four things that had never been done now work.
+
+**What the numbers exposed:** the samples never cross zero. They run from about +981
+to +2568, centred near +1745, because the PDM mic rides on a large positive DC bias.
+RMS of the raw samples therefore measures that bias and not the sound, which is why two
+separate recordings came back 1745 and 1751 - a number that barely moves is the offset,
+not the room.
+
+The plan's own gate caught this exactly as intended: "RMS near a small constant that
+rises by an obvious multiple" is what a *working* measurement does, and this one was
+constant for the wrong reason. Fixed in 0.17.0 by centring on the mean before squaring,
+and `mean=` is now printed alongside `rms=` so the offset stays visible instead of
+hiding inside the result.
+
+**Still unproven, and this is the actual gate:** that a DC-corrected RMS is small in a
+quiet room and multiplies when spoken into. Until that comparison is made, the mic is
+known to produce *data*, not known to produce *audio*.
 
 ## Step 2 - the audio reaches the Pi and is playable
 

@@ -8,7 +8,8 @@ Arduino firmware for the Seeed XIAO ESP32S3 microcontroller.
 - **Processor**: Espressif ESP32-S3
 - **Sensors**:
   - Vision: Grove Vision AI Module V2 (SKU 101021112) with OV5647 camera; on-device SenseCraft AI inference over I2C
-  - Additional IMU and microphone hardware: not yet selected
+  - Microphone: the XIAO's own PDM mic on the Sense expansion board (GPIO 42 clock, GPIO 41 data); needs `:PSRAM=opi` in the build
+  - Additional IMU hardware: not yet selected
 - **Connectivity**: USB serial to Raspberry Pi Zero 2
 - **I2C topology**: Vision AI V2 Grove port -> Grove I2C Hub (6 Port) -> Grove OLED Display 0.96 inch (SSD1315) and Grove 8x8 RGB LED Matrix with Driver
 - **MVP feedback**: Matrix highlights matching rows; OLED shows exact drawer labels such as `1A` and `3`.
@@ -49,8 +50,8 @@ Required libraries (install via Library Manager):
 The tested Windows command-line upload uses the ESP32 core's XIAO target. Replace `COM6` with the port assigned to the XIAO:
 
 ```powershell
-C:\arduino\arduino-cli.exe compile --fqbn esp32:esp32:XIAO_ESP32S3 C:\code\smarttoolbox\firmware\smarttoolbox
-C:\arduino\arduino-cli.exe upload --fqbn esp32:esp32:XIAO_ESP32S3 --port COM6 C:\code\smarttoolbox\firmware\smarttoolbox
+C:\arduino\arduino-cli.exe compile --fqbn esp32:esp32:XIAO_ESP32S3:PSRAM=opi C:\code\smarttoolbox\firmware\smarttoolbox
+C:\arduino\arduino-cli.exe upload --fqbn esp32:esp32:XIAO_ESP32S3:PSRAM=opi --port COM6 C:\code\smarttoolbox\firmware\smarttoolbox
 ```
 
 ## USB Serial Handshake

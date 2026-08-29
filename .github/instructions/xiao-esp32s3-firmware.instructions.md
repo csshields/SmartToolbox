@@ -30,7 +30,7 @@ description: "Firmware guidance for the Seeed XIAO ESP32S3, including onboard LE
 ## Building and flashing
 
 ```
-arduino-cli compile --upload -p COM<n> --fqbn esp32:esp32:XIAO_ESP32S3 firmware/smarttoolbox
+arduino-cli compile --upload -p COM<n> --fqbn esp32:esp32:XIAO_ESP32S3:PSRAM=opi firmware/smarttoolbox
 ```
 
 `arduino-cli board list` identifies the XIAO only as a generic "ESP32 Family Device"
@@ -66,6 +66,37 @@ the reboot came from `ESP.restart()` and not from something else.
 5. Confirm the next boot reports the new version and gets `-> 204`.
 
 Step 5 is the actual proof. Steps 3 and 4 only show that bytes moved.
+
+### Early boot output is written into a void
+
+The S3's USB CDC is not a UART: anything `Serial.print`ed while no host has the port
+open is **discarded, not buffered**. The device starts printing ~3.5s after power-on,
+and the Pi's transport can still be in its reconnect backoff then, so boot-time output
+routinely never reaches the log. This is not intermittent and it is not the Pi's fault.
+
+The trap is that it makes a working code path look like a dead one. The OTA check
+prints at every branch, and none of it survived - which was read for some time as "the
+update check is not running". Anything that must be seen from the Pi has to be printed
+*after* the link is proven, which is what `reportLastOtaResult()` is for: it holds the
+outcome and prints it on the first heartbeat. The OLED is the only witness to the boot
+window itself.
+
+### The OTA boot check cannot win a cold start
+
+Powering the whole box on at once guarantees a failed update check. The Pi needs 36.6s
+to reach a listening API (5.2s kernel + 31.4s userspace); the device asks at ~3.5s and
+gives up at ~30s, on the Wi-Fi timeout. It loses by about ten seconds, by construction,
+every time.
+
+It presents as `Update failed` on the OLED with a **negative** number - `HTTPClient`
+returns its own error codes, so anything below zero means "never reached the server"
+rather than a real HTTP status. Read the sign before anything else: negative is the
+network or a server that is not up yet, `401` is the device key, `204` is genuinely up
+to date.
+
+To test an update deliberately, reset the XIAO **alone** against an already-running Pi.
+Since 0.16.0 the device also re-checks two minutes after boot and every thirty minutes
+while idle, so a cold start now recovers on its own rather than needing a second reset.
 
 ### HTTPClient discards response headers
 

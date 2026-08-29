@@ -45,7 +45,11 @@ $sketchDir = Join-Path $repoRoot "firmware\smarttoolbox"
 $sketchFile = Join-Path $sketchDir "smarttoolbox.ino"
 $dropDir = Join-Path $apiRoot "firmware"
 $buildDir = Join-Path $env:TEMP "smarttoolbox-build-$Version"
-$fqbn = "esp32:esp32:XIAO_ESP32S3"
+# PSRAM=opi is load-bearing, not a tuning choice. The bare fqbn takes the first
+# PSRAM menu entry, which is Disabled, and ps_malloc then returns null on every
+# call - so the microphone buffer cannot be allocated at all. Building without
+# it looks like a dead mic rather than a build option.
+$fqbn = "esp32:esp32:XIAO_ESP32S3:PSRAM=opi"
 $targetName = "smarttoolbox-$Version.bin"
 $targetPath = Join-Path $dropDir $targetName
 
