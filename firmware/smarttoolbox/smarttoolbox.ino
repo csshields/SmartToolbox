@@ -25,7 +25,7 @@
 // api/scripts/release-firmware.ps1 on release, and compared against the Pi's
 // drop folder to decide whether an OTA update is available - keep the exact
 // `#define FIRMWARE_VERSION "x.y.z"` shape so the script can find it.
-#define FIRMWARE_VERSION "0.19.0"
+#define FIRMWARE_VERSION "0.20.0"
 
 const int LED_PIN = LED_BUILTIN; // Active-low: LOW = on, HIGH = off.
 const int LED_ON = LOW;
@@ -87,6 +87,14 @@ const char* TOUCH_TOOL_NAMES[TOUCH_PIN_COUNT] = {
 };
 
 const uint16_t RESPONSE_TIMEOUT_MS = 2000;
+
+// Transcription is not a lookup and cannot share its timeout. Measured against
+// the NAS on 2026-08-29: ~9.3s for one second of audio once warm, and well over
+// 30s on the first call after the container has been idle and has to load the
+// model. The Pi gives up at 90s; this is deliberately longer, so the device is
+// never the one to abandon a request the Pi is still working on.
+const uint32_t VOICE_TIMEOUT_MS = 100000;
+bool pendingIsVoice = false;
 
 // Wi-Fi is used for OTA updates only, and only during setup(). USB serial stays
 // the link for everything else, so the radio is switched off before loop() runs
@@ -178,8 +186,22 @@ const int8_t MIC_DATA_PIN = 41;
 // Whisper wants, so resampling never enters the picture.
 const uint32_t MIC_SAMPLE_RATE = 16000;
 const uint8_t MIC_BYTES_PER_SAMPLE = 2;
-const uint32_t MIC_BRINGUP_SECONDS = 2;
-const size_t MIC_BRINGUP_BYTES = MIC_SAMPLE_RATE * MIC_BYTES_PER_SAMPLE * MIC_BRINGUP_SECONDS;
+// Hold-to-talk. The length is not known when recording starts, so the buffer is
+// allocated at the cap and only the filled part is sent.
+//
+// 300ms floor: below that it is a brush against the pad rather than a word, and
+// Whisper on a fragment that short returns confident nonsense - which is worse
+// than nothing, because it looks like an answer. 10s ceiling: it bounds this
+// allocation, and it is what the Pi's own cap agrees with.
+const uint32_t MIC_MIN_HOLD_MS = 300;
+const uint32_t MIC_MAX_HOLD_MS = 10000;
+const size_t MIC_MAX_BYTES = (size_t)MIC_SAMPLE_RATE * MIC_BYTES_PER_SAMPLE * (MIC_MAX_HOLD_MS / 1000);
+
+// Read in ~100ms pieces rather than one blocking gulp. Two things need this:
+// the wave cannot animate during a read that does not return, and hold-to-talk
+// cannot notice the pad being released either. A single readBytes for the whole
+// recording made both impossible.
+const size_t MIC_CHUNK_BYTES = (size_t)MIC_SAMPLE_RATE * MIC_BYTES_PER_SAMPLE / 10;
 
 I2SClass mic;
 bool micReady = false;
@@ -246,6 +268,10 @@ uint8_t matrixThinkPhase = 0;
 // seconds a revolution, which reads as broken rather than busy. At 90ms a turn
 // takes 1.44s, about what a browser spinner does.
 const uint16_t MATRIX_SPIN_STEP_MS = 90;
+
+// The wave steps faster than the spinner turns. It is standing in for sound,
+// and sound moves.
+const uint16_t MATRIX_WAVE_STEP_MS = 100;
 const uint8_t MATRIX_SPIN_PHASES = 16;
 uint32_t matrixSpinNextAt = 0;
 uint8_t matrixSpinPhase = 0;
@@ -400,6 +426,42 @@ void drawAlertTriangle(uint8_t color) {
 
   for (uint8_t x = 0; x < MATRIX_WIDTH; x++) {
     matrixSetPixel(x, 6, color);
+  }
+}
+
+// Heights are deliberately irregular. A smooth repeating hump reads as a
+// decoration rather than as sound; speech is uneven and the picture should be
+// too. Thirty-two entries at 100ms a step means a cycle takes 3.2s, so a short
+// recording never sees the pattern repeat.
+const uint8_t WAVE_HEIGHTS[32] = {
+  2, 5, 3, 8, 4, 6, 2, 7, 3, 5, 8, 2, 6, 4, 7, 3,
+  5, 2, 8, 4, 3, 6, 2, 5, 7, 3, 4, 8, 2, 6, 3, 5,
+};
+
+// Colour by row rather than by column: pink at the centre line out to cyan at
+// the edges, so a tall bar reaches colours a short one never shows and the
+// palette itself reads as amplitude.
+//
+// This is the only picture the box draws in more than one colour, and that is
+// the point - every other state is a single colour, so nothing else looks
+// remotely like this. Listening is the one state where the box is taking input
+// rather than giving output, and the person has to know the exact moment it
+// starts.
+const uint8_t WAVE_COLORS[8] = { cyan, blue, purple, pink, pink, purple, blue, cyan };
+
+void drawSoundWave(uint8_t phase) {
+  matrixClear();
+
+  for (uint8_t x = 0; x < MATRIX_WIDTH; x++) {
+    const uint8_t height = WAVE_HEIGHTS[(x + phase) % 32];
+    // Centred, not grown from the bottom - a centred wave reads as a waveform,
+    // a bottom-anchored one reads as a bar chart. Integer division puts odd
+    // heights one row high of centre, which is part of what stops it looking
+    // machined.
+    const uint8_t top = (uint8_t)((MATRIX_HEIGHT - height) / 2);
+    for (uint8_t y = top; y < top + height; y++) {
+      matrixSetPixel(x, y, WAVE_COLORS[y]);
+    }
   }
 }
 
@@ -918,26 +980,136 @@ bool beginMicrophone() {
   return true;
 }
 
-// Records a fixed clip and prints sample count, min, max and RMS. Deliberately
-// prints statistics rather than audio: RMS near a small constant in a quiet room
 // that rises by an obvious multiple when spoken into is what proves the mic, and
 // it is one number rather than 32,000.
 //
-// This blocks for MIC_BRINGUP_SECONDS. That is fine here - nothing else in the
-// sketch is time-critical over two seconds, and the heartbeat simply goes out
-// late. The hold-to-talk path in Step 2 reads in a loop instead, because there
-// the length is not known when recording starts.
-void recordAndReportMic() {
+// Reads in ~100ms chunks rather than one blocking call. Step 1 originally took
+// the whole recording in a single readBytes, which was fine while the length was
+// fixed and nothing had to happen during it. Hold-to-talk needs to notice the
+// pad being released, and the wave needs to animate; neither is possible inside
+// a call that does not return for two seconds.
+//
+// Returns bytes captured, or 0 if the hold was too short to be a word.
+size_t recordWhileHeld(int16_t* samples, size_t pinIndex) {
+  size_t bytesRead = 0;
+  const uint32_t startedAt = millis();
+  uint8_t wavePhase = 0;
+  uint32_t nextWaveAt = millis();
+  uint8_t releasedReads = 0;
+
+  showStatus("Listening", "Speak now", "");
+
+  while (bytesRead + MIC_CHUNK_BYTES <= MIC_MAX_BYTES) {
+    if (matrixReady && millis() >= nextWaveAt) {
+      nextWaveAt = millis() + MATRIX_WAVE_STEP_MS;
+      drawSoundWave(wavePhase);
+      wavePhase = (uint8_t)((wavePhase + 1) % 32);
+      matrixPush();
+    }
+
+    bytesRead += mic.readBytes((char*)samples + bytesRead, MIC_CHUNK_BYTES);
+
+    // Read the pad directly rather than calling pollTouch. That function owns
+    // the press/release debounce and was the thing that dispatched us;
+    // re-entering it from inside its own handler would leave that state
+    // describing a moment that has already passed. One read per ~100ms chunk is
+    // also far enough apart to keep the S3's touch peripheral happy - reading it
+    // back to back is what makes it return a frozen value.
+    const uint32_t touchValue = touchRead(TOUCH_PINS[pinIndex]);
+    if (touchValue > touchBaseline[pinIndex] * TOUCH_TRIGGER_RATIO) {
+      releasedReads = 0;
+    } else {
+      releasedReads++;
+    }
+
+    // Two consecutive below-threshold reads, the same rule pollTouch debounces
+    // with: one noisy sample must not end a word mid-syllable. Checked after the
+    // read, so the chunk a release lands in is still kept - it holds the end of
+    // what was said.
+    if (releasedReads >= 2 && millis() - startedAt >= MIC_MIN_HOLD_MS) {
+      break;
+    }
+
+    if (millis() - startedAt >= MIC_MAX_HOLD_MS) {
+      break; // The cap is what bounds the buffer; reaching it is not an error.
+    }
+  }
+
+  if (millis() - startedAt < MIC_MIN_HOLD_MS) {
+    return 0;
+  }
+
+  return bytesRead;
+}
+
+// Sends the recording as one line of base64 raw PCM on voice/audio, streamed
+// straight out of PSRAM rather than built into a String first. Ten seconds is
+// 320 KB of samples and ~427 KB of base64, which will not fit in the 320 KB of
+// SRAM this chip has - so the JSON is written by hand in pieces and the base64
+// is encoded three input bytes at a time on its way to the wire.
+const char BASE64_ALPHABET[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+void sendVoiceAudio(const int16_t* samples, size_t byteCount) {
+  requestCounter++;
+  char idBuffer[16];
+  snprintf(idBuffer, sizeof(idBuffer), "req-%lu", (unsigned long)requestCounter);
+
+  Serial.print("{\"id\":\"");
+  Serial.print(idBuffer);
+  Serial.print("\",\"type\":\"request\",\"endpoint\":\"voice/audio\",\"body\":{");
+  Serial.print("\"format\":\"pcm_s16le\",\"sampleRate\":");
+  Serial.print(MIC_SAMPLE_RATE);
+  Serial.print(",\"channels\":1,\"data\":\"");
+
+  // Encoded into a staging buffer and flushed 240 bytes at a time, rather than
+  // four bytes per Serial.write. A ten-second clip is ~107,000 quads, and one
+  // USB CDC write per quad turns a transfer into a stall.
+  const uint8_t* raw = (const uint8_t*)samples;
+  char out[240];
+  size_t outUsed = 0;
+
+  for (size_t index = 0; index < byteCount; index += 3) {
+    const size_t remaining = byteCount - index;
+    const uint32_t chunk = ((uint32_t)raw[index] << 16) |
+                           (remaining > 1 ? (uint32_t)raw[index + 1] << 8 : 0) |
+                           (remaining > 2 ? (uint32_t)raw[index + 2] : 0);
+
+    out[outUsed++] = BASE64_ALPHABET[(chunk >> 18) & 0x3F];
+    out[outUsed++] = BASE64_ALPHABET[(chunk >> 12) & 0x3F];
+    out[outUsed++] = remaining > 1 ? BASE64_ALPHABET[(chunk >> 6) & 0x3F] : '=';
+    out[outUsed++] = remaining > 2 ? BASE64_ALPHABET[chunk & 0x3F] : '=';
+
+    if (outUsed == sizeof(out)) {
+      Serial.write((const uint8_t*)out, outUsed);
+      outUsed = 0;
+    }
+  }
+
+  if (outUsed > 0) {
+    Serial.write((const uint8_t*)out, outUsed);
+  }
+
+  // println, so the terminating newline is the one the Pi splits lines on.
+  Serial.println("\"}}");
+
+  pendingRequestId = idBuffer;
+  pendingToolName = "";
+  pendingSince = millis();
+  awaitingResponse = true;
+  pendingIsVoice = true; // Transcription takes ~10s; the lookup timeout would fire long before.
+}
+
+void recordAndReportMic(size_t pinIndex) {
   if (!micReady) {
     Serial.println("MIC error=not-initialised");
     showStatus("Microphone", "Not initialised", "");
     return;
   }
 
-  // PSRAM, not the heap: 64 KB is a fifth of the S3's SRAM, and this sketch
-  // already holds 49 KB of it. Checked because a failed allocation and a dead
+  // PSRAM, not the heap: the cap is 320 KB, which is the whole of this chip's
+  // SRAM and then some. Checked because a failed allocation and a dead
   // microphone produce exactly the same silence otherwise.
-  int16_t* samples = (int16_t*)ps_malloc(MIC_BRINGUP_BYTES);
+  int16_t* samples = (int16_t*)ps_malloc(MIC_MAX_BYTES);
   if (samples == nullptr) {
     // Almost always the build rather than the board: the XIAO has 8 MB of PSRAM,
     // but the Arduino default for this fqbn is PSRAM disabled, and ps_malloc
@@ -947,9 +1119,20 @@ void recordAndReportMic() {
     return;
   }
 
-  showStatus("Microphone", "Recording...", "");
-  const size_t bytesRead = mic.readBytes((char*)samples, MIC_BRINGUP_BYTES);
+  const size_t bytesRead = recordWhileHeld(samples, pinIndex);
   const size_t sampleCount = bytesRead / MIC_BYTES_PER_SAMPLE;
+
+  if (bytesRead == 0) {
+    free(samples);
+    Serial.println("MIC too-short");
+    showStatus("Listening", "Too short", "Hold and speak");
+    if (matrixReady) {
+      drawFace(false);
+      scheduleNextBlink();
+      matrixPush();
+    }
+    return;
+  }
 
   int16_t minSample = 0;
   int16_t maxSample = 0;
@@ -989,10 +1172,10 @@ void recordAndReportMic() {
     rms = (uint32_t)sqrt((double)(sumOfSquares / sampleCount));
   }
 
-  free(samples);
-
   // Plain text, not JSON: the Pi echoes unrecognised lines to its journal via
   // [serial-debug], which is exactly where these want to land during bring-up.
+  // Kept alongside the transcript because it is the one number that says whether
+  // an empty transcript means silence or a broken microphone.
   Serial.print("MIC samples=");
   Serial.print(sampleCount);
   Serial.print(" min=");
@@ -1004,7 +1187,11 @@ void recordAndReportMic() {
   Serial.print(" rms=");
   Serial.println(rms);
 
-  showStatus("Microphone", "rms " + String(rms), String(sampleCount) + " samples");
+  showStatus("Transcribing", String(sampleCount / (MIC_SAMPLE_RATE / 1000)) + "ms audio", "");
+  startMatrixThinking();
+  sendVoiceAudio(samples, bytesRead);
+
+  free(samples);
 }
 
 void setup() {
@@ -1181,8 +1368,7 @@ void onTouchStart(int pinIndex) {
 #if MIC_BRINGUP
   // Bring-up takes the pad over entirely. The lookup path is proven and is not
   // being changed here - it comes back by setting MIC_BRINGUP to 0.
-  (void)pinIndex;
-  recordAndReportMic();
+  recordAndReportMic((size_t)pinIndex);
   return;
 #else
   const char* toolName = TOUCH_TOOL_NAMES[pinIndex];
@@ -1225,6 +1411,7 @@ void sendToolLookupRequest(const char* toolName) {
   pendingToolName = toolName;
   pendingSince = millis();
   awaitingResponse = true;
+  pendingIsVoice = false;
 
   showStatus("Looking up", pendingToolName, "");
   startMatrixThinking();
@@ -1379,6 +1566,16 @@ void handleIncomingLine(const String& line) {
 
   awaitingResponse = false;
 
+  // Voice answers before the lookup branches, because its body is a transcript
+  // rather than a drawer and none of what follows applies to it. This is
+  // docs/PLAN-mic-bringup.md's whole scope: say a word, see the word. Turning
+  // the word into a drawer is PLAN-voice-lookup.md and is deliberately not here.
+  if (pendingIsVoice) {
+    pendingIsVoice = false;
+    handleVoiceResponse(doc);
+    return;
+  }
+
   const bool success = doc["success"] | false;
   if (!success) {
     showStatus("Didn't catch that", pendingToolName, doc["error"]["code"] | "lookup failed");
@@ -1431,10 +1628,64 @@ void handleIncomingLine(const String& line) {
   }
 }
 
+// The OLED is 128px wide in a 6px font, so 21 characters is the line. Whisper
+// returns a whole sentence and the screen shows what fits - the transcript also
+// goes out over serial in full, which is where a long one is actually readable.
+const size_t OLED_LINE_CHARS = 21;
+
+void handleVoiceResponse(JsonDocument& doc) {
+  if (!(doc["success"] | false)) {
+    const char* code = doc["error"]["code"] | "transcription failed";
+    Serial.print("VOICE error=");
+    Serial.println(code);
+    showStatus("Didn't catch that", code, "");
+    startBlinkPlan(1, 1000, 1000);
+    showMatrixUnknown(orange);
+    return;
+  }
+
+  const char* transcript = doc["body"]["transcript"] | "";
+  Serial.print("VOICE transcript=");
+  Serial.println(transcript);
+
+  // Whisper returns an empty string for silence rather than an error, so this
+  // is a real outcome and not a fault. The rms printed alongside the recording
+  // is what separates "the room was quiet" from "the microphone is broken".
+  if (strlen(transcript) == 0) {
+    showStatus("Heard nothing", "Hold and speak", "");
+    startBlinkPlan(3, 150, 150);
+    showMatrixSad(red);
+    return;
+  }
+
+  String heard(transcript);
+  showStatus("Heard", heard.substring(0, OLED_LINE_CHARS),
+             heard.length() > OLED_LINE_CHARS ? heard.substring(OLED_LINE_CHARS, OLED_LINE_CHARS * 2) : "");
+
+  // No row to blink and no drawer to point at - this endpoint only reports what
+  // was said. One short blink acknowledges it without borrowing a lookup's
+  // vocabulary.
+  startBlinkPlan(1, 200, 200);
+
+  // Straight back to idle. The matrix cannot show words, and holding any picture
+  // here would be inventing a meaning for one - the transcript is on the OLED,
+  // which is the half that can actually carry it.
+  if (matrixReady) {
+    matrixMode = MATRIX_EYES;
+    matrixEyesClosed = false;
+    drawFace(false);
+    scheduleNextBlink();
+    matrixPush();
+  }
+}
+
 void pollResponseTimeout() {
-  if (awaitingResponse && millis() - pendingSince > RESPONSE_TIMEOUT_MS) {
+  const uint32_t limit = pendingIsVoice ? VOICE_TIMEOUT_MS : RESPONSE_TIMEOUT_MS;
+  if (awaitingResponse && millis() - pendingSince > limit) {
     awaitingResponse = false;
-    showStatus("No response", pendingToolName, "Is the Pi service up?");
+    const bool wasVoice = pendingIsVoice;
+    pendingIsVoice = false;
+    showStatus("No response", wasVoice ? "Transcription" : pendingToolName, "Is the Pi service up?");
     startBlinkPlan(1, 1000, 1000); // Long blink: timeout.
     showMatrixAlert(red);
   }

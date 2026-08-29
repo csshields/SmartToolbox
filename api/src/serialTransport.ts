@@ -3,6 +3,16 @@ import { createReadStream, createWriteStream } from "node:fs";
 import type { Readable, Writable } from "node:stream";
 import type { SerialResponse } from "./serialProtocol";
 
+// A voice/audio line is one base64 blob of raw PCM and is by far the largest
+// thing on this wire: ten seconds of 16 kHz 16-bit mono is 320 KB, which base64
+// inflates to about 427 KB. The cap is that plus room for the JSON around it.
+//
+// Without a cap, a device that resets mid-line - or any stream that stops
+// producing newlines - grows this buffer until the process dies. Dropping the
+// partial line instead costs one recording, and the retry for a recording is
+// pressing the pad again.
+export const MAX_SERIAL_LINE_BYTES = 600_000;
+
 export class SerialLineBuffer {
   private remainder = "";
 
@@ -10,6 +20,11 @@ export class SerialLineBuffer {
     this.remainder += chunk.toString();
     const lines = this.remainder.split(/\r?\n/);
     this.remainder = lines.pop() ?? "";
+
+    if (this.remainder.length > MAX_SERIAL_LINE_BYTES) {
+      this.remainder = "";
+    }
+
     return lines.filter((line) => line.trim());
   }
 }
