@@ -2,8 +2,8 @@
 title: Plan of Attack - Microphone Bring-Up (say a word, read it on the OLED)
 scope: bring-up plan, written 2026-08-28 - PDM mic to Whisper to OLED, no tool matching
 references: https://wiki.seeedstudio.com/xiao_esp32s3_sense_mic/
-status: Step 1 COMPLETE - RMS gate passed on hardware 2026-08-29, 12x silence to speech.
-  Step 2 next; listening indicator designed 2026-08-29, not started
+status: Steps 1-4 BUILT and deployed as 0.20.0 on 2026-08-29 - hold-to-talk, sound wave,
+  voice/audio to Whisper, transcript to the OLED. Not yet exercised by a human at the box.
 ---
 
 # Plan: say a word, see the word
@@ -260,6 +260,11 @@ but drops samples has traded the thing being built for the picture of it.
 
 ## Step 2 - the audio reaches the Pi and is playable
 
+**Built 2026-08-29 in 0.20.0.** `sendVoiceAudio` streams one base64 line out of PSRAM;
+`parseVoiceAudioBody` and `pcmToWav` in `api/src/voice.ts` decode it and prepend the
+header. The base64 encoder was checked against Bun's at every length from 1 to 600 bytes,
+which covers all three padding cases.
+
 Send the recording to the Pi as **one line** of base64 raw PCM on a new `voice/audio`
 serial endpoint, per PLAN-voice-lookup.md's wire format. The Pi decodes it, prepends the
 44-byte WAV header, and writes the file to disk. Nothing else.
@@ -282,6 +287,13 @@ it never arrives, the line-length work is wrong. Whisper is not yet in the pictu
 
 ## Step 3 - Whisper returns a string, into the log
 
+**Built 2026-08-29 in 0.20.0.** `transcribeAudio` in `api/src/voice.ts`. The NAS runs
+`whisper-asr-webservice` 1.9.1; the endpoint is `POST /asr?task=transcribe&output=txt`
+with a multipart `audio_file` field, taken from the service's own `/openapi.json` rather
+than assumed - the field name differs from OpenAI's and a wrong one returns a bare 422.
+Exercised end to end from a workstation against the real NAS before it reached the device:
+~9.3s for one second of audio once warm, over 30s on the first call after an idle container.
+
 The Pi posts the WAV to the configured provider and logs the transcript. Still no
 response to the device.
 
@@ -297,6 +309,11 @@ and the automatic one does not, the bug is in this project. If neither works, it
 provider or the audio format, and the WAV in your hand tells you which.
 
 ## Step 4 - the string comes back and lands on the OLED
+
+**Built 2026-08-29 in 0.20.0.** `handleVoiceResponse` in the sketch. An empty transcript
+is treated as a real outcome rather than an error - it is what silence sounds like - and
+the rms is still printed beside every recording, because it is the one number that
+separates a quiet room from a broken microphone.
 
 Answer the `voice/audio` request with the transcript, and have the firmware show it via
 the existing `showStatus`.

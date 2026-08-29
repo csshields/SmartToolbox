@@ -1181,7 +1181,7 @@ Hardware Bring-Up table for what that looks like in practice.
   by `api/src/db.test.ts`.
 - **Successful response**: `{"id":"req-001","success":true,"body":{...}}`
 - **Error response**: `{"id":"req-001","success":false,"error":{"code":"INVALID_REQUEST","message":"drawer_label is required"}}`
-- **Audio**: **Status: Planned.** Push-to-talk audio is carried on this same link as a single base64 line on a `voice/audio` request - raw 16 kHz 16-bit mono PCM, roughly 171 KB of base64 for four seconds. The recording runs for as long as the button is held (300 ms minimum, 10 s cap), so its length is not known when the transfer starts: the device sends samples plus `sampleRate`/`channels` and **the Pi prepends the WAV header**. An earlier draft of this document called for a separate chunked transfer protocol; that was reconsidered and rejected in `docs/PLAN-voice-lookup.md`, which records why (a chunked protocol needs reassembly state, partial-upload timeouts, and a resync path, where a single line needs only a retry - and the retry is pressing the button again). Raw binary framing was also rejected: the transport splits on newlines and PCM is full of `0x0A`. This means `SerialLineBuffer` must grow a maximum line length, and the `[serial-debug]` log must truncate.
+- **Audio**: **Status: Implemented** 2026-08-29 (0.20.0), `api/src/voice.ts` and `sendVoiceAudio` in the sketch. Push-to-talk audio is carried on this same link as a single base64 line on a `voice/audio` request - raw 16 kHz 16-bit mono PCM, roughly 171 KB of base64 for four seconds. The recording runs for as long as the button is held (300 ms minimum, 10 s cap), so its length is not known when the transfer starts: the device sends samples plus `sampleRate`/`channels` and **the Pi prepends the WAV header**. An earlier draft of this document called for a separate chunked transfer protocol; that was reconsidered and rejected in `docs/PLAN-voice-lookup.md`, which records why (a chunked protocol needs reassembly state, partial-upload timeouts, and a resync path, where a single line needs only a retry - and the retry is pressing the button again). Raw binary framing was also rejected: the transport splits on newlines and PCM is full of `0x0A`. `SerialLineBuffer` has a maximum line length (`MAX_SERIAL_LINE_BYTES`, 600 KB) and the `[serial-debug]` echo truncates at 300 characters - both because a device that resets mid-line would otherwise grow the buffer until the process dies, and a mangled audio line landing in `service.log` in full would bury the lines that explain it. **Transcription is slow enough to need its own timeout:** measured against this NAS, one second of audio takes ~9.3s warm and the first call after an idle container exceeded 30s while the model loaded. The Pi allows 90s, the device 100s - the device deliberately longer, so it never abandons a request the Pi is still working on. The 2s `RESPONSE_TIMEOUT_MS` used for lookups would fire before Whisper had started.
 - **Connectivity**:
   - XIAO ESP32S3 writes/reads framed JSON messages over its USB serial connection
   - Pi Zero 2 process listens on the serial device and dispatches to the same handlers used for the HTTP API
@@ -1414,7 +1414,7 @@ listening state below is the one exception and is marked as such.
 | Waiting | A 16-cell ring with six lit, turning one step every 90ms | Purple, white leading cell | Powered on, the Pi has not answered yet |
 | Still waiting | The spinner stops; face with a frown | Purple | Past 90s with no reply - not an error, see Startup Readiness |
 | Idle | Face with a smile, blinking every 2-6s | Purple | Nothing happening |
-| Listening | **Status: Planned.** An irregular 8-column wave, one step every 100ms | Ramped cyan/blue/purple/pink by row | Recording while the pad is held - see `docs/PLAN-mic-bringup.md` |
+| Listening | An irregular 8-column wave, one step every 100ms | Ramped cyan/blue/purple/pink by row | Recording while the pad is held - see `docs/PLAN-mic-bringup.md` |
 | Thinking | Mismatched eyes - the left a row taller than the right - and a mouth cycling through 0-3 dots every 280ms | Purple | A lookup is in flight |
 | Found | The lit row for 2s, then the row digit for 4s | Green / orange by certainty | The tool is in that row |
 | Found, no row | The whole indicator band | Green / orange by certainty | Known drawer, no row assigned |
@@ -1507,7 +1507,14 @@ has run on hardware.
 
 ### Feature 2: Tool Drawer Requests (Voice-Activated)
 
-**Status: Partial** - the microphone is no longer the blocker and is no longer unproven:
+**Status: Partial** - **voice reaches Whisper and the transcript reaches the OLED** as of
+2026-08-29 (0.20.0): hold the pad, speak, and what you said appears on the screen. What
+is still missing is the half that turns those words into a drawer - `resolveToolQuery`
+does not exist, so nothing is matched or looked up yet. That is
+`docs/PLAN-voice-lookup.md`, deliberately a separate change. The wake word remains out of
+scope entirely.
+
+The microphone is no longer the blocker and is no longer unproven:
 it is the XIAO's own PDM mic on the Sense board, and as of 2026-08-29 (0.19.0) it has
 been shown on hardware to carry actual audio, not merely data - a DC-corrected RMS of 17
 in a quiet room against 210 when spoken into, with the loud sample swinging negative for
