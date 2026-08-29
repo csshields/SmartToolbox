@@ -126,6 +126,25 @@ Copy-Item $builtBin $targetPath -Force
 $sizeKb = [math]::Round((Get-Item $targetPath).Length / 1KB, 1)
 Write-Host "Wrote $targetPath ($sizeKb KB)" -ForegroundColor Green
 
+# The merged image is the whole 8 MB flash - bootloader, partition table, otadata
+# and application. OTA does not want it (the device writes the app binary into
+# the inactive slot itself), but flash-device.sh can only use this: an app-only
+# binary written to app0 while otadata points at app1 reports success and changes
+# nothing. Published alongside so a known-good image is always on the Pi when the
+# recovery path is needed - which is never a moment to be rebuilding one.
+$builtMerged = Join-Path $buildDir "smarttoolbox.ino.merged.bin"
+$mergedName = "smarttoolbox-$Version.merged.bin"
+$mergedPath = Join-Path $dropDir $mergedName
+$haveMerged = Test-Path $builtMerged
+
+if ($haveMerged) {
+	Copy-Item $builtMerged $mergedPath -Force
+	$mergedMb = [math]::Round((Get-Item $mergedPath).Length / 1MB, 1)
+	Write-Host "Wrote $mergedPath ($mergedMb MB, for flash-device)" -ForegroundColor Green
+} else {
+	Write-Warning "No merged image at $builtMerged - USB flashing will not have one for $Version."
+}
+
 if ($Push) {
 	$sshOptions = @(
 		"-i", $KeyPath,
@@ -154,6 +173,23 @@ if ($Push) {
 	ssh @sshOptions $PiHost "mv ~/smarttoolbox/firmware/$targetName.tmp ~/smarttoolbox/firmware/$targetName"
 	if ($LASTEXITCODE -ne 0) {
 		throw "Could not publish the uploaded image (exit code $LASTEXITCODE)"
+	}
+
+	# Same tmp-then-rename dance. It matters less here - nothing scans for merged
+	# images the way the OTA endpoint scans for app binaries - but a half-copied
+	# 8 MB file that looks flashable is exactly the wrong thing to find during a
+	# recovery.
+	if ($haveMerged) {
+		Write-Host "Pushing merged image for USB flashing..."
+		scp @sshOptions $mergedPath "${PiHost}:~/smarttoolbox/firmware/$mergedName.tmp"
+		if ($LASTEXITCODE -ne 0) {
+			throw "scp of the merged image failed with exit code $LASTEXITCODE"
+		}
+
+		ssh @sshOptions $PiHost "mv ~/smarttoolbox/firmware/$mergedName.tmp ~/smarttoolbox/firmware/$mergedName"
+		if ($LASTEXITCODE -ne 0) {
+			throw "Could not publish the uploaded merged image (exit code $LASTEXITCODE)"
+		}
 	}
 
 	Write-Host "$targetName is now available on the Pi." -ForegroundColor Green

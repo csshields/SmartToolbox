@@ -87,3 +87,24 @@ test("treats an unparseable reported version as out of date", () => {
   expect(isUpdateAvailable(latest, "garbage")).toBe(true);
   expect(isUpdateAvailable(latest, "")).toBe(true);
 });
+
+test("ignores the merged flash images that sit beside the app binaries", () => {
+  // release-firmware.ps1 publishes smarttoolbox-<v>.merged.bin alongside the app
+  // binary, for the USB recovery path in docs/PLAN-usb-flashing.md. Those must
+  // never be served over OTA: a merged image is the whole 8 MB flash, and a
+  // device handed one as an application update would write a bootloader into its
+  // app partition. The file pattern is anchored so they cannot match - this test
+  // is here so that stays true if anyone ever loosens it.
+  const directory = fixtureDir([
+    "smarttoolbox-0.2.0.bin",
+    "smarttoolbox-0.9.0.merged.bin",
+  ]);
+
+  expect(findLatestFirmware(directory)?.version).toBe("0.2.0");
+});
+
+test("ignores a merged image even when it is the only file present", () => {
+  const directory = fixtureDir(["smarttoolbox-0.9.0.merged.bin"]);
+
+  expect(findLatestFirmware(directory)).toBeNull();
+});

@@ -25,7 +25,7 @@
 // api/scripts/release-firmware.ps1 on release, and compared against the Pi's
 // drop folder to decide whether an OTA update is available - keep the exact
 // `#define FIRMWARE_VERSION "x.y.z"` shape so the script can find it.
-#define FIRMWARE_VERSION "0.21.1"
+#define FIRMWARE_VERSION "0.21.2"
 
 const int LED_PIN = LED_BUILTIN; // Active-low: LOW = on, HIGH = off.
 const int LED_ON = LOW;

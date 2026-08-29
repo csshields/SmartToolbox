@@ -1,0 +1,9 @@
+# core.autocrlf is true on the Windows dev machine, so anything checked out here
+# gets CRLF by default. That is fine for files that stay on Windows and fatal for
+# a shell script that gets copied to the Pi and run: bash reports
+# `$'\r': command not found` on the first line, which reads like a corrupt file
+# rather than a line-ending problem.
+*.sh text eol=lf
+
+# Same reasoning in reverse - these only ever run on Windows.
+*.ps1 text eol=crlf

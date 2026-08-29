@@ -1,8 +1,9 @@
 ---
 title: Plan of Attack - Flashing the XIAO from the Pi, over the cable already there
 scope: implementation plan, written 2026-08-29 - esptool over USB, and a way back from a brick
-status: Steps 0 and 1 PASSED on hardware 2026-08-29 - the Pi flashed the device over USB,
-  verified, in 51s. Steps 2 (scripts) and 3 (recover a brick) not started.
+status: Steps 0, 1 and 2 DONE on hardware 2026-08-29 - one command from Windows flashes
+  the device in ~48s. Step 3 (recover a real brick) not started, and it is the one that
+  turns this from a convenience into the recovery path it was written to be.
 ---
 
 # Plan: the Pi flashes the device, over the wire it already talks on
@@ -222,6 +223,42 @@ That means a trap/finally, not a linear script.
 
 **Done when:** one command from Windows puts a named version on the device, and killing
 it halfway still leaves `smarttoolbox.service` running.
+
+### Built - 2026-08-29
+
+- `api/scripts/flash-device.sh` on the Pi, `api/scripts/flash-device.ps1` from Windows.
+  Both are synced by `sync.ps1`, which already copies `api/scripts/`.
+- `release-firmware.ps1` now publishes `smarttoolbox-<version>.merged.bin` beside the app
+  binary, with the same upload-then-rename it already used, so a known-good image is
+  always on the Pi. A recovery is never the moment to be rebuilding one.
+- `flash-device.ps1 -List` shows what the Pi can flash; `-Upload` pushes a locally built
+  image for a version that was never released.
+
+Proved end to end: released 0.21.2, listed it, flashed it, confirmed. 48s wall clock,
+`Hash of data verified`, service back to `active`.
+
+**Three things worth keeping.**
+
+**The confirmation watches uptime, not the version.** Flashing the same version the device
+is already running is a legitimate thing to do - it is what you do when you suspect the
+flash itself - and the version alone cannot tell that apart from nothing having happened.
+A fresh `uptimeMs` can.
+
+**`.gitattributes` now pins `*.sh` to LF.** `core.autocrlf` is true on the Windows dev
+machine, so a committed shell script would be checked out with CRLF and copied to the Pi
+that way, where bash reports `$'': command not found` on line one - which reads like a
+corrupt file rather than a line-ending problem.
+
+**esptool's progress output is thinned to one line in sixty.** It prints one
+`Writing at 0x...` per block, about 600 of them, which buries the lines that actually say
+something: the chip it found, the compressed size, whether the hash verified. `VERBOSE=1`
+brings them back. The awk that does it deliberately avoids `match($0, re, arr)`, which is
+a gawk extension that fails at parse time under mawk.
+
+**A guard the plan did not ask for but should have.** `flash-device.sh` refuses any image
+under 2 MB. Writing the 1 MB app binary at `0x0` would overwrite the bootloader with
+application code and produce precisely the brick this script exists to repair - and it is
+an easy mistake, because both files sit in the same folder with almost the same name.
 
 ## Step 3 - prove it recovers a brick
 
