@@ -1,7 +1,7 @@
 ---
 title: Plan of Attack - Wireless (OTA) Firmware Updates
 scope: implementation plan, written 2026-08-27
-status: complete
+status: complete - revised 2026-08-28, see the boot-race note below
 ---
 
 > **Done 2026-08-27.** The device pulled `smarttoolbox-0.4.0.bin` (1,046,256 bytes)
@@ -15,6 +15,33 @@ status: complete
 >
 > Not tested: recovery from a transfer interrupted mid-write. The dual-partition
 > mechanism makes it safe in principle, but the path was never deliberately exercised.
+>
+> **2026-08-28 - the boot check cannot win a cold start, and never could.** Three
+> releases (0.12.0 through 0.14.0) went by without the device taking any of them, and
+> the reason turned out to be structural rather than a bug in this plan's code. The
+> check ran only in `setup()`, and on a whole-box power-on it runs far too early:
+>
+> | | time from power-on |
+> |---|---|
+> | Pi finishes booting (5.2s kernel + 31.4s userspace) | **36.6s**, before the API accepts anything |
+> | XIAO starts asking | ~3.5s |
+> | XIAO gives up (25s Wi-Fi timeout) | **~30s** |
+>
+> The device gives up roughly ten seconds before the server it is asking exists. The
+> earlier successes were not luck: the XIAO was being reset *by itself* against a Pi
+> that had been running for some time, which is the only condition under which the
+> boot check can work at all. It presents as `Update failed` with a **negative**
+> status, because `HTTPClient` returns its own error codes rather than an HTTP one -
+> so the number on the screen is the diagnosis, and its sign is the important part.
+>
+> Fixed in 0.16.0 two ways: the check now also runs on a timer while the device is
+> up - two minutes after boot, then every thirty minutes, and only while idle - and
+> the outcome of the last check is held and printed once the serial link is proven.
+> That second half matters more than it sounds: the boot check runs before the Pi has
+> the port open, and the S3's native USB CDC discards anything written while no host
+> is attached, so **the entire boot-time OTA log had been going into a void**. Every
+> attempt to debug this from the Pi's journal was reading a log that structurally
+> could not contain the answer.
 
 # Plan: OTA Firmware Updates for the XIAO
 

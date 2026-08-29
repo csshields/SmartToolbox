@@ -80,7 +80,7 @@ Updated 2026-08-27. This table is the single place to check what is physically w
 | SenseCraft model | Not deployed | **Blocks Feature 3.** Nothing to detect until a model is trained and flashed |
 | OLED (Grove SSD1315 0.96") | Verified | On the I2C connector, GPIO5/GPIO6. Driven with U8g2 (`U8G2_SSD1306_128X64_NONAME_F_HW_I2C`); the SSD1315 is SSD1306-compatible. Shows lookup status and the exact drawer label |
 | Grove 8x8 matrix | Verified | Wired and working. Idle purple face; thinking face while a lookup is in flight; then the outcome - see Matrix States. Mounted a quarter turn out, so the firmware sets `DISPLAY_ROTATE_270` every boot - that setting lives on the panel and survives power cycles |
-| Microphone | Attached, uninitialised | The XIAO's own PDM mic on the Sense board, fitted 2026-08-28. GPIO 42 clock, GPIO 41 data. No sketch has initialised it yet, so it is unproven here - bring it up alone before building on it, which is what `docs/PLAN-mic-bringup.md` is for. The feature it feeds is `docs/PLAN-voice-lookup.md` |
+| Microphone | Records on hardware; audio not yet confirmed | The XIAO's own PDM mic on the Sense board, fitted 2026-08-28. GPIO 42 clock, GPIO 41 data. Proven 2026-08-28 in 0.15.0: `Mic ready=1`, and a full 32,000-sample two-second read into PSRAM. The mic rides on a **positive DC bias** (samples run ~+981 to +2568, never crossing zero), so RMS must be taken about the mean - measuring raw samples reads the offset, not the sound. Corrected in 0.17.0. The remaining gate is `docs/PLAN-mic-bringup.md` Step 1: DC-corrected RMS multiplying when spoken into. The feature it feeds is `docs/PLAN-voice-lookup.md` |
 | PIR motion sensor | Deferred | Needs two GPIO. No longer necessarily blocked - the Pi's 40-pin header is free; see the Open Hardware Question |
 | Grove Red LED Button | **Mis-wired** | Currently plugged into the Grove I2C Hub, where it cannot work: it is a passive switch and LED with no I2C chip, so its two pins land on SDA and SCL. The LED is lit only because a bus line idles high. **Pressing it disturbs the I2C bus** the OLED and matrix depend on. Unplug it until it has real GPIO |
 | Pi 40-pin GPIO header | Free, unpopulated | 26 usable GPIO, nothing in this project uses them. `gpioget`/`gpiomon` (libgpiod) are installed and `/dev/gpiochip0` is present - confirmed 2026-08-27 |
@@ -98,7 +98,7 @@ Updated 2026-08-27. This table is the single place to check what is physically w
 
 ### Firmware Project - XIAO ESP32S3
 - **Hardware**: Seeed XIAO ESP32S3 + Grove Vision AI Module (V2) with OV5647 camera
-- **Sensors**: Vision (Grove Vision AI + OV5647); external IMU and microphone hardware are not yet selected
+- **Sensors**: Vision (Grove Vision AI + OV5647) and the on-board PDM microphone on the Sense board; external IMU hardware is not yet selected
 - **Connectivity**: Wired USB serial to Raspberry Pi Zero 2 (MVP scope; Wi-Fi and BLE are future-only)
 - **Purpose**: Capture sensor data, control LEDs, communicate with API server
 
@@ -181,7 +181,8 @@ When working on this project:
 - [ ] **Next: Deploy a SenseCraft model** so `vision/observe` carries real labels
 - [x] Implement Wi-Fi OTA firmware updates (see Feature 4 in Firmware Specifications)
 - [ ] Wire the I2C hub, OLED, and 8x8 matrix
-- [ ] Select microphone hardware
+- [x] Select microphone hardware - the XIAO's own PDM mic on the Sense board, fitted 2026-08-28
+- [ ] Prove the microphone on hardware (`docs/PLAN-mic-bringup.md` Step 1)
 - [ ] Add power management
 
 ## Notes
@@ -841,7 +842,7 @@ ssh -i "$env:USERPROFILE\.ssh\smarttoolbox_pi_ed25519" shields@192.168.50.30
 `docs/xiao-screenshot.PNG` for the exact part)
 - **MCU**: Espressif ESP32-S3
 - **Connectivity**: Wi-Fi and BLE are available; the MVP connects to the Pi Zero 2 over **wired USB serial** (USB-C, CDC/ACM), not Wi-Fi
-- **Memory**: 8MB PSRAM, 8MB flash. **PSRAM is off in the shipped build** - `release-firmware.ps1` compiles a bare `esp32:esp32:XIAO_ESP32S3`, and the board's default PSRAM menu option is `disabled`. Anything needing a large buffer must set `:PSRAM=opi`.
+- **Memory**: 8MB PSRAM, 8MB flash. **PSRAM is on as of 2026-08-28**, and was off before that: a bare `esp32:esp32:XIAO_ESP32S3` takes the first entry of every board menu, and for PSRAM that is `disabled`, so `ps_malloc` returned null in every binary this repo had released. `release-firmware.ps1` now compiles `esp32:esp32:XIAO_ESP32S3:PSRAM=opi`; verify with `arduino-cli compile --show-properties`, where the bare fqbn shows an empty `build.defines` and the corrected one shows `-DBOARD_HAS_PSRAM`. **Any manual `arduino-cli` invocation must carry `:PSRAM=opi` too** - the microphone buffer cannot be allocated without it, and the failure presents as a dead mic rather than a build error.
 - **Power**: 3.3V, rechargeable battery support
 - **Physical stack, confirmed 2026-08-28.** Three boards, three different connectors, all
   fitted at once. Recorded because an earlier revision of this document asserted they
@@ -1436,11 +1437,13 @@ has run on hardware.
 
 ### Feature 2: Tool Drawer Requests (Voice-Activated)
 
-**Status: Blocked** - no microphone hardware has been selected, and the OLED and matrix
-are not wired. The wake-word and Whisper pipeline below is design only; none of it has
-been built or tested. The API half of the flow does exist and works today via
-`GET /api/tools/lookup` and the `tools/lookup` serial endpoint, so the lookup can be
-exercised from the dashboard without any of this.
+**Status: Partial** - the microphone is no longer the blocker: it is the XIAO's own PDM
+mic on the Sense board, and the firmware initialises it as of 2026-08-28, though that
+code has not yet been run on hardware. The matrix is wired; the LED strip that row
+indication is moving to is not. The wake-word and Whisper pipeline below is design
+only; none of it has been built or tested. The API half of the flow does exist and
+works today via `GET /api/tools/lookup` and the `tools/lookup` serial endpoint, so the
+lookup can be exercised from the dashboard without any of this.
 
 `docs/PLAN-voice-lookup.md` is the implementation plan for this feature. It uses the
 XIAO's **on-board PDM microphone**, and the audio travels to the Pi **over the USB serial
@@ -2037,8 +2040,9 @@ Use consistent data formats across both projects:
 
 ## Phase 3: Advanced Features
 - [ ] Resolve the GPIO expansion question (unblocks PIR and button)
-- [ ] Select microphone hardware
-- [ ] Implement microphone recording and the chunked audio transfer protocol
+- [x] Select microphone hardware - the XIAO's own PDM mic on the Sense board, fitted 2026-08-28
+- [ ] Prove the microphone on hardware (`docs/PLAN-mic-bringup.md` Step 1)
+- [ ] Carry the audio to the Pi as a single base64 line (the chunked protocol was rejected - see Communication Protocol)
 - [ ] Optimize power consumption
 
 ## Phase 4: Polish
