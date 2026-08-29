@@ -128,6 +128,7 @@ uint32_t nextWaitingRetryAt = 0;
 // expression, not a failure state: the retry continues either way.
 const uint32_t WAITING_LONG_MS = 90000;
 uint32_t waitingSince = 0;
+bool waitingLong = false;
 
 // The boot check alone let three releases go by unnoticed: the device only
 // looked for an update in the first seconds after power-on, so a box that
@@ -578,18 +579,8 @@ void updateMatrix() {
   }
 
   if (matrixMode == MATRIX_WAITING) {
-    // Past 90 seconds the spinner stops and the face drops. Purple, not the
-    // not-found red: a box still waiting on a server that has not finished
-    // booting has nothing to report as an error, and spending the alert here
-    // would leave nothing louder for a lookup that genuinely fails.
-    if (millis() - waitingSince >= WAITING_LONG_MS) {
-      if (matrixSpinNextAt != 0) {
-        matrixSpinNextAt = 0; // Drawn once, then held.
-        showStatus("SmartToolbox", "No reply from Pi", "v" FIRMWARE_VERSION);
-        drawSadFace(EYE_COLOR);
-        matrixPush();
-      }
-      return;
+    if (waitingLong) {
+      return; // The face is drawn once by enterWaitingLong and then held.
     }
 
     if (millis() >= matrixSpinNextAt) {
@@ -665,7 +656,31 @@ void showWaitingStatus() {
   // The version stays on screen because this is exactly when someone wants to
   // know what is running, and the line it replaces ("Touch a pad") is an
   // instruction the box cannot honour yet.
-  showStatus("SmartToolbox", "Waiting for Pi", "v" FIRMWARE_VERSION);
+  showStatus("SmartToolbox", waitingLong ? "No reply from Pi" : "Waiting for Pi",
+             "v" FIRMWARE_VERSION);
+}
+
+// Past 90 seconds the spinner stops and the face drops. Purple, not the
+// not-found red: a box still waiting on a server that has not finished booting
+// has nothing to report as an error, and spending the alert here would leave
+// nothing louder for a lookup that genuinely fails.
+//
+// Polled from loop() rather than from updateMatrix, where this began. That
+// function returns early when no matrix is attached, which made the OLED line
+// depend on a peripheral it has nothing to do with - and a box with no matrix
+// is exactly the one that needs the screen to say something.
+void pollWaitingLong() {
+  if (deviceReady || waitingLong || millis() - waitingSince < WAITING_LONG_MS) {
+    return;
+  }
+  waitingLong = true;
+
+  showWaitingStatus();
+
+  if (matrixReady) {
+    drawSadFace(EYE_COLOR);
+    matrixPush();
+  }
 }
 
 // Entered before the OTA check rather than at the end of setup(). That check
@@ -675,6 +690,7 @@ void showWaitingStatus() {
 // live. The face has to go up before anything that can block.
 void startWaitingForPi() {
   deviceReady = false;
+  waitingLong = false;
   waitingSince = millis();
   nextWaitingRetryAt = millis(); // Retry as soon as loop() runs.
 
@@ -695,6 +711,7 @@ void promoteToReady() {
     return;
   }
   deviceReady = true;
+  waitingLong = false;
 
   // This is the earliest moment a host is provably reading, which is exactly
   // what the OTA log needs - see reportLastOtaResult.
@@ -1070,6 +1087,7 @@ void setup() {
   // goes back up here. "Ready" is no longer said at the end of setup(): it is
   // said by promoteToReady, when the Pi has actually answered.
   sendDeviceStatus();
+  nextWaitingRetryAt = millis() + WAITING_RETRY_MS; // That send was the first retry.
   showWaitingStatus();
 }
 
@@ -1078,6 +1096,7 @@ void loop() {
   pollSerialResponses();
   pollResponseTimeout();
   pollWaitingRetry();
+  pollWaitingLong();
   pollDeviceStatus();
 #if OTA_ENABLED
   pollFirmwareUpdate();

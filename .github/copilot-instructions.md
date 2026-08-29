@@ -1245,8 +1245,8 @@ void loop() {
 ### Startup Readiness
 
 **Status: Implemented** - `startWaitingForPi` / `promoteToReady` /
-`pollWaitingRetry` in `firmware/smarttoolbox/smarttoolbox.ino`. Written 2026-08-29,
-**not yet run on hardware**; see `docs/PLAN-startup-readiness.md`.
+`pollWaitingRetry` / `pollWaitingLong` in `firmware/smarttoolbox/smarttoolbox.ino`.
+Written 2026-08-29, **not yet run on hardware**; see `docs/PLAN-startup-readiness.md`.
 
 Both halves of the box boot from the same power and do not arrive together:
 
@@ -1280,6 +1280,9 @@ The fast half waits. **No change to the Pi** - there is nothing it can do about 
   instead and recording never involves the Pi.
 - **No timeout that gives up.** Past `WAITING_LONG_MS` (90s) the spinner stops and the
   face drops, but the retry continues - a change of expression, not a failure state.
+  `pollWaitingLong` runs from `loop()`, deliberately not from `updateMatrix`: that
+  function returns early when no matrix is attached, and a box with no matrix is exactly
+  the one whose OLED needs to say something.
 
 **`handleIncomingLine` parses before it checks `awaitingResponse`, and that ordering is
 load-bearing.** `sendDeviceStatus` never claims the pending slot - by design, so a
