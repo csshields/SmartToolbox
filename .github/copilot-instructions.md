@@ -1242,6 +1242,57 @@ void loop() {
 }
 ```
 
+### Startup Readiness
+
+**Status: Implemented** - `startWaitingForPi` / `promoteToReady` /
+`pollWaitingRetry` in `firmware/smarttoolbox/smarttoolbox.ino`. Written 2026-08-29,
+**not yet run on hardware**; see `docs/PLAN-startup-readiness.md`.
+
+Both halves of the box boot from the same power and do not arrive together:
+
+| | time from power-on |
+|---|---|
+| XIAO starts asking for a firmware update | ~3.5s |
+| XIAO gives up on that check (25s Wi-Fi timeout) | ~30s |
+| **Pi finishes booting** (5.2s kernel + 31.4s userspace) | **36.6s** |
+| Pi's API accepts its first request | later still |
+
+The device used to say `Ready` for that whole window and mean nothing by it. A touch
+went into a void and painted `No response - Is the Pi service up?`, which is a question
+it is not entitled to ask while the Pi is merely booting, and the boot `device/status`
+went to a port nobody had open, so the dashboard showed no firmware version at all.
+
+The fast half waits. **No change to the Pi** - there is nothing it can do about a
+31-second userspace, and a device that copes is worth more than a server that hurries.
+
+- `setup()` ends in **WAITING**, not READY, and enters it **before** the OTA check.
+  That check blocks for up to `WIFI_CONNECT_TIMEOUT_MS`, so entering WAITING at the end
+  of `setup()` would put the spinner up at ~30s - six seconds before the Pi answers, in
+  the one case the state exists for.
+- While waiting, `device/status` goes out every **2 seconds** (`WAITING_RETRY_MS`),
+  deliberately without the `awaitingResponse` guard `pollDeviceStatus` uses: that guard
+  is right for a heartbeat and fatal here, where one unanswered request would wedge the
+  device in WAITING forever.
+- **Any parsed reply promotes**, success or error. This is about proving the wire works
+  end to end, not about the Pi liking the message.
+- Touches during WAITING do not send lookups. The guard sits *inside* the lookup path,
+  not at the top of `onTouchStart`, because with `MIC_BRINGUP` set the pad records
+  instead and recording never involves the Pi.
+- **No timeout that gives up.** Past `WAITING_LONG_MS` (90s) the spinner stops and the
+  face drops, but the retry continues - a change of expression, not a failure state.
+
+**`handleIncomingLine` parses before it checks `awaitingResponse`, and that ordering is
+load-bearing.** `sendDeviceStatus` never claims the pending slot - by design, so a
+heartbeat cannot cancel a lookup someone is waiting on - so with the guard first, the
+Pi's reply to it was dropped before anything looked at the line. The handshake this
+whole path waits for could not arrive. Anything that reorders that function must keep
+the parse first.
+
+**`reportLastOtaResult` fires from `promoteToReady`, not from the first heartbeat.**
+Promotion is the moment a host is provably reading; the first heartbeat was an
+approximation of it that the 2-second waiting retry invalidates. See OTA Updates for why
+the boot-time OTA log has to be held at all.
+
 ## Code Organization
 
 - Use separate .h/.cpp files for each sensor module
@@ -1352,17 +1403,32 @@ Add to Arduino Library Manager:
 #### Matrix States
 
 **Status: Implemented** - `updateMatrix` in `firmware/smarttoolbox/smarttoolbox.ino`.
-Three modes: `MATRIX_EYES`, `MATRIX_THINKING`, `MATRIX_RESULT`.
+Four modes: `MATRIX_WAITING`, `MATRIX_EYES`, `MATRIX_THINKING`, `MATRIX_RESULT`. The
+listening state below is the one exception and is marked as such.
 
 | State | Shown | Colour | Meaning |
 |---|---|---|---|
+| Waiting | A 16-cell ring with six lit, turning one step every 90ms | Purple, white leading cell | Powered on, the Pi has not answered yet |
+| Still waiting | The spinner stops; face with a frown | Purple | Past 90s with no reply - not an error, see Startup Readiness |
 | Idle | Face with a smile, blinking every 2-6s | Purple | Nothing happening |
+| Listening | **Status: Planned.** An irregular 8-column wave, one step every 100ms | Ramped cyan/blue/purple/pink by row | Recording while the pad is held - see `docs/PLAN-mic-bringup.md` |
 | Thinking | Mismatched eyes - the left a row taller than the right - and a mouth cycling through 0-3 dots every 280ms | Purple | A lookup is in flight |
 | Found | The lit row for 2s, then the row digit for 4s | Green / orange by certainty | The tool is in that row |
 | Found, no row | The whole indicator band | Green / orange by certainty | Known drawer, no row assigned |
 | Not found | Face with a frown | Red | Understood the word, the tool is in no drawer |
 | Not understood | Question mark | Orange | The Pi could not interpret the request |
-| No response | The whole indicator band | Red | The Pi never answered within the timeout |
+| No response | A filled triangle with the exclamation mark knocked out | Red | The Pi never answered within the timeout |
+
+The waiting spinner is deliberately not a face. The idle smiley means "I am fine"
+everywhere else in the sketch, and during the boot window the box is not fine - it is
+early. Six of the ring's sixteen cells are lit so the gap is what reads; the leading
+cell is white because a uniform arc does not say which way it is turning.
+
+The alert triangle is filled with the exclamation mark left *unlit* rather than drawn.
+At 8x8 an outline triangle loses its shape and a drawn-on mark has nowhere to sit. It
+replaced a solid red band, which was the loudest thing the panel can do and the least
+specific - it said "bad" and nothing else, and read more like a hardware fault than a
+message.
 
 The digit gets twice the row's time: it is the half you have to read and carry to the
 box, and two seconds was gone before you had looked up. The faces and the alert band
@@ -1384,7 +1450,8 @@ Question. The face states below are unaffected and are what the matrix keeps.
 **Not found and not understood are different answers and must look different.** All
 three failure paths used to draw the same red band, so "it isn't in any drawer", "I
 could not make sense of that", and "the Pi is not responding" were indistinguishable
-from across a workshop. The frown is the idle smile inverted, which reads as the box's
+from across a workshop. The last of those is now a triangle rather than a band, so no
+two of them share a picture at all. The frown is the idle smile inverted, which reads as the box's
 own reaction; the question mark is deliberately *not* a face, because failing to
 understand the word is a different kind of statement from having no answer to it.
 

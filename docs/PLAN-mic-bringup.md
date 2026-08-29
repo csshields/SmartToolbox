@@ -2,7 +2,8 @@
 title: Plan of Attack - Microphone Bring-Up (say a word, read it on the OLED)
 scope: bring-up plan, written 2026-08-28 - PDM mic to Whisper to OLED, no tool matching
 references: https://wiki.seeedstudio.com/xiao_esp32s3_sense_mic/
-status: in progress - Step 1 running on hardware; mic proven alive, RMS gate not yet passed
+status: in progress - Step 1 running on hardware; mic proven alive, RMS gate not yet passed;
+  listening indicator added 2026-08-29, not started
 ---
 
 # Plan: say a word, see the word
@@ -152,6 +153,88 @@ hiding inside the result.
 **Still unproven, and this is the actual gate:** that a DC-corrected RMS is small in a
 quiet room and multiplies when spoken into. Until that comparison is made, the mic is
 known to produce *data*, not known to produce *audio*.
+
+## The listening indicator - an animated sound wave
+
+**Decided 2026-08-29.** While the box is recording, the matrix shows a travelling sound
+wave: eight vertical bars in `green`, rising and falling across the panel. Recording is
+the one state where the box is taking input rather than giving output, and it is the only
+state a person has to actively participate in - they need to know the exact moment it is
+listening, and "hold the pad and hope" is what they have today.
+
+**Polychrome, and the only state on the panel that is.** Every other picture the box
+draws is a single colour, so a wave that runs through four at once is unmistakable at a
+glance - which is the entire job here, since the person has to know the exact moment it
+is listening. It also sidesteps the colour-semantics problem rather than adding to it:
+purple has meant "idle or thinking" and red and orange belong to results, so a
+single-colour wave would have had to borrow one of them.
+
+`drawSoundWave(uint8_t phase)`. Two tables.
+
+**Heights - deliberately irregular.** A smooth repeating hump reads as a decoration
+rather than as sound; real speech is uneven, and the picture should be too. Thirty-two
+scattered values, indexed by column plus phase:
+
+```
+WAVE_HEIGHTS[32] = { 2,5,3,8,4,6,2,7,3,5,8,2,6,4,7,3,
+                     5,2,8,4,3,6,2,5,7,3,4,8,2,6,3,5 }
+height(x) = WAVE_HEIGHTS[(x + phase) % 32]
+```
+
+Thirty-two rather than eight for two reasons: at 100ms a step, a two-second recording is
+twenty frames, so the table never visibly repeats inside a single recording - and being
+fixed rather than randomised at run time, it can be tuned by eye instead of coming out
+different on every press.
+
+**Colour - a vertical ramp, by row rather than by column:**
+
+```
+WAVE_COLORS[8] = { cyan, blue, purple, pink, pink, purple, blue, cyan }
+```
+
+The centre line is pink and the edges cyan, so a tall bar reaches colours a short one
+never shows. The palette itself then encodes amplitude, on top of the height - a loud
+moment is both taller and more colourful, which is legible even at a glance from across
+a workbench.
+
+Each bar is **centred vertically**, not grown from the bottom - a centred wave reads as a
+waveform, a bottom-anchored one reads as a bar chart. `top = (8 - height) / 2` in integer
+arithmetic, so odd heights sit one row high of centre. That asymmetry is wanted: it is
+part of what stops the wave looking machined.
+
+`MATRIX_WAVE_STEP_MS = 100`, so a full 32-frame cycle takes 3.2 seconds.
+
+**A later upgrade, deliberately not now:** once the read is chunked (below), each chunk
+has a real RMS available, and the wave could be driven by the actual signal instead of a
+table - scroll the array left and push the newest level in on the right. That is the
+honest version and it is worth doing, but not before Step 1's gate has passed. A display
+driven by a measurement nobody trusts yet would make a failing measurement look like a
+working one.
+
+### The trap: nothing can animate during `readBytes`
+
+`recordAndReportMic()` records with a **single blocking** `mic.readBytes(..., 32000
+bytes)` that does not return for the full two seconds. Add the wave without changing
+that and it draws exactly one frame and freezes - which is this project's most expensive
+failure mode, the one where a frozen peripheral and a working one look identical. A
+frozen wave would be *worse* than no wave, because it would positively assert that the
+box is listening while the panel is simply stuck.
+
+So the wave requires the read to be chunked: read ~1,600 samples (100ms) at a time into
+successive offsets of the same PSRAM buffer, and advance one wave phase between chunks.
+Twenty `readBytes` calls instead of one, and 20 `matrixPush` calls at ~10ms of I2C each -
+200ms of I2C inside a 2,000ms recording. That overhead lands between reads rather than
+during them, so no samples are dropped, but it is real and it is the reason to keep the
+wave to the recording window only.
+
+Step 1's own comment already anticipates this: it notes that the hold-to-talk path in
+Step 2 "reads in a loop instead, because there the length is not known when recording
+starts". The wave brings that loop forward into Step 1, and the two changes want to
+happen together.
+
+**Done when:** holding the pad shows the wave crossing the panel for the whole
+recording, and the reported `samples=` count is unchanged at 32000 - a wave that animates
+but drops samples has traded the thing being built for the picture of it.
 
 ## Step 2 - the audio reaches the Pi and is playable
 

@@ -103,6 +103,32 @@ const uint32_t DEVICE_STATUS_INTERVAL_MS = 30000;
 uint32_t nextDeviceStatusAt = 0;
 unsigned long statusCounter = 0;
 
+// --- Startup readiness -------------------------------------------------------
+//
+// Both halves of the box boot from the same power and do not arrive together:
+// this device is up in seconds, the Pi takes 36.6s (5.2s kernel + 31.4s
+// userspace) before its API accepts anything. For that whole window the box
+// used to say "Ready" and mean nothing by it - a touch went into a void and
+// came back "No response - Is the Pi service up?", which is a question the
+// device is not entitled to ask while the Pi is merely booting.
+//
+// So the fast half waits. Nothing here changes on the Pi: there is nothing it
+// can do about a 31-second userspace, and a device that copes is worth more
+// than a server that hurries. See docs/PLAN-startup-readiness.md.
+bool deviceReady = false;
+
+// Far more frequent than the 30s heartbeat on purpose: this window is ~35
+// seconds long, and a 30-second poll would spend most of it asleep.
+const uint32_t WAITING_RETRY_MS = 2000;
+uint32_t nextWaitingRetryAt = 0;
+
+// There is no timeout that gives up - a Pi that takes five minutes gets waited
+// for. But 90 seconds is well past anything a healthy boot has ever taken, so
+// past that the face stops pretending this is normal. It is a change of
+// expression, not a failure state: the retry continues either way.
+const uint32_t WAITING_LONG_MS = 90000;
+uint32_t waitingSince = 0;
+
 // The boot check alone let three releases go by unnoticed: the device only
 // looked for an update in the first seconds after power-on, so a box that
 // stayed up never learned a new version existed. Re-checking on an interval is
@@ -182,7 +208,7 @@ uint32_t blinkPhaseStart = 0;
 // band meant "not in any drawer", "the Pi could not make sense of the request",
 // and "the Pi never answered". Each has its own picture now, and the wait before
 // them has one too.
-enum MatrixMode { MATRIX_EYES, MATRIX_THINKING, MATRIX_RESULT };
+enum MatrixMode { MATRIX_WAITING, MATRIX_EYES, MATRIX_THINKING, MATRIX_RESULT };
 
 MatrixMode matrixMode = MATRIX_EYES;
 uint32_t matrixResultUntil = 0;
@@ -213,6 +239,15 @@ const uint8_t MATRIX_THINK_PHASES = 4;
 
 uint32_t matrixThinkNextAt = 0;
 uint8_t matrixThinkPhase = 0;
+
+// The boot spinner turns a good deal faster than the thinking face blinks its
+// dots: sixteen positions at the think cadence would take four and a half
+// seconds a revolution, which reads as broken rather than busy. At 90ms a turn
+// takes 1.44s, about what a browser spinner does.
+const uint16_t MATRIX_SPIN_STEP_MS = 90;
+const uint8_t MATRIX_SPIN_PHASES = 16;
+uint32_t matrixSpinNextAt = 0;
+uint8_t matrixSpinPhase = 0;
 
 uint8_t matrixResultRow = 0;
 uint8_t matrixResultColor = 0;
@@ -305,6 +340,65 @@ void drawThinkingFace(uint8_t phase) {
 
   for (uint8_t dot = 0; dot < phase && dot < 3; dot++) {
     matrixSetPixel(2 + dot * 2, 6, EYE_COLOR);
+  }
+}
+
+// A 16-cell octagon, clockwise from the top-left of the top edge - the roundest
+// closed path an 8x8 panel has room for. Held as a table rather than computed,
+// so the animation is an index step instead of trigonometry on a microcontroller.
+const uint8_t SPINNER_RING[16][2] = {
+  {2, 1}, {3, 1}, {4, 1}, {5, 1}, {6, 2}, {7, 3}, {7, 4}, {6, 5},
+  {5, 6}, {4, 6}, {3, 6}, {2, 6}, {1, 5}, {0, 4}, {0, 3}, {1, 2},
+};
+
+const uint8_t SPINNER_LIT = 6;
+
+// A spinner, not a face. The idle smiley means "I am fine" everywhere else in
+// this sketch, and during boot the box is not fine yet - it is early. Six of the
+// sixteen cells are lit, so the ten-cell gap is the part you actually read.
+void drawSpinner(uint8_t phase) {
+  matrixClear();
+
+  for (uint8_t lit = 0; lit < SPINNER_LIT; lit++) {
+    const uint8_t index = (uint8_t)((phase + MATRIX_SPIN_PHASES - lit) % MATRIX_SPIN_PHASES);
+    // The leading cell is white and the tail purple: a uniform arc does not tell
+    // you which way it is turning, and a spinner that might be going backwards
+    // is worse than none.
+    matrixSetPixel(SPINNER_RING[index][0], SPINNER_RING[index][1],
+                   lit == 0 ? white : EYE_COLOR);
+  }
+}
+
+// Filled, with the exclamation mark knocked out as unlit pixels rather than
+// drawn. At 8x8 an outline triangle loses its shape and a drawn-on mark has
+// nowhere to sit; matrixClear already blacks the frame, so the gaps are free.
+//
+// This replaces a solid red band, which was the loudest thing the panel can do
+// and the least specific - it said "bad" and nothing else, and read more like a
+// hardware fault than a message.
+void drawAlertTriangle(uint8_t color) {
+  matrixClear();
+
+  matrixSetPixel(3, 0, color); matrixSetPixel(4, 0, color);
+  matrixSetPixel(3, 1, color); matrixSetPixel(4, 1, color);
+
+  // y=2..3: the sides only. The gap between them is the stem of the "!".
+  for (uint8_t y = 2; y <= 3; y++) {
+    matrixSetPixel(2, y, color);
+    matrixSetPixel(5, y, color);
+  }
+
+  // y=4 is solid - the waist of the "!", between its stem and its dot.
+  for (uint8_t x = 1; x <= 6; x++) {
+    matrixSetPixel(x, 4, color);
+  }
+
+  // y=5 leaves x=3,4 dark: the dot.
+  matrixSetPixel(1, 5, color); matrixSetPixel(2, 5, color);
+  matrixSetPixel(5, 5, color); matrixSetPixel(6, 5, color);
+
+  for (uint8_t x = 0; x < MATRIX_WIDTH; x++) {
+    matrixSetPixel(x, 6, color);
   }
 }
 
@@ -470,10 +564,7 @@ void showMatrixUnknown(uint8_t color) {
 }
 
 void showMatrixAlert(uint8_t color) {
-  matrixClear();
-  for (uint8_t y = MATRIX_FIRST_ROW_Y; y <= MATRIX_LAST_ROW_Y; y++) {
-    matrixFillRow(y, color);
-  }
+  drawAlertTriangle(color);
   matrixResultRow = 0;
   matrixResultDigitDrawn = true; // An alert has no row, so no digit follows.
   matrixMode = MATRIX_RESULT;
@@ -483,6 +574,30 @@ void showMatrixAlert(uint8_t color) {
 
 void updateMatrix() {
   if (!matrixReady) {
+    return;
+  }
+
+  if (matrixMode == MATRIX_WAITING) {
+    // Past 90 seconds the spinner stops and the face drops. Purple, not the
+    // not-found red: a box still waiting on a server that has not finished
+    // booting has nothing to report as an error, and spending the alert here
+    // would leave nothing louder for a lookup that genuinely fails.
+    if (millis() - waitingSince >= WAITING_LONG_MS) {
+      if (matrixSpinNextAt != 0) {
+        matrixSpinNextAt = 0; // Drawn once, then held.
+        showStatus("SmartToolbox", "No reply from Pi", "v" FIRMWARE_VERSION);
+        drawSadFace(EYE_COLOR);
+        matrixPush();
+      }
+      return;
+    }
+
+    if (millis() >= matrixSpinNextAt) {
+      matrixSpinPhase = (uint8_t)((matrixSpinPhase + 1) % MATRIX_SPIN_PHASES);
+      matrixSpinNextAt = millis() + MATRIX_SPIN_STEP_MS;
+      drawSpinner(matrixSpinPhase);
+      matrixPush();
+    }
     return;
   }
 
@@ -544,6 +659,57 @@ void showStatus(const char* title, const String& line2, const String& line3) {
   oled.drawUTF8(0, 30, line2.c_str());
   oled.drawUTF8(0, 46, line3.c_str());
   oled.sendBuffer();
+}
+
+void showWaitingStatus() {
+  // The version stays on screen because this is exactly when someone wants to
+  // know what is running, and the line it replaces ("Touch a pad") is an
+  // instruction the box cannot honour yet.
+  showStatus("SmartToolbox", "Waiting for Pi", "v" FIRMWARE_VERSION);
+}
+
+// Entered before the OTA check rather than at the end of setup(). That check
+// blocks for up to WIFI_CONNECT_TIMEOUT_MS when the radio cannot associate, so
+// on the cold boot this exists for, setup() does not end until ~30s - by which
+// point the Pi is nearly up and the waiting face would have six seconds to
+// live. The face has to go up before anything that can block.
+void startWaitingForPi() {
+  deviceReady = false;
+  waitingSince = millis();
+  nextWaitingRetryAt = millis(); // Retry as soon as loop() runs.
+
+  showWaitingStatus();
+
+  matrixMode = MATRIX_WAITING;
+  matrixSpinPhase = 0;
+  matrixSpinNextAt = millis() + MATRIX_SPIN_STEP_MS;
+  drawSpinner(matrixSpinPhase);
+  matrixPush();
+}
+
+// Any reply at all promotes: success or error, the content is irrelevant. This
+// is about proving the wire works end to end, not about the Pi liking the
+// message.
+void promoteToReady() {
+  if (deviceReady) {
+    return;
+  }
+  deviceReady = true;
+
+  // This is the earliest moment a host is provably reading, which is exactly
+  // what the OTA log needs - see reportLastOtaResult.
+  reportLastOtaResult();
+
+  showStatus("SmartToolbox", "Ready", MIC_BRINGUP ? "Hold D0 to record" : "Touch a pad");
+
+  matrixMode = MATRIX_EYES;
+  matrixEyesClosed = false;
+  drawFace(false);
+  // matrixNextBlinkAt was set back in setup() and is long past by now; without
+  // this the face blinks the instant it settles, which reads as a glitch rather
+  // than an arrival.
+  scheduleNextBlink();
+  matrixPush();
 }
 
 #if OTA_ENABLED
@@ -852,10 +1018,15 @@ void setup() {
     matrix.stopDisplay();
     matrix.setDisplayOrientation(MATRIX_ORIENTATION);
     randomSeed(esp_random()); // Blink intervals are randomised; without this every boot blinks identically.
-    drawFace(false);
     scheduleNextBlink();
-    matrixPush();
   }
+
+  // Before the OTA check, not after it. That check blocks for up to
+  // WIFI_CONNECT_TIMEOUT_MS when the radio cannot associate, so on a cold
+  // whole-box start setup() does not finish until ~30s - and the Pi answers at
+  // ~36.6s. Entering WAITING at the end of setup() would give the spinner six
+  // seconds to live in the one case it exists for.
+  startWaitingForPi();
 
 #if OTA_ENABLED
   // Before touch calibration: if an update is waiting there is no point
@@ -894,15 +1065,19 @@ void setup() {
   Serial.print("Mic ready=");
   Serial.println(micReady ? 1 : 0);
 
+  // The first of the waiting retries. Everything above has overwritten the OLED
+  // - the update check and the calibration line both - so the waiting screen
+  // goes back up here. "Ready" is no longer said at the end of setup(): it is
+  // said by promoteToReady, when the Pi has actually answered.
   sendDeviceStatus();
-
-  showStatus("SmartToolbox", "Ready", MIC_BRINGUP ? "Hold D0 to record" : "Touch a pad");
+  showWaitingStatus();
 }
 
 void loop() {
   pollTouch();
   pollSerialResponses();
   pollResponseTimeout();
+  pollWaitingRetry();
   pollDeviceStatus();
 #if OTA_ENABLED
   pollFirmwareUpdate();
@@ -996,6 +1171,19 @@ void onTouchStart(int pinIndex) {
     return;
   }
 
+  // Inside the lookup path deliberately, not at the top of this function: with
+  // MIC_BRINGUP set the pad records instead, and recording never involves the
+  // Pi, so a blanket guard would make mic bring-up untestable on any bench
+  // where nothing answers.
+  //
+  // A touch here is someone asking "is it on?", and the honest answer is
+  // already on the screen. Sending the lookup anyway would come back "No
+  // response - Is the Pi service up?", blaming a Pi that is merely booting.
+  if (!deviceReady) {
+    showWaitingStatus();
+    return;
+  }
+
   sendToolLookupRequest(toolName);
 #endif
 }
@@ -1055,18 +1243,39 @@ void sendDeviceStatus() {
 // handleLookupResponse already ignores, and claiming the pending slot would make
 // a heartbeat cancel a lookup the user is waiting for.
 void pollDeviceStatus() {
-  if (awaitingResponse || millis() < nextDeviceStatusAt) {
+  if (!deviceReady || awaitingResponse || millis() < nextDeviceStatusAt) {
     return;
   }
 
-  reportLastOtaResult();
+  sendDeviceStatus();
+}
+
+// The boot handshake: keep asking every two seconds until something answers.
+//
+// Deliberately without the awaitingResponse guard that pollDeviceStatus uses.
+// That guard is right for a heartbeat and fatal here - one unanswered request
+// would wedge the device in WAITING forever, which is precisely the failure
+// this whole path exists to remove. Nothing sets awaitingResponse during
+// WAITING anyway except the serial bench trigger, and this must survive that
+// too.
+void pollWaitingRetry() {
+  if (deviceReady || millis() < nextWaitingRetryAt) {
+    return;
+  }
+
+  nextWaitingRetryAt = millis() + WAITING_RETRY_MS;
   sendDeviceStatus();
 }
 
 // The boot-time OTA log never survives: the check runs before the Pi has the
-// port open, and the S3's USB CDC discards writes with no host attached. By the
-// first heartbeat the link is proven - the Pi is reading, because it answered
-// something - so this is the earliest point the outcome can actually be seen.
+// port open, and the S3's USB CDC discards writes with no host attached. So it
+// is held and printed once the link is proven.
+//
+// Called from promoteToReady, which is that moment exactly - a reply has come
+// back. It used to fire on the first heartbeat, which was an approximation of
+// the same thing and is now wrong: the waiting retry sends its first status two
+// seconds after boot, and printing there would put the log straight back into
+// the void it was rescued from.
 // Plain text, so it lands in the Pi's [serial-debug] with no API change.
 void reportLastOtaResult() {
   if (lastOtaResultReported) {
@@ -1089,6 +1298,12 @@ void pollFirmwareUpdate() {
 
   nextFirmwareCheckAt = millis() + FIRMWARE_CHECK_INTERVAL_MS;
   checkForFirmwareUpdate(); // Reboots into the new image if one was written.
+
+  // Only reached when no update was taken. The check leaves its own outcome on
+  // the OLED, which is the wrong screen for a box that is still waiting.
+  if (!deviceReady) {
+    showWaitingStatus();
+  }
 }
 #endif
 
@@ -1119,12 +1334,22 @@ void handleIncomingLine(const String& line) {
     return;
   }
 
-  if (!awaitingResponse) {
+  JsonDocument doc;
+  if (deserializeJson(doc, line) != DeserializationError::Ok) {
     return;
   }
 
-  JsonDocument doc;
-  if (deserializeJson(doc, line) != DeserializationError::Ok) {
+  // Parsed before the awaitingResponse check below, and this ordering is the
+  // whole boot handshake. sendDeviceStatus never claims the pending slot - by
+  // design, so a heartbeat cannot cancel a lookup someone is waiting on - so
+  // with the guard first, the Pi's reply to it was dropped before anything
+  // looked at the line, and the device could never learn the Pi was up.
+  //
+  // Any parsed reply promotes, whatever it says. This is about proving the wire
+  // works end to end, not about the Pi liking the message.
+  promoteToReady();
+
+  if (!awaitingResponse) {
     return;
   }
 
