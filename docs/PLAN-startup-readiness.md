@@ -315,6 +315,23 @@ All five steps, in `firmware/smarttoolbox/smarttoolbox.ino`. Compiles at 1,088,5
 - The lookup guard sits inside the `#else` in `onTouchStart`, so `MIC_BRINGUP` is
   unaffected.
 
+### What the code review then found - same day
+
+Three fixes on top of the above, before any of it shipped:
+
+- **The long-wait screen was gated on the matrix.** The 90-second transition lived
+  inside `updateMatrix`, which returns early when `matrixReady` is false - so on a box
+  with no matrix attached, the OLED would never have said "No reply from Pi". The two
+  peripherals are independent by design and this quietly coupled them. Now
+  `pollWaitingLong()` runs from `loop()`, sets `waitingLong`, writes the OLED
+  unconditionally and the face only if there is one to draw on.
+- **The "already drawn" flag was the spinner's own timer**, zeroed as a sentinel. It
+  worked and it read as a mistake. Replaced with `waitingLong`, which the OLED path
+  needed anyway.
+- **Two identical `device/status` at boot.** `setup()` sent one, and `pollWaitingRetry`
+  sent another on the very first loop because `nextWaitingRetryAt` was already in the
+  past. `setup()` now claims its own send as the first retry.
+
 One thing added during implementation that the plan did not call for: `pollFirmwareUpdate`
 re-asserts the waiting screen after a check that did not take an update. The check leaves
 its own outcome on the OLED, which is the wrong screen for a box that is still waiting -
