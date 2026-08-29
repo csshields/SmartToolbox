@@ -1507,9 +1507,13 @@ has run on hardware.
 
 ### Feature 2: Tool Drawer Requests (Voice-Activated)
 
-**Status: Partial** - the microphone is no longer the blocker: it is the XIAO's own PDM
-mic on the Sense board, and the firmware initialises it as of 2026-08-28, though that
-code has not yet been run on hardware. The matrix is wired; the LED strip that row
+**Status: Partial** - the microphone is no longer the blocker and is no longer unproven:
+it is the XIAO's own PDM mic on the Sense board, and as of 2026-08-29 (0.19.0) it has
+been shown on hardware to carry actual audio, not merely data - a DC-corrected RMS of 17
+in a quiet room against 210 when spoken into, with the loud sample swinging negative for
+the first time in this project's history. See `docs/PLAN-mic-bringup.md` Step 1. What
+remains unbuilt is everything downstream: the audio has never left the device. The matrix
+is wired; the LED strip that row
 indication is moving to is not. The wake-word and Whisper pipeline below is design
 only; none of it has been built or tested. The API half of the flow does exist and
 works today via `GET /api/tools/lookup` and the `tools/lookup` serial endpoint, so the
