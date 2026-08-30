@@ -25,7 +25,7 @@
 // api/scripts/release-firmware.ps1 on release, and compared against the Pi's
 // drop folder to decide whether an OTA update is available - keep the exact
 // `#define FIRMWARE_VERSION "x.y.z"` shape so the script can find it.
-#define FIRMWARE_VERSION "0.21.2"
+#define FIRMWARE_VERSION "0.22.0"
 
 const int LED_PIN = LED_BUILTIN; // Active-low: LOW = on, HIGH = off.
 const int LED_ON = LOW;
@@ -35,6 +35,14 @@ const int LED_OFF = HIGH;
 // so the NONAME constructor drives it - same one the PIR bring-up sketch used.
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C oled(U8G2_R0, U8X8_PIN_NONE);
 bool oledReady = false;
+
+// 128px wide in a 6px font, so 21 characters is the line. Whisper returns a whole
+// sentence and the screen shows what fits; the transcript also goes out over
+// serial in full, which is where a long one is actually readable.
+//
+// Declared up here rather than beside the code that uses it, because the lookup
+// result branches truncate with it too and they run earlier in the file.
+const size_t OLED_LINE_CHARS = 21;
 
 // Grove 8x8 RGB matrix, on the same I2C bus. matrixReady comes from the VID
 // check, and every matrix call returns early without it, so a box with no matrix
@@ -1594,14 +1602,16 @@ void handleIncomingLine(const String& line) {
 
   awaitingResponse = false;
 
-  // Voice answers before the lookup branches, because its body is a transcript
-  // rather than a drawer and none of what follows applies to it. This is
-  // docs/PLAN-mic-bringup.md's whole scope: say a word, see the word. Turning
-  // the word into a drawer is PLAN-voice-lookup.md and is deliberately not here.
-  if (pendingIsVoice) {
+  // A voice reply carries a transcript *and* an ordinary lookup body. Name what
+  // was heard, then fall through - the found / not-found / error branches below
+  // are the same ones a touch lookup uses, which is the point: one set of
+  // pictures, one set of rules, nothing to drift out of step.
+  const bool wasVoice = pendingIsVoice;
+  if (wasVoice) {
     pendingIsVoice = false;
-    handleVoiceResponse(doc);
-    return;
+    if (!handleVoiceTranscript(doc)) {
+      return; // Nothing was heard, or the transcription failed. Already shown.
+    }
   }
 
   const bool success = doc["success"] | false;
@@ -1637,6 +1647,19 @@ void handleIncomingLine(const String& line) {
 
   // Say so when the tool is on record in more than one drawer, rather than
   // showing one of them as though it were the answer.
+  // Name the tool that was matched, not the phrase that was heard. On a touch
+  // lookup they are the same string; on a voice one, "where are my needle nose
+  // pliers" is what you said and "Needle-nose Pliers" is what you go and fetch.
+  // The phrase is already on the serial log for diagnosing a mishearing.
+  //
+  // matchType is deliberately ignored here: the OLED has no room to express
+  // "probably", and the certainty colour on the matrix already spends the only
+  // hedge this interface has.
+  const char* matchedTool = doc["body"]["tool"] | "";
+  if (strlen(matchedTool) > 0) {
+    pendingToolName = String(matchedTool).substring(0, OLED_LINE_CHARS);
+  }
+
   showStatus("Found", pendingToolName,
              "Row " + String(rowNumber) + "  Drawer " + drawerLabel + (ambiguous ? " +" : ""));
 
@@ -1690,12 +1713,10 @@ void handleDeviceCommand(JsonDocument& doc) {
   }
 }
 
-// The OLED is 128px wide in a 6px font, so 21 characters is the line. Whisper
-// returns a whole sentence and the screen shows what fits - the transcript also
-// goes out over serial in full, which is where a long one is actually readable.
-const size_t OLED_LINE_CHARS = 21;
-
-void handleVoiceResponse(JsonDocument& doc) {
+// Puts what was heard on the OLED and says whether the caller should carry on
+// into the lookup branches. False means this reply is finished with - there was
+// no transcript to look anything up from.
+bool handleVoiceTranscript(JsonDocument& doc) {
   if (!(doc["success"] | false)) {
     const char* code = doc["error"]["code"] | "transcription failed";
     Serial.print("VOICE error=");
@@ -1703,42 +1724,27 @@ void handleVoiceResponse(JsonDocument& doc) {
     showStatus("Didn't catch that", code, "");
     startBlinkPlan(1, 1000, 1000);
     showMatrixUnknown(orange);
-    return;
+    return false;
   }
 
   const char* transcript = doc["body"]["transcript"] | "";
   Serial.print("VOICE transcript=");
   Serial.println(transcript);
 
-  // Whisper returns an empty string for silence rather than an error, so this
-  // is a real outcome and not a fault. The rms printed alongside the recording
-  // is what separates "the room was quiet" from "the microphone is broken".
+  // Whisper returns an empty string for silence rather than an error, so this is
+  // a real outcome and not a fault. The rms printed alongside the recording is
+  // what separates "the room was quiet" from "the microphone is broken".
   if (strlen(transcript) == 0) {
     showStatus("Heard nothing", "Hold and speak", "");
     startBlinkPlan(3, 150, 150);
     showMatrixSad(red);
-    return;
+    return false;
   }
 
-  String heard(transcript);
-  showStatus("Heard", heard.substring(0, OLED_LINE_CHARS),
-             heard.length() > OLED_LINE_CHARS ? heard.substring(OLED_LINE_CHARS, OLED_LINE_CHARS * 2) : "");
-
-  // No row to blink and no drawer to point at - this endpoint only reports what
-  // was said. One short blink acknowledges it without borrowing a lookup's
-  // vocabulary.
-  startBlinkPlan(1, 200, 200);
-
-  // Straight back to idle. The matrix cannot show words, and holding any picture
-  // here would be inventing a meaning for one - the transcript is on the OLED,
-  // which is the half that can actually carry it.
-  if (matrixReady) {
-    matrixMode = MATRIX_EYES;
-    matrixEyesClosed = false;
-    drawFace(false);
-    scheduleNextBlink();
-    matrixPush();
-  }
+  // Kept so the result lines below name what was actually said rather than the
+  // tool it resolved to - a mishearing is only visible if both are on screen.
+  pendingToolName = String(transcript).substring(0, OLED_LINE_CHARS);
+  return true;
 }
 
 void pollResponseTimeout() {

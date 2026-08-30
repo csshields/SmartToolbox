@@ -40,8 +40,27 @@ export type ToolLocation = {
   observedAt: string | null;
 };
 
+export type ToolMatchType = "exact" | "tokens" | "partial";
+
+export type ToolQueryMatch = {
+  toolName: string;
+  matchType: ToolMatchType;
+  // Every other tool that scored as well on a partial match. Empty for exact and
+  // token matches, which are unambiguous by construction.
+  alternatives: string[];
+};
+
 export type ToolLookupResult = {
   tool: string;
+  // How the query reached this tool. "exact" is the name as stored; the others
+  // are the resolver's work, and a caller that cares about certainty - the
+  // dashboard does, the firmware does not - can say so.
+  matchType: ToolMatchType;
+  // What was actually asked for, before resolution. Kept so a mishearing is
+  // visible: "found Needle-nose Pliers for 'needle nose players'" is a diagnosis,
+  // where "found Needle-nose Pliers" alone hides the interesting part.
+  query: string;
+  alternatives: string[];
   // The one location a caller should act on. Everything a display needs comes
   // from this single object, so a row and a label can never describe different
   // drawers. Null only when the tool is known but has no location at all.
@@ -794,15 +813,146 @@ function pickPrimaryLocation(locations: ToolLocation[]): ToolLocation | null {
   })[0]!;
 }
 
-export function findToolLocations(toolName: string): ToolLookupResult | null {
-  const normalizedToolName = normalizeName(toolName, "Tool name");
-  const canonicalTool = selectCanonicalToolName.get(normalizedToolName) as { name: string } | null;
+// Whisper hands over what a person said - "where are my needle nose pliers" -
+// and the database holds "Needle-nose Pliers". Exact matching returns nothing and
+// the box says "not found" for a tool it owns.
+//
+// Carrier words people actually say around a tool name. Dropped before matching,
+// because they carry no information about which tool is wanted and every one of
+// them would otherwise have to appear in the stored name.
+const CARRIER_WORDS = new Set([
+  "where", "is", "are", "was", "were", "find", "get", "show", "me", "i", "need",
+  "want", "my", "the", "a", "an", "please", "in", "on", "at", "of", "to", "for",
+  "drawer", "tool", "box", "toolbox", "s",
+]);
 
-  if (!canonicalTool) {
+// Words too common across a toolbox to identify anything on their own. A partial
+// match needs at least one token that is *not* in here, or "screwdriver" would
+// confidently pick one of three screwdrivers - see resolveToolQuery.
+const GENERIC_WORDS = new Set([
+  "screwdriver", "wrench", "pliers", "plier", "hammer", "saw", "drill", "bit",
+  "bits", "key", "keys", "set", "socket", "driver", "cutter", "cutters", "tape",
+]);
+
+function normalizeForMatching(value: string) {
+  return value
+    .toLowerCase()
+    // Hyphens become spaces so "needle-nose" and "needle nose" are one thing.
+    .replace(/[-_/]+/g, " ")
+    .replace(/[^a-z0-9\s]+/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+// Crude, and deliberately so: only a trailing "s" or "es". Anything cleverer
+// starts mangling real tool names, and the token match is already forgiving
+// enough that a missed plural rarely decides the outcome.
+function singular(token: string) {
+  if (token.length > 3 && token.endsWith("es")) {
+    return token.slice(0, -2);
+  }
+
+  if (token.length > 2 && token.endsWith("s")) {
+    return token.slice(0, -1);
+  }
+
+  return token;
+}
+
+function meaningfulTokens(value: string) {
+  return normalizeForMatching(value)
+    .split(" ")
+    .filter((token) => token.length > 0 && !CARRIER_WORDS.has(token))
+    .map(singular);
+}
+
+const selectAllToolNames = database.query(`
+  SELECT name FROM tools
+  UNION
+  SELECT tool_name AS name FROM drawer_observations WHERE superseded_at IS NULL
+`);
+
+// Returns the tool a query means, or null. Three tiers, first hit wins, and the
+// tier is reported rather than hidden - a caller that wants to distinguish a
+// certainty from a guess can, and the dashboard does.
+export function resolveToolQuery(query: string): ToolQueryMatch | null {
+  const trimmed = query.trim();
+
+  if (!trimmed) {
     return null;
   }
 
-  const drawers = selectToolLocations.all(canonicalTool.name) as ToolLocation[];
+  // Tier 1: exact, unchanged and still first. A stored name that happens to
+  // contain a carrier word still resolves, because nothing is stripped here.
+  const exact = selectCanonicalToolName.get(trimmed) as { name: string } | null;
+  if (exact) {
+    return { toolName: exact.name, matchType: "exact", alternatives: [] };
+  }
+
+  const queryTokens = meaningfulTokens(trimmed);
+  if (queryTokens.length === 0) {
+    return null; // Carrier words only - "where is the" names no tool.
+  }
+
+  const names = (selectAllToolNames.all() as Array<{ name: string }>).map((row) => row.name);
+
+  // Tier 2: every query token appears in the tool name. "needle nose pliers"
+  // matches "Needle-nose Pliers". Shortest name wins a tie, because it is the
+  // one with the least unmatched left over - the most specific fit.
+  const tokenHits = names
+    .filter((name) => {
+      const nameTokens = new Set(meaningfulTokens(name));
+      return queryTokens.every((token) => nameTokens.has(token));
+    })
+    .sort((left, right) => left.length - right.length);
+
+  if (tokenHits.length > 0) {
+    return { toolName: tokenHits[0], matchType: "tokens", alternatives: tokenHits.slice(1) };
+  }
+
+  // Tier 3: best token overlap, but only on the strength of a distinctive word.
+  // Without that rule "screwdriver" silently picks one of three screwdrivers;
+  // with it, all three come back as alternatives and the matrix lights every row
+  // they are in, which the rows array already supports.
+  let best = 0;
+  const scored = names
+    .map((name) => {
+      const nameTokens = new Set(meaningfulTokens(name));
+      const shared = queryTokens.filter((token) => nameTokens.has(token));
+      const distinctive = shared.some((token) => !GENERIC_WORDS.has(token));
+      return { name, score: distinctive ? shared.length : 0 };
+    })
+    .filter((entry) => entry.score > 0);
+
+  for (const entry of scored) {
+    best = Math.max(best, entry.score);
+  }
+
+  if (best === 0) {
+    return null;
+  }
+
+  const winners = scored
+    .filter((entry) => entry.score === best)
+    .map((entry) => entry.name)
+    .sort((left, right) => left.length - right.length);
+
+  return { toolName: winners[0], matchType: "partial", alternatives: winners.slice(1) };
+}
+
+export function findToolLocations(toolName: string): ToolLookupResult | null {
+  const normalizedToolName = normalizeName(toolName, "Tool name");
+
+  // Deliberately here rather than on a voice-only path: tools/lookup over serial,
+  // the HTTP endpoint and the dashboard all gain fuzzy matching from one change,
+  // and there is no second code path to keep in step.
+  const match = resolveToolQuery(normalizedToolName);
+
+  if (!match) {
+    return null;
+  }
+
+  const drawers = selectToolLocations.all(match.toolName) as ToolLocation[];
   const rowsByNumber = new Map<number, number | null>();
 
   for (const drawer of drawers) {
@@ -817,7 +967,10 @@ export function findToolLocations(toolName: string): ToolLookupResult | null {
   }
 
   return {
-    tool: canonicalTool.name,
+    tool: match.toolName,
+    matchType: match.matchType,
+    query: normalizedToolName,
+    alternatives: match.alternatives,
     primaryLocation: pickPrimaryLocation(drawers),
     hasMultipleLocations: drawers.length > 1,
     drawers,

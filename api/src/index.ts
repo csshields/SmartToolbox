@@ -156,13 +156,26 @@ async function handleSerialRequest(request: SerialRequest): Promise<SerialRespon
         `[voice] ${audio.durationMs}ms audio -> ${provider} in ${Date.now() - startedAt}ms: ${JSON.stringify(transcript)}`,
       );
 
-      // No tool matching. This endpoint returns what was heard and nothing more;
-      // turning a transcript into a drawer is docs/PLAN-voice-lookup.md's job and
-      // is deliberately a separate change. See docs/PLAN-mic-bringup.md.
+      // One round trip. The Pi is already holding the transcript, so resolving it
+      // here saves the device a second request and a second wait - and the wait is
+      // the expensive part of this feature.
+      //
+      // The body is deliberately the existing tools/lookup body with transcript
+      // added, so the firmware reuses its found / not-found / error branches
+      // rather than growing a parallel set that can drift out of step.
+      const lookup = transcript ? findToolLocations(transcript) : null;
+
+      if (lookup) {
+        console.log(`[voice] "${transcript}" -> ${lookup.tool} (${lookup.matchType})`);
+      }
+
       return serialSuccess(request.id, {
         transcript,
         provider,
         durationMs: audio.durationMs,
+        // An empty transcript is silence, not a failed lookup. Both come back as
+        // found:false, and the transcript is what tells them apart.
+        ...(lookup ? { found: true, ...lookup } : { found: false }),
       });
     }
 
