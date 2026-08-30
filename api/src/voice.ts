@@ -111,6 +111,16 @@ export function parseVoiceAudioBody(body: unknown): VoiceAudioBody {
 // than as silence the box has to guess about.
 const TRANSCRIBE_TIMEOUT_MS = 90_000;
 
+// Told, not detected. Whisper guesses the language when it is not given one, and
+// this device's audio sits at roughly 4-10% of full scale - quiet enough that
+// detection becomes one more thing that can go wrong, and a misdetected language
+// turns a decent recording into confident nonsense.
+//
+// Hardcoded rather than made configurable: the toolbox lives in one workshop, and
+// a setting nobody will ever change is a setting that only adds a way to get it
+// wrong.
+const TRANSCRIBE_LANGUAGE = "en";
+
 export type Transcription = {
   transcript: string;
   provider: TranscriptionSettings["provider"];
@@ -130,6 +140,7 @@ export async function transcribeAudio(
 
     form.append("file", file);
     form.append("model", "whisper-1");
+    form.append("language", TRANSCRIBE_LANGUAGE);
 
     const response = await fetch("https://api.openai.com/v1/audio/transcriptions", {
       method: "POST",
@@ -156,11 +167,14 @@ export async function transcribeAudio(
   form.append("audio_file", file);
 
   const base = settings.nasUrl.replace(/\/$/, "");
-  const response = await fetch(`${base}/asr?task=transcribe&output=txt&encode=true`, {
-    method: "POST",
-    body: form,
-    signal: AbortSignal.timeout(TRANSCRIBE_TIMEOUT_MS),
-  });
+  const response = await fetch(
+    `${base}/asr?task=transcribe&output=txt&encode=true&language=${TRANSCRIBE_LANGUAGE}`,
+    {
+      method: "POST",
+      body: form,
+      signal: AbortSignal.timeout(TRANSCRIBE_TIMEOUT_MS),
+    },
+  );
 
   if (!response.ok) {
     throw new Error(`NAS Whisper returned HTTP ${response.status}.`);

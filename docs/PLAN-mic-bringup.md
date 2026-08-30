@@ -2,8 +2,9 @@
 title: Plan of Attack - Microphone Bring-Up (say a word, read it on the OLED)
 scope: bring-up plan, written 2026-08-28 - PDM mic to Whisper to OLED, no tool matching
 references: https://wiki.seeedstudio.com/xiao_esp32s3_sense_mic/
-status: Steps 1-4 BUILT and deployed as 0.20.0 on 2026-08-29 - hold-to-talk, sound wave,
-  voice/audio to Whisper, transcript to the OLED. Not yet exercised by a human at the box.
+status: COMPLETE - proven by a human at the box 2026-08-29. Hold the pad, say a word, the
+  OLED shows the word. Audio level is thin but workable; see "What the first real use
+  showed" below.
 ---
 
 # Plan: say a word, see the word
@@ -257,6 +258,44 @@ happen together.
 **Done when:** holding the pad shows the wave crossing the panel for the whole
 recording, and the reported `samples=` count is unchanged at 32000 - a wave that animates
 but drops samples has traded the thing being built for the picture of it.
+
+## What the first real use showed - 2026-08-29
+
+Spoken to by a person, for the first time, on 0.21.2:
+
+| held | rms | transcript |
+|---|---|---|
+| 2000ms | 175 | `8K47` |
+| 1700ms | 119 | `Massachusetts.` |
+| 1800ms | 384 | `Bill` |
+| 3500ms | 71 | *(empty)* |
+
+**It works.** "Massachusetts" was said deliberately to test how far it could be pushed,
+and it came back exactly. The varying durations are hold-to-talk doing its job - none of
+these is the old fixed two seconds.
+
+**The plan's one-sentence scope is met**: hold the pad, say a word, see the word.
+
+**What it also showed is that the audio is thin.** Take the first clip - `min=376
+max=2873 mean=1684`. Deviation from centre is about +/-1,300 out of a 16-bit range of
++/-32,767: roughly **4% of full scale**, around -28 dBFS. The loudest reached ~10%.
+
+The margin is real but narrow, and the last row is what it looks like when it runs out:
+`rms=71` came back **empty**. Whisper is coping well with quiet audio rather than being
+given good audio, and that will bite further from the box, in a noisier room, or with a
+quieter speaker.
+
+**Two things would widen it, and only the second is done:**
+
+1. **Strip the DC offset and apply gain before sending.** The mic rides on a bias of
+   ~+1,680 that is still in the transmitted samples, and nothing scales the signal up.
+   The firmware already computes that mean for the RMS diagnostic - subtracting it,
+   finding the peak deviation, scaling to ~80% of full scale and clamping would be worth
+   roughly 8-10x on these clips. **Deliberately deferred**, not forgotten.
+2. **Tell Whisper the language.** Done - `language=en` is now passed rather than letting
+   Whisper guess, since detection on quiet audio is one more thing that can go wrong. It
+   also came back measurably quicker: a one-second probe went from ~9.3s to ~6.8s, so
+   detection was costing real time.
 
 ## Step 2 - the audio reaches the Pi and is playable
 
