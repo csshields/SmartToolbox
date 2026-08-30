@@ -47,6 +47,17 @@ point of them, and a stale tag is worse than no tag.
   a framework, prepared statements at module scope, sparse comments that explain *why*.
   Match what is already there rather than introducing new patterns.
 
+## Skills
+
+`.claude/skills/` holds the procedures that are long enough to be worth loading only
+when they apply, rather than living here:
+
+- **`firmware-release`** - releasing over OTA, making the device collect a build, and
+  flashing over USB when OTA cannot help.
+- **`deploy-api`** - `sync.ps1`, the service, and where the logs actually are.
+- **`hardware-debug`** - triaging "nothing happens" on the box.
+- **`spec-status`** - keeping the status tags honest against the code.
+
 ## Debugging hardware
 
 Most failures in this project present identically as "nothing happens" - a wrong touch
