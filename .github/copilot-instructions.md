@@ -404,7 +404,8 @@ remains the fallback for anything else.
   "tool": "Needle-nose Pliers",
   "matchType": "tokens",
   "query": "where are my needle nose pliers",
-  "alternatives": [],
+  "matches": [ { "tool": "Needle-nose Pliers", "primaryLocation": { "...": "..." },
+                 "hasMultipleLocations": false, "drawers": [], "rows": [] } ],
   "primaryLocation": { "drawerId": 1, "label": "1A", "rowNumber": 1, "quantity": 2,
                        "confidence": 95, "observedAt": "2026-08-27 11:04:12" },
   "hasMultipleLocations": false,
@@ -443,8 +444,23 @@ singularise a trailing `s`/`es`.
 **A generic word alone will not pick a tool.** `screwdriver`, `wrench`, `hammer` and the
 like are excluded from scoring a partial match, because otherwise "cordless drill" would
 confidently return whichever drill sorted first. A generic word that *token*-matches
-several tools still resolves - it is a real match - but every rival comes back in
-`alternatives`, so a caller can see the choice was not clear-cut. `query` carries what was
+several tools still resolves - it is a real match - but **every rival comes back in
+`matches`**, each with its own locations rather than just a name, so a caller can see the
+choice was not clear-cut and can act on any of them.
+
+**`matches` is the array; the flat fields are `matches[0]`.** They are kept flat so
+existing callers did not have to change, and `matches` always has at least one entry, so
+a caller can read it uniformly rather than special-casing the common shape. More than one
+entry means the query was ambiguous - "screwdriver" when the box owns three.
+
+**Only the first is displayed, and that is a decision rather than a limitation.** The 8x8
+matrix has six usable rows and a lit row cannot say *which* tool it belongs to, so
+lighting three at once is less informative than lighting one. The OLED distinguishes the
+two kinds of "more than one": `+2` means the query matched two other tools - the box
+admitting it guessed - and a bare `+` means this one tool is on record in more than one
+drawer, which is not a guess at all. Showing several tools at once waits for the WS2813
+strip, which is where row indication is going anyway; see the Row Indication decision
+under Open Hardware Question. `query` carries what was
 actually asked, which is what makes a mishearing diagnosable: "found Needle-Nose Pliers
 for 'needle nose players'" is a diagnosis where the tool name alone hides the interesting
 half.

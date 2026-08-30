@@ -25,7 +25,7 @@
 // api/scripts/release-firmware.ps1 on release, and compared against the Pi's
 // drop folder to decide whether an OTA update is available - keep the exact
 // `#define FIRMWARE_VERSION "x.y.z"` shape so the script can find it.
-#define FIRMWARE_VERSION "0.22.0"
+#define FIRMWARE_VERSION "0.23.0"
 
 const int LED_PIN = LED_BUILTIN; // Active-low: LOW = on, HIGH = off.
 const int LED_ON = LOW;
@@ -1660,8 +1660,24 @@ void handleIncomingLine(const String& line) {
     pendingToolName = String(matchedTool).substring(0, OLED_LINE_CHARS);
   }
 
+  // Two different kinds of "there is more than one", and they must not look the
+  // same. `+2` means the query matched two other tools - "screwdriver" when the
+  // box owns three - and a bare `+` means this one tool is on record in more than
+  // one drawer. The first is the box admitting it guessed; the second is not.
+  //
+  // Only the first match is displayed. The panel has six usable rows and a lit
+  // row cannot say which tool it belongs to, so showing several at once would be
+  // less informative than showing one. That display waits for the LED strip.
+  const size_t matchCount = doc["body"]["matches"].size();
+  String more = "";
+  if (matchCount > 1) {
+    more = " +" + String((unsigned)(matchCount - 1));
+  } else if (ambiguous) {
+    more = " +";
+  }
+
   showStatus("Found", pendingToolName,
-             "Row " + String(rowNumber) + "  Drawer " + drawerLabel + (ambiguous ? " +" : ""));
+             "Row " + String(rowNumber) + "  Drawer " + drawerLabel + more);
 
   // certainty is null for a tool the camera has never observed - distinguish
   // "no reading" from a low reading rather than collapsing both to a number.
