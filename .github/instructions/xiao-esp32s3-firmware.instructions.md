@@ -26,6 +26,12 @@ description: "Firmware guidance for the Seeed XIAO ESP32S3, including onboard LE
 - **Never wait unbounded on `while (!Serial)`.** The XIAO is routinely powered up before the Pi service opens the port, and an unbounded wait hangs the sketch inside `setup()` before anything runs - no output, no touch, no display, indistinguishable from a dead board. Bound it: `while (!Serial && millis() - start < 3000)`.
 - The Grove OLED is a **SSD1315**, which is SSD1306-compatible. `U8G2_SSD1306_128X64_NONAME_F_HW_I2C oled(U8G2_R0, U8X8_PIN_NONE)` with `Wire.begin()` drives it. `oled.begin()` returns a bool - guard on it, and print the result, or a missing display is silent.
 - A full U8g2 buffer push (`sendBuffer()`) costs roughly 10ms over I2C. Call it on state changes only; every loop starves the serial poll.
+- **Never put a guard before the parse in a line handler.** `handleIncomingLine` opened with `if (!awaitingResponse) return;` *before* it deserialized anything, while the heartbeat deliberately never claims the pending slot - so every reply to a `device/status` was discarded unread, and a boot handshake that waited for one could never complete however many times it retried. Parse first, then decide what the message is for. The bug is invisible by inspection because both halves are individually correct.
+- **A blocking peripheral read blocks everything, including the ability to notice a button was released.** `mic.readBytes()` for a whole 2-second clip made hold-to-talk impossible and froze any animation on its first frame. Read in ~100ms chunks and do the other work between them. A frozen indicator is worse than none: it asserts the device is busy while it may be dead, which is this project's most expensive failure mode.
+- **Do not call a poll function from inside a handler that poll function dispatched.** `recordAndReportMic` calling `pollTouch()` to watch for release re-entered the function that owns the press/release debounce, leaving that state describing a moment that had already passed. Read the pad directly and debounce locally instead.
+- **Batch `Serial.write`.** Writing 4 bytes at a time to the native USB CDC is ~107,000 calls for a 10-second audio clip and turns a transfer into a stall. Stage into a few hundred bytes and flush.
+- **A large payload cannot be built in RAM before sending.** Ten seconds of audio is 320 KB of samples and ~427 KB of base64 - more than this chip's 320 KB of SRAM. Write the JSON by hand in pieces and encode on the way to the wire, straight out of PSRAM.
+- **`cdc_on_boot=1` is the default for this board, and it is load-bearing for recovery.** The core brings the USB CDC stack up *before* `setup()` runs, and TinyUSB sits on its own FreeRTOS task that a spinning Arduino task cannot starve. That is why `/dev/ttyACM0` survives a sketch that hangs on the first line of `setup()`, and therefore why the Pi can flash a bricked device at all. A build with CDC-on-boot disabled could hang before USB exists, leaving no port to open.
 
 ## Building and flashing
 
@@ -55,6 +61,42 @@ A successful reset prints `rst:0x15 (USB_UART_CHIP_RESET)` from the ROM bootload
 Toggling DTR alone does **not** reset the board. After an OTA install the device
 restarts itself, which shows as `rst:0xc (RTC_SW_CPU_RST)` - a useful way to confirm
 the reboot came from `ESP.restart()` and not from something else.
+
+### Flashing from the Pi over USB
+
+The recovery path, for a build that OTA cannot replace - one that crashes in `setup()`,
+wedges the loop, or breaks the serial link, where the thing that would accept the next
+update is the thing that is broken. `api/scripts/flash-device.ps1` from Windows, or
+`flash-device.sh` on the Pi. Proven against a real brick: a device silent for three
+minutes came back in 47 seconds with nobody touching it.
+
+- **`--no-stub` is mandatory on the Pi**, and its absence fails *late*. Debian ships
+  `esptool` as `4.7.0+dfsg` with the precompiled stub flasher blobs stripped as non-free,
+  so every command connects, resets the chip into download mode, identifies it, and only
+  then dies with `FileNotFoundError: .../stub_flasher_32s3.json`. That reads like a
+  corrupt installation rather than a licensing decision. Reaching that error is itself
+  proof the hard part worked.
+- **Install with `apt`, not `pip`.** The Pi's Python is externally managed under PEP 668.
+  `sudo apt-get install -y esptool` gets 4.7.0; `--break-system-packages` is not worth it
+  for a tool apt already has.
+- **The binary is `/usr/bin/esptool`, not `esptool.py`,** and it is *not* on the PATH of a
+  non-interactive SSH shell. Scripts must use the absolute path or they fail with
+  `No such file or directory` while the same command works when typed by hand.
+- **Flash the merged image, never the app binary.** `arduino-cli` writes
+  `smarttoolbox.ino.merged.bin` beside `smarttoolbox.ino.bin`. The board is `default_8MB`
+  with two app slots (`app0` at `0x10000`, `app1` at `0x340000`), so writing the app
+  binary to `app0` while `otadata` points at `app1` reports complete success and changes
+  nothing - the device boots the old image from the other slot. Writing the app binary at
+  `0x0` is worse: it overwrites the bootloader and creates the brick you were fixing.
+  `flash-device.sh` refuses anything under 2 MB for exactly this reason.
+- The 8 MB image is not the transfer cost it looks like - it is mostly `0xFF` padding and
+  compresses about 11:1, to ~736 KB. The ROM loader runs at ~2.6 Mbit/s: 26s writing, 48s
+  wall clock including erase and reset.
+- **Stop `smarttoolbox.service` first** to free the port, and restart it from a trap so it
+  comes back even when the flash fails. A failed flash that also takes out the API, the
+  dashboard and the serial link is worse than the failure it was reporting.
+- The port re-enumerates during flashing - the USB device is provided by the chip being
+  reprogrammed - so do not assume a stable device node across the whole operation.
 
 ### Testing an OTA update end to end
 

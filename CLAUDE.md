@@ -32,7 +32,14 @@ point of them, and a stale tag is worse than no tag.
 - On Windows the serial listener does not start, so the API and dashboard run fine with
   no XIAO attached. The device round trip can only be tested against the Pi.
 - Deploy with `cd api && .\sync.ps1`. Release firmware with
-  `cd api\scripts && .\release-firmware.ps1 -Version x.y.z -Push`.
+  `cd api\scripts && .\release-firmware.ps1 -Version x.y.z -Push` - add `-Now` and the
+  device fetches it within one heartbeat instead of up to 30 minutes.
+- The Pi cannot push; it can only leave a command to be collected.
+  `.\push-to-device.ps1 check-firmware` (or `reboot`) queues one, delivered on the
+  device's next heartbeat.
+- `.\flash-device.ps1 -Version x.y.z` flashes the XIAO from the Pi over USB, through
+  the ROM bootloader. That is the only path that survives a bad build, because OTA
+  needs working firmware to receive an update. See `docs/PLAN-usb-flashing.md`.
 - Secrets are untracked: `firmware/smarttoolbox/arduino_secrets.h` locally and
   `~/smarttoolbox/.env` on the Pi. Never commit either; the `.example` files are the
   tracked templates.
