@@ -402,6 +402,9 @@ remains the fallback for anything else.
 {
   "found": true,
   "tool": "Needle-nose Pliers",
+  "matchType": "tokens",
+  "query": "where are my needle nose pliers",
+  "alternatives": [],
   "primaryLocation": { "drawerId": 1, "label": "1A", "rowNumber": 1, "quantity": 2,
                        "confidence": 95, "observedAt": "2026-08-27 11:04:12" },
   "hasMultipleLocations": false,
@@ -419,6 +422,32 @@ row and the label it carries always describe the same drawer - which reading acr
 cost. `hasMultipleLocations` is true when the tool is on record in more than one drawer,
 and the firmware appends a `+` to the OLED line rather than presenting one candidate as
 the answer. `primaryLocation` is null only for a known tool with no location at all.
+
+**The query does not have to be the stored name.** `resolveToolQuery` in `db.ts` resolves
+what a person said into a tool the box owns, and `findToolLocations` calls it - so serial
+`tools/lookup`, the HTTP endpoint and the dashboard all get this from one place rather
+than a voice-only path that could drift. Three tiers, first hit wins, reported as
+`matchType`:
+
+| tier | means | example |
+|---|---|---|
+| `exact` | the name as stored, case-insensitively | `Phillips Screwdriver` |
+| `tokens` | every meaningful query word appears in the name | `where are my needle nose pliers` -> `Needle-Nose Pliers` |
+| `partial` | best word overlap, and **only** on a distinctive word | `phillips head screwdriver` -> `Phillips Screwdriver` |
+
+Normalisation, in order: lowercase, hyphens and underscores to spaces (so `needle-nose`
+and `needle nose` are one thing), strip remaining punctuation, drop carrier words
+(`where is/are, find, get, show me, i need, my, the, a, please, drawer`), then crudely
+singularise a trailing `s`/`es`.
+
+**A generic word alone will not pick a tool.** `screwdriver`, `wrench`, `hammer` and the
+like are excluded from scoring a partial match, because otherwise "cordless drill" would
+confidently return whichever drill sorted first. A generic word that *token*-matches
+several tools still resolves - it is a real match - but every rival comes back in
+`alternatives`, so a caller can see the choice was not clear-cut. `query` carries what was
+actually asked, which is what makes a mishearing diagnosable: "found Needle-Nose Pliers
+for 'needle nose players'" is a diagnosis where the tool name alone hides the interesting
+half.
 
 `drawers` and `rows` remain for callers that want every candidate: `drawers` carries the
 exact labels, `rows` is collapsed so several matching drawers in one row produce a single
@@ -1534,9 +1563,16 @@ has run on hardware.
 
 ### Feature 2: Tool Drawer Requests (Voice-Activated)
 
-**Status: Partial** - **voice reaches Whisper and the transcript reaches the OLED**, and
-this is proven by a person speaking to the box, not by inspection: "Massachusetts" was
-said and came back exactly. Hold the pad, speak, and what you said appears on the screen.
+**Status: Partial** - **the voice path is complete end to end as of 0.22.0**: hold the
+pad, say what you want, and the matrix lights the row while the OLED names the drawer.
+The transcript half was proven by a person speaking to the box rather than by inspection
+("Massachusetts" was said and came back exactly), and `resolveToolQuery` now turns what
+was said into a tool the box owns - `where are my needle nose pliers` resolves to
+`Needle-Nose Pliers` in row 2, a query that returned "not found" the day before.
+
+What remains is the wake word, which is deliberately out of scope: the pad is the
+trigger, and a wake word means running a classifier continuously - a separate project
+that reuses everything built here.
 Whisper is told `language=en` rather than left to guess, which is both more reliable on
 quiet audio and about 2.5s faster. The audio itself sits at roughly 4-10% of full scale -
 workable, but the DC offset is not yet stripped and no gain is applied, so the margin is

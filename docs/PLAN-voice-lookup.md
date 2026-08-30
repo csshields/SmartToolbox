@@ -1,7 +1,9 @@
 ---
 title: Plan of Attack - Voice Lookup (press to talk, matrix shows the row)
 scope: implementation plan, written 2026-08-27, revised same day - on-board PDM mic, audio over serial, hold-to-talk
-status: not started
+status: Phase 1 DONE 2026-08-29 (0.22.0) - resolveToolQuery ships and the whole voice
+  path works end to end. Phase 2 was already covered by api/src/voice.ts. The dashboard
+  voice-test panel is the one piece of Phase 1 not built.
 ---
 
 # Plan: say a tool, the matrix lights its row

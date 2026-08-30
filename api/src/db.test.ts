@@ -19,6 +19,7 @@ const {
   assignToolToDrawer,
   findToolLocations,
   getDeviceStatus,
+  resolveToolQuery,
   getToolboxRowCount,
   MAX_TOOLBOX_ROWS,
   listDrawers,
@@ -452,4 +453,130 @@ test("the row count is capped by the panel and refuses to strand a drawer", () =
   // A refused change must leave the setting untouched, not half-applied.
   expect(getToolboxRowCount()).toBe(DEFAULT_TOOLBOX_ROWS);
   deleteDrawer(drawer.id);
+});
+
+
+// --- resolveToolQuery -------------------------------------------------------
+//
+// Whisper hands over what a person said, not what the database stores. These are
+// the cases that decide whether the box finds a tool it owns.
+
+const voiceDrawer = makeDrawer(3);
+addToolToDrawer(voiceDrawer.id, { name: "Needle-nose Pliers", quantity: 1 });
+addToolToDrawer(voiceDrawer.id, { name: "Phillips Screwdriver", quantity: 1 });
+addToolToDrawer(voiceDrawer.id, { name: "Flathead Screwdriver", quantity: 1 });
+addToolToDrawer(voiceDrawer.id, { name: "Torx Screwdriver", quantity: 1 });
+addToolToDrawer(voiceDrawer.id, { name: "Claw Hammer", quantity: 1 });
+
+test("resolveToolQuery matches the stored name exactly, and says so", () => {
+  const match = resolveToolQuery("Needle-nose Pliers");
+
+  expect(match?.toolName).toBe("Needle-nose Pliers");
+  expect(match?.matchType).toBe("exact");
+  expect(match?.alternatives).toEqual([]);
+});
+
+test("resolveToolQuery is case-insensitive on the exact tier", () => {
+  expect(resolveToolQuery("needle-nose pliers")?.matchType).toBe("exact");
+});
+
+test("resolveToolQuery strips the carrier phrase people actually say", () => {
+  // The whole reason this function exists: Whisper returns a sentence.
+  const match = resolveToolQuery("where are my needle nose pliers");
+
+  expect(match?.toolName).toBe("Needle-nose Pliers");
+  expect(match?.matchType).toBe("tokens");
+});
+
+test("resolveToolQuery treats a hyphen and a space as the same thing", () => {
+  expect(resolveToolQuery("needle nose pliers")?.toolName).toBe("Needle-nose Pliers");
+  expect(resolveToolQuery("needlenose")).toBeNull(); // Not a token, and not distinctive.
+});
+
+test("resolveToolQuery survives trailing punctuation from a transcript", () => {
+  // Whisper punctuates. "Massachusetts." came back with a full stop on it.
+  expect(resolveToolQuery("claw hammer.")?.toolName).toBe("Claw Hammer");
+  expect(resolveToolQuery("Where is the claw hammer?")?.toolName).toBe("Claw Hammer");
+});
+
+test("resolveToolQuery handles the plural people say for a singular stored name", () => {
+  expect(resolveToolQuery("find the claw hammers")?.toolName).toBe("Claw Hammer");
+});
+
+test("resolveToolQuery surfaces every candidate rather than hiding the ambiguity", () => {
+  // Three screwdrivers are seeded and "screwdriver" identifies none of them in
+  // particular. It still resolves - the word is a real match - but every rival
+  // comes back in alternatives, so a caller can see the choice was not clear-cut
+  // instead of being handed a coin flip dressed as an answer.
+  const match = resolveToolQuery("screwdriver");
+
+  expect(match?.matchType).toBe("tokens");
+  expect([match?.toolName, ...(match?.alternatives ?? [])].sort()).toEqual([
+    "Flathead Screwdriver",
+    "Phillips Screwdriver",
+    "Torx Screwdriver",
+  ]);
+});
+
+test("resolveToolQuery narrows on a distinctive word", () => {
+  const match = resolveToolQuery("where is my phillips screwdriver");
+
+  expect(match?.toolName).toBe("Phillips Screwdriver");
+  expect(match?.matchType).toBe("tokens");
+});
+
+test("resolveToolQuery matches a single distinctive word unambiguously", () => {
+  // One token, and it appears in exactly one tool - so this is a full token
+  // match, not a partial one. Length of the query is not what makes a tier.
+  const match = resolveToolQuery("phillips");
+
+  expect(match?.toolName).toBe("Phillips Screwdriver");
+  expect(match?.matchType).toBe("tokens");
+  expect(match?.alternatives).toEqual([]);
+});
+
+test("resolveToolQuery falls to partial when a word is said that is not stored", () => {
+  // "head" is not in "Phillips Screwdriver", so every-token matching fails and
+  // tier 3 scores the overlap instead. It lands because "phillips" is
+  // distinctive; on "screwdriver" alone it would have scored zero.
+  const match = resolveToolQuery("phillips head screwdriver");
+
+  expect(match?.toolName).toBe("Phillips Screwdriver");
+  expect(match?.matchType).toBe("partial");
+});
+
+test("resolveToolQuery refuses a partial match on generic words alone", () => {
+  // "cordless" is not stored anywhere, so nothing token-matches. What is left is
+  // "drill", which is generic - and scoring on it would pick a tool on the
+  // strength of a word half the toolbox shares.
+  expect(resolveToolQuery("cordless drill")).toBeNull();
+});
+
+test("resolveToolQuery returns null for a tool the box does not own", () => {
+  expect(resolveToolQuery("angle grinder")).toBeNull();
+});
+
+test("resolveToolQuery returns null for carrier words alone", () => {
+  // "where is the" names no tool. Returning anything here would mean the box
+  // answers a question that was never asked.
+  expect(resolveToolQuery("where is the")).toBeNull();
+  expect(resolveToolQuery("")).toBeNull();
+  expect(resolveToolQuery("   ")).toBeNull();
+});
+
+test("findToolLocations resolves a spoken phrase and reports how it matched", () => {
+  const found = findToolLocations("where are my needle nose pliers");
+
+  expect(found?.tool).toBe("Needle-nose Pliers");
+  expect(found?.matchType).toBe("tokens");
+  // The query is kept so a mishearing stays visible in the log and the dashboard.
+  expect(found?.query).toBe("where are my needle nose pliers");
+  expect(found?.primaryLocation?.rowNumber).toBe(voiceDrawer.rowNumber);
+});
+
+test("findToolLocations still takes the exact path for an exact name", () => {
+  const found = findToolLocations("Claw Hammer");
+
+  expect(found?.tool).toBe("Claw Hammer");
+  expect(found?.matchType).toBe("exact");
 });
