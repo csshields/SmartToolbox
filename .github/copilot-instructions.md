@@ -1585,52 +1585,38 @@ has run on hardware.
 **Status: Partial** - **the voice path is complete end to end as of 0.22.0**: hold the
 pad, say what you want, and the matrix lights the row while the OLED names the drawer.
 The transcript half was proven by a person speaking to the box rather than by inspection
-("Massachusetts" was said and came back exactly), and `resolveToolQuery` now turns what
-was said into a tool the box owns - `where are my needle nose pliers` resolves to
-`Needle-Nose Pliers` in row 2, a query that returned "not found" the day before.
+("Massachusetts" was said and came back exactly), and `resolveToolQuery`
+(`api/src/db.ts`) now turns what was said into a tool the box owns - `where are my
+needle nose pliers` resolves to `Needle-Nose Pliers` in row 2, a query that returned
+"not found" the day before.
 
-What remains is the wake word, which is deliberately out of scope: the pad is the
-trigger, and a wake word means running a classifier continuously - a separate project
-that reuses everything built here.
-Whisper is told `language=en` rather than left to guess, which is both more reliable on
-quiet audio and about 2.5s faster. The audio itself sits at roughly 4-10% of full scale -
-workable, but the DC offset is not yet stripped and no gain is applied, so the margin is
-thinner than it should be. See `docs/PLAN-mic-bringup.md`. What
-is still missing is the half that turns those words into a drawer - `resolveToolQuery`
-does not exist, so nothing is matched or looked up yet. That is
-`docs/PLAN-voice-lookup.md`, deliberately a separate change. The wake word remains out of
-scope entirely.
+The wake word is the one part of the design below that is deliberately not being built.
+The pad is the trigger; a wake word means running a classifier continuously, which is a
+separate project that would reuse everything built here. Read step 1 of the Workflow
+below as superseded design, not as work outstanding.
 
-The microphone is no longer the blocker and is no longer unproven:
-it is the XIAO's own PDM mic on the Sense board, and as of 2026-08-29 (0.19.0) it has
-been shown on hardware to carry actual audio, not merely data - a DC-corrected RMS of 17
-in a quiet room against 210 when spoken into, with the loud sample swinging negative for
-the first time in this project's history. See `docs/PLAN-mic-bringup.md` Step 1. What
-remains unbuilt is everything downstream: the audio has never left the device. The matrix
-is wired; the LED strip that row
-indication is moving to is not. The wake-word and Whisper pipeline below is design
-only; none of it has been built or tested. The API half of the flow does exist and
-works today via `GET /api/tools/lookup` and the `tools/lookup` serial endpoint, so the
-lookup can be exercised from the dashboard without any of this.
+Three things are thin rather than done. The audio sits at roughly 4-10% of full scale -
+the DC offset is not stripped and no gain is applied, so the margin is narrower than it
+should be; see `docs/PLAN-mic-bringup.md`. Whisper is told `language=en` rather than
+left to guess, which is both more reliable on quiet audio and about 2.5s faster. And the
+dashboard has no voice-test panel, so the flow can only be exercised at the box - the
+one piece of `docs/PLAN-voice-lookup.md` Phase 1 that was not built.
 
-`docs/PLAN-voice-lookup.md` is the implementation plan for this feature. It uses the
-XIAO's **on-board PDM microphone**, and the audio travels to the Pi **over the USB serial
-link** as a single base64 line on a new `voice/audio` endpoint - not over Wi-Fi, so the
+Row indication runs on the 8x8 matrix via `matrixFillRow`; the WS2813 strip it is
+eventually moving to is still not wired. The lookup half is reachable without any of the
+voice path, through `GET /api/tools/lookup` and the `tools/lookup` serial endpoint, so
+the dashboard can exercise it directly.
+
+`docs/PLAN-voice-lookup.md` is the implementation plan for this feature. The audio
+travels from the XIAO's **on-board PDM microphone** to the Pi **over the USB serial
+link**, as a single base64 line on the `voice/audio` endpoint - not over Wi-Fi, so the
 radio keeps its one job of OTA updates and the voice path depends on only one device
-being on the network. The plan re-scopes the wake word out in favour of the push-to-talk
-button, and orders the work so the transcript-to-tool matching - the only genuinely hard
-part - is built and tested first, with no hardware.
-
-A **bench harness** for the request half now exists in the firmware: a touch pad (or
-the `lookup <tool name>` serial command) stands in for the microphone and drives the
-real `tools/lookup` round trip, blinking the row number on the onboard LED because the
-matrix is not wired. It is a stand-in for the voice flow, not a step toward it - the
-wake word, Whisper, and matrix work below are all still unstarted.
+being on the network.
 
 **Purpose**: Allow users to request tool locations via voice commands, with visual feedback via color-coded LED indicators.
 
 **Hardware Requirements**:
-- External microphone module
+- The XIAO's on-board PDM microphone on the Sense board (no external module - see Status)
 - 8x8 RGB LED matrix (one position per row; 6 rows total)
 - OLED display for exact drawer labels
 - USB serial connectivity to the API (see Communication Protocol)
