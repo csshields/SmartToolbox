@@ -180,9 +180,9 @@ When working on this project:
 - [x] Connect Grove Vision AI V2 over I2C
 - [ ] **Next: Deploy a SenseCraft model** so `vision/observe` carries real labels
 - [x] Implement Wi-Fi OTA firmware updates (see Feature 4 in Firmware Specifications)
-- [ ] Wire the I2C hub, OLED, and 8x8 matrix
+- [x] Wire the OLED and the 8x8 matrix on the shared I2C bus - both initialised in `setup()` and running
 - [x] Select microphone hardware - the XIAO's own PDM mic on the Sense board, fitted 2026-08-28
-- [ ] Prove the microphone on hardware (`docs/PLAN-mic-bringup.md` Step 1)
+- [x] Prove the microphone on hardware - RMS 17 quiet against 210 spoken into, 2026-08-29 (`docs/PLAN-mic-bringup.md` Step 1)
 - [ ] Add power management
 
 ## Notes
@@ -374,6 +374,7 @@ removed, and the API now has no runtime dependencies at all.
 | POST | `/api/vision/observations` | Record camera detections for a drawer. **All or nothing**: the whole batch is validated before any of it is written, and written in one transaction |
 | GET | `/api/firmware/latest?currentVersion=` | **OTA update check.** Requires an `X-Device-Key` header. 200 streams the newer `.bin`, 204 means already current, 401 rejects a bad key, 503 means `DEVICE_KEY` is unconfigured |
 | GET | `/api/devices` | Device status: last contact, firmware version, boot count, plus the latest firmware on disk and whether the serial listener is running |
+| POST | `/api/devices/command` | Queue `check-firmware` or `reboot` for the device to collect on its next heartbeat. The Pi cannot push - see Device Commands |
 | GET | `/api/logs?limit=` | Recent request log (default 50, capped at 200). Includes serial traffic, logged with method `SERIAL` and path `serial:<endpoint>` |
 | GET | `/api/settings/toolbox` | Toolbox row count and the panel's ceiling |
 | PUT | `/api/settings/toolbox` | Set the row count. 400 outside 1-8, or when a drawer already uses a higher row |
@@ -475,9 +476,16 @@ a lookup that matched nothing is a successful lookup, not an error.
 
 ### Planned Endpoints
 
-**Status: Planned** - specified below but not implemented. `identify` and
-`identify-return` are the voice and vision flows described in Features 2 and 3; both
-are blocked on hardware, so neither has been built.
+**Status: Planned** - none of the paths below exist in the router. The reason differs
+by flow, and for neither one is it still "blocked on hardware".
+
+`identify` was the voice flow's planned shape, and it was superseded rather than
+blocked. Voice lookup shipped in 0.22.0 over the `voice/audio` serial endpoint and
+`resolveToolQuery`, so the box answers a spoken question today without this route
+existing at all. Do not build it in order to "finish" voice.
+
+`identify-return` is the vision flow, which is still genuinely blocked - on a deployed
+SenseCraft model, not on wiring. See Feature 3.
 
 ```
 POST   /api/tools/identify         - Identify tool from voice query
@@ -537,7 +545,8 @@ drawer for logging:
 
 ## Dashboard
 
-**Status: Implemented** - two pages under `api/public/`, sharing `app.css` (the whole
+**Status: Implemented** - three pages under `api/public/` (`index.html`,
+`drawers.html`, `devices.html`), sharing `app.css` (the whole
 design, every colour a custom property on `:root` with a dark-mode override) and
 `app.js` (`escapeHtml`, `setStatus`, `startHealthIndicator`).
 Page-specific logic stays inline in each page. No build step, no framework, no
@@ -1057,6 +1066,13 @@ are not yet wired have no pin assignment, and none is invented here.
 //   SDA = D4, SCL = D5
 // Confirm the GPIO numbers against the Seeed board doc in docs/SOURCES.md before
 // relying on the numeric values rather than the D-labels.
+
+// Also on that same bus, and needing no pin define of their own:
+//   - SSD1306 128x64 OLED, driven by U8g2 over hardware I2C.
+//   - Grove 8x8 RGB matrix. Its address is discovered at boot by
+//     scanGroveTwoRGBLedMatrixI2CAddress() and confirmed against the VID, so a
+//     missing panel degrades to matrixReady = false rather than hanging.
+// Both are wired and running; see updateMatrix() and the OLED calls in the sketch.
 ```
 
 Touch-capable exposed pads are GPIO1-9 (D0-D5, D8-D10). GPIO0 is the BOOT strapping
@@ -1827,11 +1843,11 @@ a `firmware_updates` table). What is actually built is deliberately smaller:
 - No AP-mode provisioning and no update history table. Credentials come from
   `arduino_secrets.h` at compile time.
 
-**No recovery path from a bad build.** An application-level update needs working
-firmware to receive it, so a build that crashes in `setup()`, wedges the loop, or breaks
-the serial link cannot be replaced over the air - the thing that would accept the next
-update is the thing that is broken. Today the recovery is a person, a USB cable, and a
-trip to the box. **Status: Implemented** 2026-08-29 -
+**Recovery from a bad build, over the cable already there.** An application-level
+update needs working firmware to receive it, so a build that crashes in `setup()`,
+wedges the loop, or breaks the serial link cannot be replaced over the air - the thing
+that would accept the next update is the thing that is broken. That gap is closed, and
+closing it no longer costs a trip to the box. **Status: Implemented** 2026-08-29 -
 `api/scripts/flash-device.ps1` and `flash-device.sh`, per `docs/PLAN-usb-flashing.md`.
 The Pi flashes the device with `esptool` over the cable already carrying `/dev/ttyACM0`,
 talking to the ROM bootloader, which runs before the application and therefore survives
@@ -2211,14 +2227,14 @@ Use consistent data formats across both projects:
 - [x] Serial reconnect (`api/src/serialTransport.ts` retries with backoff up to 5s, unlimited attempts)
 - [x] Make the firmware send real `tools/lookup` requests (touch pad bench harness)
 - [ ] **Next: deploy a SenseCraft model** so observations carry real labels
-- [ ] Wire the I2C hub, OLED, and 8x8 matrix
+- [x] Wire the OLED and the 8x8 matrix on the shared I2C bus - both initialised in `setup()` and running
 - [ ] Make the firmware send real `vision/observe` requests
 
 ## Phase 3: Advanced Features
 - [ ] Resolve the GPIO expansion question (unblocks PIR and button)
 - [x] Select microphone hardware - the XIAO's own PDM mic on the Sense board, fitted 2026-08-28
-- [ ] Prove the microphone on hardware (`docs/PLAN-mic-bringup.md` Step 1)
-- [ ] Carry the audio to the Pi as a single base64 line (the chunked protocol was rejected - see Communication Protocol)
+- [x] Prove the microphone on hardware - RMS 17 quiet against 210 spoken into, 2026-08-29 (`docs/PLAN-mic-bringup.md` Step 1)
+- [x] Carry the audio to the Pi as a single base64 line, shipped 0.20.0 (the chunked protocol was rejected - see Communication Protocol)
 - [ ] Optimize power consumption
 
 ## Phase 4: Polish
