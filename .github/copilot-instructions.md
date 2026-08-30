@@ -1510,11 +1510,14 @@ box, and two seconds was gone before you had looked up. The faces and the alert 
 have no second phase and nothing to read, so they hold on `MATRIX_NOTICE_HOLD_MS`
 rather than inheriting the digit's.
 
-The thinking face's eyes are deliberately mismatched, the trick Cozmo and Vector use:
-asymmetry reads as quizzical where two matched eyes read as merely awake. Both eyes
-share a baseline so the left one looks like it is widening, not like the face is
-sliding. Purple stays out of the result palette so the idle and thinking faces can
-never be read as an answer. The thinking face is held for exactly as long as `awaitingResponse`
+The thinking face's eyes are deliberately mismatched: asymmetry reads as quizzical
+where two matched eyes read as merely awake. Both eyes share a baseline so the tall
+one looks like it is widening, not like the face is sliding. Which eye is the tall
+one swaps every `MATRIX_THINK_SWAP_MS` (2.8s, an exact ten dot steps, so the two
+animations do not drift against each other) - a lookup that takes a while otherwise
+freezes into a single expression, and a frozen face reads as stuck rather than busy.
+Purple stays out of the result palette so the idle and thinking faces can never be
+read as an answer. The thinking face is held for exactly as long as `awaitingResponse`
 - every exit from it (answer, rejection, timeout) sets another mode, so there is no
 timer to fall out of sync.
 

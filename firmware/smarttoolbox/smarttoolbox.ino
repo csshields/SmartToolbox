@@ -281,8 +281,15 @@ const uint16_t MATRIX_BLINK_CLOSED_MS = 130;
 const uint16_t MATRIX_THINK_STEP_MS = 280;
 const uint8_t MATRIX_THINK_PHASES = 4;
 
+// Which eye is the tall one changes sides on its own clock, slow enough that the
+// swap reads as the face looking again rather than as a flicker. An exact ten dot
+// steps, so the two animations stay in step instead of drifting against each other.
+const uint16_t MATRIX_THINK_SWAP_MS = 2800;
+
 uint32_t matrixThinkNextAt = 0;
 uint8_t matrixThinkPhase = 0;
+uint32_t matrixThinkSwapAt = 0;
+bool matrixThinkRightBigger = false;
 
 // The boot spinner turns a good deal faster than the thinking face blinks its
 // dots: sixteen positions at the think cadence would take four and a half
@@ -370,20 +377,26 @@ void drawFace(bool eyesClosed) {
 // "..." anything else shows while it waits. Purple like the idle face, and for
 // the same reason: this is the box thinking, not an answer, and the result
 // palette has to stay unambiguous.
-void drawThinkingFace(uint8_t phase) {
+void drawThinkingFace(uint8_t phase, bool rightBigger) {
   matrixClear();
 
-  // Mismatched eyes: the left one is a row taller than the right. That
-  // asymmetry is what makes the face read as quizzical rather than just awake -
-  // the same trick Cozmo and Vector use. Both sit on the same baseline at y=3,
-  // so the left eye reads as widening rather than the whole face sliding up.
+  // Mismatched eyes: one is a row taller than the other. That asymmetry is what
+  // makes the face read as quizzical rather than just awake. Both sit on the same
+  // baseline at y=3, so the tall eye reads as widening rather than the whole face
+  // sliding up.
+  //
+  // The tall one swaps sides every MATRIX_THINK_SWAP_MS. A lookup that takes a
+  // while otherwise freezes into one expression, and a face frozen mid-thought
+  // looks stuck rather than busy.
+  const uint8_t tallX = rightBigger ? 5 : 1;
+  const uint8_t shortX = rightBigger ? 1 : 5;
   for (uint8_t y = 1; y <= 3; y++) {
-    matrixSetPixel(1, y, EYE_COLOR);
-    matrixSetPixel(2, y, EYE_COLOR);
+    matrixSetPixel(tallX, y, EYE_COLOR);
+    matrixSetPixel(tallX + 1, y, EYE_COLOR);
   }
   for (uint8_t y = 2; y <= 3; y++) {
-    matrixSetPixel(5, y, EYE_COLOR);
-    matrixSetPixel(6, y, EYE_COLOR);
+    matrixSetPixel(shortX, y, EYE_COLOR);
+    matrixSetPixel(shortX + 1, y, EYE_COLOR);
   }
 
   for (uint8_t dot = 0; dot < phase && dot < 3; dot++) {
@@ -623,7 +636,9 @@ void startMatrixThinking() {
   matrixMode = MATRIX_THINKING;
   matrixThinkPhase = 0;
   matrixThinkNextAt = millis() + MATRIX_THINK_STEP_MS;
-  drawThinkingFace(matrixThinkPhase);
+  matrixThinkRightBigger = false; // Every lookup starts from the same face.
+  matrixThinkSwapAt = millis() + MATRIX_THINK_SWAP_MS;
+  drawThinkingFace(matrixThinkPhase, matrixThinkRightBigger);
   matrixPush();
 }
 
@@ -676,10 +691,24 @@ void updateMatrix() {
   }
 
   if (matrixMode == MATRIX_THINKING) {
+    bool redrawThinking = false;
+
     if (millis() >= matrixThinkNextAt) {
       matrixThinkPhase = (uint8_t)((matrixThinkPhase + 1) % MATRIX_THINK_PHASES);
       matrixThinkNextAt = millis() + MATRIX_THINK_STEP_MS;
-      drawThinkingFace(matrixThinkPhase);
+      redrawThinking = true;
+    }
+
+    // The dots and the eyes run on separate clocks, so one draw covers both when
+    // they come due in the same pass - the panel only needs the finished frame.
+    if (millis() >= matrixThinkSwapAt) {
+      matrixThinkRightBigger = !matrixThinkRightBigger;
+      matrixThinkSwapAt = millis() + MATRIX_THINK_SWAP_MS;
+      redrawThinking = true;
+    }
+
+    if (redrawThinking) {
+      drawThinkingFace(matrixThinkPhase, matrixThinkRightBigger);
       matrixPush();
     }
     return;
