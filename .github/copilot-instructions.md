@@ -1519,8 +1519,13 @@ has run on hardware.
 
 ### Feature 2: Tool Drawer Requests (Voice-Activated)
 
-**Status: Partial** - **voice reaches Whisper and the transcript reaches the OLED** as of
-2026-08-29 (0.20.0): hold the pad, speak, and what you said appears on the screen. What
+**Status: Partial** - **voice reaches Whisper and the transcript reaches the OLED**, and
+this is proven by a person speaking to the box, not by inspection: "Massachusetts" was
+said and came back exactly. Hold the pad, speak, and what you said appears on the screen.
+Whisper is told `language=en` rather than left to guess, which is both more reliable on
+quiet audio and about 2.5s faster. The audio itself sits at roughly 4-10% of full scale -
+workable, but the DC offset is not yet stripped and no gain is applied, so the margin is
+thinner than it should be. See `docs/PLAN-mic-bringup.md`. What
 is still missing is the half that turns those words into a drawer - `resolveToolQuery`
 does not exist, so nothing is matched or looked up yet. That is
 `docs/PLAN-voice-lookup.md`, deliberately a separate change. The wake word remains out of
