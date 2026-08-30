@@ -1201,9 +1201,10 @@ Hardware Bring-Up table for what that looks like in practice.
 
 ### API Server ↔ Transcription
 
-**Status: Partial** - provider selection, persistence, and the reachability test are
-implemented (`/api/settings/transcription`). Actual audio transcription is not, because
-no audio source exists yet.
+**Status: Implemented** 2026-08-29 - `transcribeAudio` in `api/src/voice.ts`, reached from
+the `voice/audio` serial endpoint. Provider selection, persistence and the reachability
+test were already there (`/api/settings/transcription`); what was missing was an audio
+source, and the microphone now provides one.
 
 - **Default provider**: self-hosted Whisper on the NAS, `http://192.168.50.10:9000`
   (Swagger docs at `/docs`). Stored in `config` as `transcription_nas_url`.
@@ -1211,7 +1212,21 @@ no audio source exists yet.
   `openai`. Requires `OPENAI_API_KEY` in the environment.
 - **Reachability test**: `nas_whisper` probes `<nasUrl>/docs`; `openai` probes
   `/v1/models` with the configured key. Both use a 5-second timeout.
-- **Timeout/Retry** for real transcription calls: 5-second timeout, 2 retries.
+- **The ASR request shape is taken from the service, not assumed.** NAS Whisper is
+  `whisper-asr-webservice` 1.9.1: `POST <nasUrl>/asr?task=transcribe&output=txt&encode=true&language=en`
+  with a multipart **`audio_file`** field. That field name differs from OpenAI's `file`,
+  and a wrong one returns a bare 422 with nothing diagnostic in it - it came from the
+  service's own `/openapi.json`. OpenAI uses `file` plus `model=whisper-1`.
+- **The language is told, not detected.** `language=en` on both providers. Whisper guesses
+  otherwise, and on this device's quiet audio a misdetected language turns a good
+  recording into confident nonsense. It is also ~2.5s faster: a one-second probe went from
+  ~9.3s to ~6.8s.
+- **Timeout: 90 seconds, and that is measured rather than chosen.** One second of audio
+  takes ~9.3s warm against this NAS, repeatably, and the first call after the container
+  has idled blew through a 30s ceiling while the model loaded. The device allows 100s -
+  deliberately longer, so it never abandons a request the Pi is still working on. No
+  retries: a retry doubles a wait that is already ten seconds, and the retry for a
+  recording is pressing the pad again.
 
 ### Data Format
 Define binary or JSON format for sensor data transmission:
