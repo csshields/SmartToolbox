@@ -580,3 +580,38 @@ test("findToolLocations still takes the exact path for an exact name", () => {
   expect(found?.tool).toBe("Claw Hammer");
   expect(found?.matchType).toBe("exact");
 });
+
+test("findToolLocations returns every matched tool, best first", () => {
+  // "screwdriver" is ambiguous across the three seeded above. The flat fields
+  // describe matches[0]; the rest are there for a caller that can show them.
+  const found = findToolLocations("screwdriver");
+
+  expect(found?.matches.length).toBe(3);
+  expect(found?.tool).toBe(found?.matches[0].tool);
+  expect(found?.matches.map((match) => match.tool).sort()).toEqual([
+    "Flathead Screwdriver",
+    "Phillips Screwdriver",
+    "Torx Screwdriver",
+  ]);
+});
+
+test("every entry in matches carries its own locations, not just a name", () => {
+  // The whole reason this is an array of objects rather than an array of strings:
+  // the LED strip will need a row per tool, and resolving that later would mean a
+  // second query per alternative.
+  const found = findToolLocations("screwdriver");
+
+  for (const match of found?.matches ?? []) {
+    expect(match.primaryLocation?.rowNumber).toBe(voiceDrawer.rowNumber);
+    expect(match.rows.length).toBeGreaterThan(0);
+  }
+});
+
+test("an unambiguous query still returns a single-entry array", () => {
+  // So a caller can read matches uniformly rather than special-casing the common
+  // shape - matches[0] is always the answer.
+  const found = findToolLocations("claw hammer");
+
+  expect(found?.matches.length).toBe(1);
+  expect(found?.matches[0].tool).toBe("Claw Hammer");
+});

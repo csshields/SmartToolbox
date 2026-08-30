@@ -50,8 +50,19 @@ export type ToolQueryMatch = {
   alternatives: string[];
 };
 
-export type ToolLookupResult = {
+// One tool the query matched, with everywhere it lives.
+export type ToolMatch = {
   tool: string;
+  // The one location a caller should act on. Everything a display needs comes
+  // from this single object, so a row and a label can never describe different
+  // drawers. Null only when the tool is known but has no location at all.
+  primaryLocation: ToolLocation | null;
+  hasMultipleLocations: boolean;
+  drawers: ToolLocation[];
+  rows: Array<{ rowNumber: number; certainty: number | null }>;
+};
+
+export type ToolLookupResult = ToolMatch & {
   // How the query reached this tool. "exact" is the name as stored; the others
   // are the resolver's work, and a caller that cares about certainty - the
   // dashboard does, the firmware does not - can say so.
@@ -60,14 +71,17 @@ export type ToolLookupResult = {
   // visible: "found Needle-nose Pliers for 'needle nose players'" is a diagnosis,
   // where "found Needle-nose Pliers" alone hides the interesting part.
   query: string;
-  alternatives: string[];
-  // The one location a caller should act on. Everything a display needs comes
-  // from this single object, so a row and a label can never describe different
-  // drawers. Null only when the tool is known but has no location at all.
-  primaryLocation: ToolLocation | null;
-  hasMultipleLocations: boolean;
-  drawers: ToolLocation[];
-  rows: Array<{ rowNumber: number; certainty: number | null }>;
+  // Every tool the query matched, best first. The fields above describe
+  // `matches[0]` and are kept flat so existing callers - the firmware among them -
+  // do not have to change to keep working.
+  //
+  // More than one entry means the query was ambiguous: "screwdriver" when the box
+  // owns three. Nothing here picks between them. The 8x8 matrix cannot show
+  // several at once in a way anyone could read - six usable rows, and a lit row
+  // says nothing about *which* tool it belongs to - so the firmware displays the
+  // first and the rest wait for the LED strip, which is where row indication is
+  // going anyway. See the Row Indication decision in the spec.
+  matches: ToolMatch[];
 };
 
 export type RequestLogRecord = {
@@ -940,19 +954,11 @@ export function resolveToolQuery(query: string): ToolQueryMatch | null {
   return { toolName: winners[0], matchType: "partial", alternatives: winners.slice(1) };
 }
 
-export function findToolLocations(toolName: string): ToolLookupResult | null {
-  const normalizedToolName = normalizeName(toolName, "Tool name");
-
-  // Deliberately here rather than on a voice-only path: tools/lookup over serial,
-  // the HTTP endpoint and the dashboard all gain fuzzy matching from one change,
-  // and there is no second code path to keep in step.
-  const match = resolveToolQuery(normalizedToolName);
-
-  if (!match) {
-    return null;
-  }
-
-  const drawers = selectToolLocations.all(match.toolName) as ToolLocation[];
+// Everywhere one named tool lives. Lifted out of findToolLocations so that an
+// ambiguous query gets the same treatment for every tool it matched, rather than
+// full detail for the winner and a bare name for the rest.
+function locateTool(tool: string): ToolMatch {
+  const drawers = selectToolLocations.all(tool) as ToolLocation[];
   const rowsByNumber = new Map<number, number | null>();
 
   for (const drawer of drawers) {
@@ -967,14 +973,33 @@ export function findToolLocations(toolName: string): ToolLookupResult | null {
   }
 
   return {
-    tool: match.toolName,
-    matchType: match.matchType,
-    query: normalizedToolName,
-    alternatives: match.alternatives,
+    tool,
     primaryLocation: pickPrimaryLocation(drawers),
     hasMultipleLocations: drawers.length > 1,
     drawers,
     rows: [...rowsByNumber.entries()].map(([rowNumber, certainty]) => ({ rowNumber, certainty })),
+  };
+}
+
+export function findToolLocations(toolName: string): ToolLookupResult | null {
+  const normalizedToolName = normalizeName(toolName, "Tool name");
+
+  // Deliberately here rather than on a voice-only path: tools/lookup over serial,
+  // the HTTP endpoint and the dashboard all gain fuzzy matching from one change,
+  // and there is no second code path to keep in step.
+  const match = resolveToolQuery(normalizedToolName);
+
+  if (!match) {
+    return null;
+  }
+
+  const matches = [match.toolName, ...match.alternatives].map(locateTool);
+
+  return {
+    ...matches[0],
+    matchType: match.matchType,
+    query: normalizedToolName,
+    matches,
   };
 }
 
