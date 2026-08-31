@@ -36,12 +36,34 @@ description: "Firmware guidance for the Seeed XIAO ESP32S3, including onboard LE
 ## Building and flashing
 
 ```
-arduino-cli compile --upload -p COM<n> --fqbn esp32:esp32:XIAO_ESP32S3:PSRAM=opi firmware/smarttoolbox
+arduino-cli compile --upload -p COM<n> firmware/smarttoolbox
 ```
 
+No `--fqbn` needed: `firmware/smarttoolbox/sketch.yaml` declares a `release` profile
+and sets it as the default, so the board, the `PSRAM=opi` option, and the pinned core
+and library versions all come from there. Pass `--profile release` explicitly if you
+prefer it visible in the command.
+
+**A profile build ignores `~/Documents/Arduino/libraries` entirely.** It fetches the
+pinned versions into a sketch-local directory instead. That is the point of it - an
+`#include <ArduinoJson.h>` otherwise resolves to whatever is installed on the machine,
+so updating a library for an unrelated project silently changes what ships. The first
+profile build downloads its own core and toolchain and takes many minutes; later ones
+reuse that cache.
+
+The Grove 8x8 RGB matrix driver is **vendored into the sketch folder**
+(`grove_two_rgb_led_matrix.h/.cpp`, MIT) rather than pinned in the profile, because it
+is not in the Arduino library registry. The registry's similarly named "Grove - LED
+Matrix Driver" is a different part - an STM32-based 64x32 dual-colour driver - and is
+not a substitute. Provenance is recorded in `docs/SOURCES.md`.
+
+To re-pin after a deliberate upgrade, build the way you normally would and run
+`arduino-cli compile --fqbn esp32:esp32:XIAO_ESP32S3:PSRAM=opi --dump-profile
+firmware/smarttoolbox`, then copy the versions it prints into `sketch.yaml`.
+
 `arduino-cli board list` identifies the XIAO only as a generic "ESP32 Family Device"
-with two candidate FQBNs, so pass `--fqbn` explicitly. The COM port moves between
-sessions; compare the list with the board unplugged to identify it.
+with two candidate FQBNs. The COM port moves between sessions; compare the list with
+the board unplugged to identify it.
 
 ### Resetting the board without reflashing
 
@@ -120,8 +142,11 @@ The trap is that it makes a working code path look like a dead one. The OTA chec
 prints at every branch, and none of it survived - which was read for some time as "the
 update check is not running". Anything that must be seen from the Pi has to be printed
 *after* the link is proven, which is what `reportLastOtaResult()` is for: it holds the
-outcome and prints it on the first heartbeat. The OLED is the only witness to the boot
-window itself.
+outcome and prints it from `promoteToReady`, on the Pi's first reply. It used to fire on
+the first heartbeat, which was an approximation of the same thing and is now wrong - the
+waiting retry sends its first status two seconds after boot, and printing there would put
+the log straight back into the void it was rescued from. The OLED is the only witness to
+the boot window itself.
 
 ### The OTA boot check cannot win a cold start
 

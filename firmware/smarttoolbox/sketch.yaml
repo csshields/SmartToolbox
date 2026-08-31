@@ -1,0 +1,37 @@
+# Build profile: pins the core and library versions this firmware is known to
+# build against.
+#
+# A profile build ignores the globally installed libraries in
+# ~/Documents/Arduino/libraries entirely and fetches these exact versions into a
+# directory scoped to this sketch. That is the point: without it, an
+# `#include <ArduinoJson.h>` resolves to whatever happens to be installed on the
+# machine doing the build, so updating a library for an unrelated project
+# silently changes what ships to the device.
+#
+# default_profile means a bare `arduino-cli compile firmware/smarttoolbox` uses
+# these pins too - forgetting `--profile` should not quietly fall back to the
+# global libraries.
+#
+# PSRAM=opi in the fqbn is load-bearing, not tuning. The bare fqbn takes the
+# first PSRAM menu entry, which is Disabled, and ps_malloc then returns null on
+# every call - so the microphone buffer cannot be allocated at all. See
+# release-firmware.ps1 and the ps_malloc failure path in smarttoolbox.ino.
+#
+# The Grove 8x8 RGB matrix driver is not listed here because it is not in the
+# Arduino library registry. It is vendored into this folder instead - see
+# grove_two_rgb_led_matrix.h/.cpp and docs/SOURCES.md.
+#
+# To re-pin after a deliberate upgrade, build the way you normally would and run
+# `arduino-cli compile --fqbn <fqbn> --dump-profile firmware/smarttoolbox`.
+
+profiles:
+  release:
+    notes: Known-good pins for the shipped firmware.
+    fqbn: esp32:esp32:XIAO_ESP32S3:PSRAM=opi
+    platforms:
+      - platform: esp32:esp32 (3.3.11)
+    libraries:
+      - ArduinoJson (7.4.3)
+      - U8g2 (2.35.30)
+
+default_profile: release
