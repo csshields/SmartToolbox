@@ -88,10 +88,15 @@ const float TOUCH_TRIGGER_RATIO = 1.15f;
 // bringing up a new pad, then turn it off again.
 #define TOUCH_DEBUG 0
 
-// Parallel to TOUCH_PINS. Only pad D0 is mapped for now; add entries as more
-// tools are seeded. Unmapped pads are never scanned.
-const char* TOUCH_TOOL_NAMES[TOUCH_PIN_COUNT] = {
-  "Phillips Screwdriver", nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+// Parallel to TOUCH_PINS. Only pad D0 is wired for now; turn one on as more pads
+// are added. Inactive pads are never scanned - reading a pad back to back with
+// another is what makes the S3 touch peripheral return a frozen value.
+//
+// This used to be a tool name per pad, from before the pad had a microphone
+// behind it. Every pad now does the same thing - hold it and say what you want -
+// so what the array has to say is which pads exist.
+const bool TOUCH_PAD_ACTIVE[TOUCH_PIN_COUNT] = {
+  true, false, false, false, false, false, false,
 };
 
 const uint16_t RESPONSE_TIMEOUT_MS = 2000;
@@ -191,12 +196,11 @@ bool lastOtaResultReported = false;
 
 // --- Microphone (PDM, on the XIAO Sense expansion board) ---------------------
 //
-// Bring-up only. With MIC_BRINGUP set, pad D0 records a fixed clip and prints
-// statistics instead of running a tool lookup - see docs/PLAN-mic-bringup.md
-// Step 1. The point is a number that separates "no data", "wrong pins", and
-// "working", three failures that are otherwise identical from the outside.
-// Set this back to 0 to get the lookup pad behaviour back.
-#define MIC_BRINGUP 1
+// Holding a pad records; releasing it sends the audio to the Pi to be
+// transcribed and looked up. The statistics line the bring-up was built around
+// still goes out alongside the transcript - see recordAndReportMic - because it
+// is the one number that separates "no data", "wrong pins" and "working", three
+// failures that are otherwise identical from the outside.
 
 // Fixed by the Sense board's board-to-board connector - not free choices.
 const int8_t MIC_CLOCK_PIN = 42;
@@ -678,7 +682,7 @@ void updateMatrix() {
 
   if (matrixMode == MATRIX_WAITING) {
     if (waitingLong) {
-      return; // The face is drawn once by enterWaitingLong and then held.
+      return; // The face is drawn once by pollWaitingLong and then held.
     }
 
     if (millis() >= matrixSpinNextAt) {
@@ -724,6 +728,24 @@ void updateMatrix() {
     }
 
     if (millis() >= matrixResultUntil) {
+      // Back to what the box actually is, which is not always the idle face. A
+      // result can be shown before the Pi has ever answered - the response
+      // timeout raises its alert on a cold start - and falling through to
+      // MATRIX_EYES there left the happy "I am fine" face on a box that could
+      // not answer anything, with the spinner gone for good: pollWaitingLong
+      // has already latched and will not redraw the sad face either.
+      if (!deviceReady) {
+        matrixMode = MATRIX_WAITING;
+        if (waitingLong) {
+          drawSadFace(EYE_COLOR);
+        } else {
+          matrixSpinNextAt = millis() + MATRIX_SPIN_STEP_MS;
+          drawSpinner(matrixSpinPhase);
+        }
+        matrixPush();
+        return;
+      }
+
       matrixMode = MATRIX_EYES;
       matrixEyesClosed = false;
       drawFace(false);
@@ -829,7 +851,18 @@ void promoteToReady() {
   // what the OTA log needs - see reportLastOtaResult.
   reportLastOtaResult();
 
-  showStatus("SmartToolbox", "Ready", MIC_BRINGUP ? "Hold D0 to record" : "Touch a pad");
+  // The promotion above is unconditional; the repaint below is not. This runs on
+  // any parsed line, before the pending-id check, and a request can be in flight
+  // when the first reply lands: pollWaitingRetry keeps sending device/status
+  // while a transcription runs, deliberately unguarded by awaitingResponse. The
+  // reply to one of those was painting "Ready / Hold D0 to record" over
+  // "Transcribing", so the box claimed to be idle in the middle of the one
+  // operation it cannot interrupt. Whoever owns the screen redraws when it ends.
+  if (awaitingResponse) {
+    return;
+  }
+
+  showStatus("SmartToolbox", "Ready", "Hold D0 to record");
 
   matrixMode = MATRIX_EYES;
   matrixEyesClosed = false;
@@ -1030,6 +1063,11 @@ bool beginMicrophone() {
   return true;
 }
 
+// Records for as long as the pad is held, into the PSRAM buffer the caller
+// allocated, and leaves the reporting to recordAndReportMic.
+//
+// Those statistics are what the bring-up was built around and they still earn
+// their place next to the transcript: a single RMS figure
 // that rises by an obvious multiple when spoken into is what proves the mic, and
 // it is one number rather than 32,000.
 //
@@ -1039,8 +1077,11 @@ bool beginMicrophone() {
 // pad being released, and the wave needs to animate; neither is possible inside
 // a call that does not return for two seconds.
 //
-// Returns bytes captured, or 0 if the hold was too short to be a word.
-size_t recordWhileHeld(int16_t* samples, size_t pinIndex) {
+// Returns bytes captured, and reports how long the pad was held through heldMs.
+// Both numbers, because a hold too short to be a word and a microphone that
+// yields nothing are different failures with different fixes, and folding them
+// into one zero return meant the box could only ever name the first of them.
+size_t recordWhileHeld(int16_t* samples, size_t pinIndex, uint32_t* heldMs) {
   size_t bytesRead = 0;
   const uint32_t startedAt = millis();
   uint8_t wavePhase = 0;
@@ -1076,7 +1117,12 @@ size_t recordWhileHeld(int16_t* samples, size_t pinIndex) {
     // with: one noisy sample must not end a word mid-syllable. Checked after the
     // read, so the chunk a release lands in is still kept - it holds the end of
     // what was said.
-    if (releasedReads >= 2 && millis() - startedAt >= MIC_MIN_HOLD_MS) {
+    //
+    // The release ends the recording whatever its length. Refusing to break
+    // before MIC_MIN_HOLD_MS made the too-short check below unreachable: a 50ms
+    // brush against the pad kept recording to exactly the floor and went off to
+    // Whisper as though it were a word, locking the pad for the whole round trip.
+    if (releasedReads >= 2) {
       break;
     }
 
@@ -1085,9 +1131,7 @@ size_t recordWhileHeld(int16_t* samples, size_t pinIndex) {
     }
   }
 
-  if (millis() - startedAt < MIC_MIN_HOLD_MS) {
-    return 0;
-  }
+  *heldMs = millis() - startedAt;
 
   return bytesRead;
 }
@@ -1169,13 +1213,27 @@ void recordAndReportMic(size_t pinIndex) {
     return;
   }
 
-  const size_t bytesRead = recordWhileHeld(samples, pinIndex);
+  uint32_t heldMs = 0;
+  const size_t bytesRead = recordWhileHeld(samples, pinIndex, &heldMs);
   const size_t sampleCount = bytesRead / MIC_BYTES_PER_SAMPLE;
 
-  if (bytesRead == 0) {
+  // Two failures that used to say the same thing. No bytes at all is a
+  // microphone that is not working - wrong pins, or an I2S peripheral that has
+  // frozen - and reporting it as "Too short" told whoever was standing at the
+  // box to hold the pad longer, which can never help. That is the misdiagnosis
+  // the Debugging section of the spec exists to prevent, so the two now name
+  // themselves separately on both the OLED and the serial log.
+  if (bytesRead == 0 || heldMs < MIC_MIN_HOLD_MS) {
     free(samples);
-    Serial.println("MIC too-short");
-    showStatus("Listening", "Too short", "Hold and speak");
+
+    if (bytesRead == 0) {
+      Serial.println("MIC error=no-data");
+      showStatus("Microphone", "No data", "Check the mic");
+    } else {
+      Serial.println("MIC too-short");
+      showStatus("Listening", "Too short", "Hold and speak");
+    }
+
     if (matrixReady) {
       drawFace(false);
       scheduleNextBlink();
@@ -1300,8 +1358,8 @@ void setup() {
   showStatus("SmartToolbox", "Starting up", "Calibrating touch");
 
   for (size_t pinIndex = 0; pinIndex < TOUCH_PIN_COUNT; pinIndex++) {
-    if (TOUCH_TOOL_NAMES[pinIndex] == nullptr) {
-      continue; // Unmapped pad - never scanned, so never needs a baseline.
+    if (!TOUCH_PAD_ACTIVE[pinIndex]) {
+      continue; // Inactive pad - never scanned, so never needs a baseline.
     }
     // The first reads after boot come back roughly 8x high while the touch
     // peripheral settles. Discard them, or the baseline lands far above any
@@ -1382,9 +1440,9 @@ void pollTouch() {
   int touchedPinIndex = -1;
 
   for (size_t pinIndex = 0; pinIndex < TOUCH_PIN_COUNT; pinIndex++) {
-    // Skip unmapped pads. Beyond saving work, reading every pad back-to-back
+    // Skip inactive pads. Beyond saving work, reading every pad back-to-back
     // with no gap makes the S3 touch peripheral return a frozen garbage value.
-    if (TOUCH_TOOL_NAMES[pinIndex] == nullptr) {
+    if (!TOUCH_PAD_ACTIVE[pinIndex]) {
       continue;
     }
     const uint32_t touchValue = touchRead(TOUCH_PINS[pinIndex]);
@@ -1418,38 +1476,34 @@ void pollTouch() {
   wasTouched = isTouched;
 }
 
-// Only start a new lookup when idle - not already waiting on one or blinking its result.
+// Only start a new recording when idle - not already waiting on a lookup or
+// blinking its result.
 void onTouchStart(int pinIndex) {
   if (pinIndex < 0 || awaitingResponse || blinkRemaining > 0) {
     return;
   }
 
-#if MIC_BRINGUP
-  // Bring-up takes the pad over entirely. The lookup path is proven and is not
-  // being changed here - it comes back by setting MIC_BRINGUP to 0.
-  recordAndReportMic((size_t)pinIndex);
-  return;
-#else
-  const char* toolName = TOUCH_TOOL_NAMES[pinIndex];
-  if (toolName == nullptr) {
-    return;
-  }
-
-  // Inside the lookup path deliberately, not at the top of this function: with
-  // MIC_BRINGUP set the pad records instead, and recording never involves the
-  // Pi, so a blanket guard would make mic bring-up untestable on any bench
-  // where nothing answers.
-  //
-  // A touch here is someone asking "is it on?", and the honest answer is
-  // already on the screen. Sending the lookup anyway would come back "No
-  // response - Is the Pi service up?", blaming a Pi that is merely booting.
+  // A hold here is someone asking "is it on?", and the honest answer is already
+  // on the screen. Recording anyway would spend ten seconds and come back "No
+  // response", blaming a Pi that is merely booting. This guard used to sit
+  // inside the lookup path so that microphone bring-up stayed testable on a
+  // bench where nothing answered; the bring-up is done, and the pad's job now
+  // needs the Pi like any other.
   if (!deviceReady) {
     showWaitingStatus();
     return;
   }
 
-  sendToolLookupRequest(toolName);
-#endif
+  // Hold the pad, say what you want, and the drawer comes back on the OLED and
+  // the matrix. That is the whole of Feature 2 and the only thing a pad does.
+  //
+  // A hard-coded tool name per pad used to live here behind MIC_BRINGUP=0, from
+  // before the microphone worked. It was a compile flag whose off position
+  // deleted the shipped feature, and there was no build in which both halves
+  // worked. The lookup path it exercised is unchanged and still reachable two
+  // other ways: the Pi's tools/lookup endpoint, and "lookup <name>" typed into a
+  // serial monitor - see handleIncomingLine.
+  recordAndReportMic((size_t)pinIndex);
 }
 
 void sendToolLookupRequest(const char* toolName) {
