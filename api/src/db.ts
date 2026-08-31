@@ -45,8 +45,10 @@ export type ToolMatchType = "exact" | "tokens" | "partial";
 export type ToolQueryMatch = {
   toolName: string;
   matchType: ToolMatchType;
-  // Every other tool that scored as well on a partial match. Empty for exact and
-  // token matches, which are unambiguous by construction.
+  // Every other tool that matched as well as this one. Empty only for an exact
+  // match, which names one stored tool by definition; a token match can be
+  // ambiguous too - "screwdriver" matches every screwdriver in the box - so a
+  // caller that cares about certainty has to read this, not the matchType.
   alternatives: string[];
 };
 
@@ -837,15 +839,28 @@ function pickPrimaryLocation(locations: ToolLocation[]): ToolLocation | null {
 const CARRIER_WORDS = new Set([
   "where", "is", "are", "was", "were", "find", "get", "show", "me", "i", "need",
   "want", "my", "the", "a", "an", "please", "in", "on", "at", "of", "to", "for",
-  "drawer", "tool", "box", "toolbox", "s",
+  "s",
 ]);
+
+// Carrier words that are also parts of real tool names: "box wrench", "box
+// cutter", "tool steel". Stripping these along with the rest threw away the one
+// word that identified the tool - "box wrench" reduced to "wrench", matched
+// every wrench in the box, and returned whichever name was shortest. They are
+// dropped only on a second pass, after a reading that keeps them has been tried
+// and failed, so "box wrench" resolves exactly and "which drawer is the hammer
+// in" still resolves at all.
+const SOFT_CARRIER_WORDS = new Set(["drawer", "tool", "box", "toolbox"]);
 
 // Words too common across a toolbox to identify anything on their own. A partial
 // match needs at least one token that is *not* in here, or "screwdriver" would
 // confidently pick one of three screwdrivers - see resolveToolQuery.
+//
+// Singular only: tokens go through singular() before this set is consulted, so
+// the plural entries this once carried - "pliers", "bits", "keys", "cutters" -
+// were words it could never be asked about.
 const GENERIC_WORDS = new Set([
-  "screwdriver", "wrench", "pliers", "plier", "hammer", "saw", "drill", "bit",
-  "bits", "key", "keys", "set", "socket", "driver", "cutter", "cutters", "tape",
+  "screwdriver", "wrench", "plier", "hammer", "saw", "drill", "bit", "key",
+  "set", "socket", "driver", "cutter", "tape",
 ]);
 
 function normalizeForMatching(value: string) {
@@ -873,10 +888,13 @@ function singular(token: string) {
   return token;
 }
 
-function meaningfulTokens(value: string) {
+// Tool names are always tokenized with the default: a stored "Box Wrench" has to
+// keep its "box", or nothing could ever match it on that word.
+function meaningfulTokens(value: string, dropSoftCarriers = false) {
   return normalizeForMatching(value)
     .split(" ")
     .filter((token) => token.length > 0 && !CARRIER_WORDS.has(token))
+    .filter((token) => !dropSoftCarriers || !SOFT_CARRIER_WORDS.has(token))
     .map(singular);
 }
 
@@ -885,6 +903,50 @@ const selectAllToolNames = database.query(`
   UNION
   SELECT tool_name AS name FROM drawer_observations WHERE superseded_at IS NULL
 `);
+
+type CatalogueEntry = { name: string; tokens: Set<string> };
+
+// Tier 2: every query token appears in the tool name. "needle nose pliers"
+// matches "Needle-nose Pliers". Shortest name wins a tie, because it is the one
+// with the least unmatched left over - the most specific fit.
+function matchEveryToken(catalogue: CatalogueEntry[], queryTokens: string[]): ToolQueryMatch | null {
+  const hits = catalogue
+    .filter((entry) => queryTokens.every((token) => entry.tokens.has(token)))
+    .map((entry) => entry.name)
+    .sort((left, right) => left.length - right.length);
+
+  if (hits.length === 0) {
+    return null;
+  }
+
+  return { toolName: hits[0], matchType: "tokens", alternatives: hits.slice(1) };
+}
+
+// Tier 3: best token overlap, but only on the strength of a distinctive word.
+// Without that rule "screwdriver" silently picks one of three screwdrivers; with
+// it, all three come back as alternatives and the matrix lights every row they
+// are in, which the rows array already supports.
+function matchBestOverlap(catalogue: CatalogueEntry[], queryTokens: string[]): ToolQueryMatch | null {
+  const scored = catalogue
+    .map((entry) => {
+      const shared = queryTokens.filter((token) => entry.tokens.has(token));
+      const distinctive = shared.some((token) => !GENERIC_WORDS.has(token));
+      return { name: entry.name, score: distinctive ? shared.length : 0 };
+    })
+    .filter((entry) => entry.score > 0);
+
+  if (scored.length === 0) {
+    return null;
+  }
+
+  const best = scored.reduce((highest, entry) => Math.max(highest, entry.score), 0);
+  const winners = scored
+    .filter((entry) => entry.score === best)
+    .map((entry) => entry.name)
+    .sort((left, right) => left.length - right.length);
+
+  return { toolName: winners[0], matchType: "partial", alternatives: winners.slice(1) };
+}
 
 // Returns the tool a query means, or null. Three tiers, first hit wins, and the
 // tier is reported rather than hidden - a caller that wants to distinguish a
@@ -903,55 +965,46 @@ export function resolveToolQuery(query: string): ToolQueryMatch | null {
     return { toolName: exact.name, matchType: "exact", alternatives: [] };
   }
 
+  // Soft carriers are kept here and dropped in the second pass below.
   const queryTokens = meaningfulTokens(trimmed);
   if (queryTokens.length === 0) {
     return null; // Carrier words only - "where is the" names no tool.
   }
 
-  const names = (selectAllToolNames.all() as Array<{ name: string }>).map((row) => row.name);
+  // Tokenized once. Both tiers and both passes read this same array; the shape
+  // this replaces called meaningfulTokens on every name in tier 2 and again in
+  // tier 3, so any query that fell through tokenized the whole catalogue twice.
+  const catalogue: CatalogueEntry[] = (selectAllToolNames.all() as Array<{ name: string }>).map(
+    (row) => ({ name: row.name, tokens: new Set(meaningfulTokens(row.name)) }),
+  );
 
-  // Tier 2: every query token appears in the tool name. "needle nose pliers"
-  // matches "Needle-nose Pliers". Shortest name wins a tie, because it is the
-  // one with the least unmatched left over - the most specific fit.
-  const tokenHits = names
-    .filter((name) => {
-      const nameTokens = new Set(meaningfulTokens(name));
-      return queryTokens.every((token) => nameTokens.has(token));
-    })
-    .sort((left, right) => left.length - right.length);
+  // Two readings of the same query. The first keeps the soft carrier words, so
+  // "box wrench" is tried as the tool it names before it is tried as "wrench";
+  // the second drops them, so "which drawer is the hammer in" still resolves.
+  const withoutSoftCarriers = meaningfulTokens(trimmed, true);
+  const readings =
+    withoutSoftCarriers.length > 0 && withoutSoftCarriers.length < queryTokens.length
+      ? [queryTokens, withoutSoftCarriers]
+      : [queryTokens];
 
-  if (tokenHits.length > 0) {
-    return { toolName: tokenHits[0], matchType: "tokens", alternatives: tokenHits.slice(1) };
+  // Tier 2 across both readings before tier 3 across either: a full token match
+  // on one reading beats a partial match on the other, or "box wrench" would
+  // come back as whatever else in the box happens to have "box" in its name.
+  for (const tokens of readings) {
+    const hit = matchEveryToken(catalogue, tokens);
+    if (hit) {
+      return hit;
+    }
   }
 
-  // Tier 3: best token overlap, but only on the strength of a distinctive word.
-  // Without that rule "screwdriver" silently picks one of three screwdrivers;
-  // with it, all three come back as alternatives and the matrix lights every row
-  // they are in, which the rows array already supports.
-  let best = 0;
-  const scored = names
-    .map((name) => {
-      const nameTokens = new Set(meaningfulTokens(name));
-      const shared = queryTokens.filter((token) => nameTokens.has(token));
-      const distinctive = shared.some((token) => !GENERIC_WORDS.has(token));
-      return { name, score: distinctive ? shared.length : 0 };
-    })
-    .filter((entry) => entry.score > 0);
-
-  for (const entry of scored) {
-    best = Math.max(best, entry.score);
+  for (const tokens of readings) {
+    const hit = matchBestOverlap(catalogue, tokens);
+    if (hit) {
+      return hit;
+    }
   }
 
-  if (best === 0) {
-    return null;
-  }
-
-  const winners = scored
-    .filter((entry) => entry.score === best)
-    .map((entry) => entry.name)
-    .sort((left, right) => left.length - right.length);
-
-  return { toolName: winners[0], matchType: "partial", alternatives: winners.slice(1) };
+  return null;
 }
 
 // Everywhere one named tool lives. Lifted out of findToolLocations so that an
