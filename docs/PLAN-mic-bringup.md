@@ -116,6 +116,10 @@ Firmware only, in `firmware/smarttoolbox/smarttoolbox.ino`:
 - `MIC_BRINGUP`, a compile flag at the top of the sketch. While it is `1`, pad D0
   records and reports instead of running a tool lookup. The lookup path is proven and
   is untouched behind the `#else`; setting the flag to `0` restores it.
+  **Superseded:** the flag is gone. Once the voice path shipped it was gating the
+  feature rather than the bring-up - its off position deleted Feature 2, and no build
+  had both halves working. Every pad now records; the lookup path is still reachable
+  through `tools/lookup` and the `lookup <name>` serial command.
 - `beginMicrophone()` - PDM RX on GPIO 42 clock / GPIO 41 data, 16 kHz, 16-bit, mono,
   via core 3.x `<ESP_I2S.h>`. Reports `Mic ready=0|1` at boot, the same shape as the
   existing `Matrix ready=` line.

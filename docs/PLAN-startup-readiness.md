@@ -314,7 +314,9 @@ All five steps, in `firmware/smarttoolbox/smarttoolbox.ino`. Compiles at 1,088,5
 - `MATRIX_WAITING` plus `SPINNER_RING[16]`, `drawSpinner`, `MATRIX_SPIN_STEP_MS` (90).
 - `drawAlertTriangle`, called from `showMatrixAlert` in place of the row fill.
 - The lookup guard sits inside the `#else` in `onTouchStart`, so `MIC_BRINGUP` is
-  unaffected.
+  unaffected. **Superseded:** `MIC_BRINGUP` was removed once the voice path shipped, and
+  the guard moved to the top of `onTouchStart`. The pad's job now needs the Pi, so there
+  is nothing left for the guard to be scoped around.
 
 ### What the code review then found - same day
 

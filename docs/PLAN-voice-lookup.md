@@ -428,6 +428,10 @@ no alphabetic content, is `NO_SPEECH` - a distinct error, not a failed lookup.
   duration of the capture, per Decision 2. Keep D0's direct lookup: when voice
   misbehaves you want a known-good trigger for the same round trip on the same wire to
   tell the two apart.
+  **Built differently:** D0 itself became the voice trigger - it is the only pad wired -
+  and `TOUCH_TOOL_NAMES` no longer exists; `TOUCH_PAD_ACTIVE` says which pads are live.
+  The known-good trigger is the `lookup <name>` serial command, which drives the same
+  round trip with no pad involved.
 - Write the capture loop against a `isTriggerHeld()` predicate rather than against
   `touchRead` directly. Swapping in `digitalRead` for the real button later then touches
   one function, and the tap-to-start/tap-to-stop fallback is a change in the same place.
