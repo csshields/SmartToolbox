@@ -131,7 +131,14 @@ export async function transcribeAudio(
   settings: TranscriptionSettings,
 ): Promise<Transcription> {
   const form = new FormData();
-  const file = new File([new Uint8Array(wav)], "recording.wav", { type: "audio/wav" });
+  // A view of the Buffer's own memory, not a copy of it. `new Uint8Array(wav)`
+  // here bought a third full copy of the audio - up to 320 KB on top of the
+  // decoded PCM and the assembled WAV, on a 512 MB Pi - to satisfy a type: a
+  // Buffer is already a valid BlobPart at runtime, but its declared buffer is
+  // ArrayBufferLike, which admits SharedArrayBuffer and so is not assignable.
+  // The three-argument form says the same thing without moving any bytes.
+  const audio = new Uint8Array(wav.buffer as ArrayBuffer, wav.byteOffset, wav.byteLength);
+  const file = new File([audio], "recording.wav", { type: "audio/wav" });
 
   if (settings.provider === "openai") {
     if (!Bun.env.OPENAI_API_KEY) {
