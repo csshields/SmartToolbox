@@ -341,7 +341,12 @@ adding a column: additive, idempotent, safe to run on every boot.
 
 **Status: Planned** - none of these exist. Do not write code against them.
 
-- `tool_movements` - checkout and return history. Needs per-instance identity first.
+- `tool_movements` - a log of tools leaving and returning: one row per observed
+  change, `(drawer_id, tool_name, delta, observed_at, confidence, model_version)`.
+  This entry used to read "needs per-instance identity first". **That was wrong, and it
+  blocked the feature for no reason: movement of a count is still movement.** "One
+  Phillips screwdriver left 1A at 14:32" is a complete and honest fact, and no tool
+  needs a serial number for it to be true. See `docs/PLAN-tool-presence.md`.
 - `sensors` / `events` - generic sensor capture, from the original sketch of the
   project. Currently unused; `drawer_observations` covers the only sensor that exists.
 - A dedicated `rows` table. Rows are presently just a nullable `row_number` column on
@@ -1746,15 +1751,48 @@ being on the network.
 
 ---
 
-### Feature 3: Watch for Tool Returns
+### Feature 3: Watch Tools Leave and Return
 
 **Status: Blocked** - the Vision AI V2 is connected and the I2C link works, but **no
 SenseCraft model is deployed**, so there is nothing to detect. Deploying a model
 trained on the actual tools is the single next step that unblocks this feature. The
 API side is ready: `POST /api/vision/observations` and the `vision/observe` serial
-endpoint both accept and store detections today.
+endpoint both accept and store detections today. `docs/PLAN-tool-presence.md` is the
+implementation plan; its Steps 1 and 2 need no hardware and can be built against
+fixtures before the model lands.
 
-**Purpose**: Automatically detect when tools are returned to drawers and log the event for inventory tracking.
+**Purpose**: Detect **both directions** - a tool leaving a drawer and a tool being put
+back - and keep a history of each, so the box can say what is out and how long it has
+been out.
+
+#### Presence model - decided 2026-08-31
+
+Tools stay tracked **by type and quantity**, as everywhere else in this system, and
+presence is derived rather than flagged. The camera writes one `tool_movements` row per
+observed change; comparing the movements against `tools.quantity` gives
+`present` / `partial` / `away` / `unknown` without storing a status anybody has to keep
+in step.
+
+**Why not a per-instance `inUse` flag**, which is the obvious shape and was considered
+first:
+
+- **A boolean cannot count.** Three Phillips screwdrivers, one leaves: the row says
+  `quantity: 3` and the flag has no honest value. The interesting state is *2 of 3*.
+- **Identity needs a source, and the camera is not one.** The Vision AI V2 emits a class
+  label and a confidence - `phillips_screwdriver, 87%` - and cannot tell your second
+  screwdriver from your third. Instance rows would force every camera event to be
+  assigned to *some* instance, producing a movement history that looks authoritative and
+  is partly invented. **A fabricated history is worse than none**, for the same reason a
+  stale status tag is worse than no tag.
+- **Returning to a different drawer already works** without instances. `tools` is keyed
+  `(drawer_id, name)`, so one tool type holds rows in several drawers at once, and
+  `locateTool` already returns every drawer a name lives in. Take one from 1A, put it
+  back in 3, and the counts move; a lookup lights both rows.
+
+**The gate for per-instance tracking is a real identity source** - engraving, QR, NFC, or
+a set whose members are visibly different. There is no plan to mark the tools as of
+2026-08-31, so the gate is closed. If it opens, `tool_movements` is already the right
+shape to hang instances on, and nothing built now has to be undone.
 
 **Hardware Requirements**:
 - Grove Vision AI Module (V2) + OV5647 camera
