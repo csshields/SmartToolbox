@@ -68,7 +68,7 @@ smarttoolbox/
 
 ### Hardware Bring-Up Status
 
-Updated 2026-08-27. This table is the single place to check what is physically working.
+Updated 2026-08-31. This table is the single place to check what is physically working.
 
 | Component | Status | Notes |
 |---|---|---|
@@ -80,7 +80,7 @@ Updated 2026-08-27. This table is the single place to check what is physically w
 | SenseCraft model | Not deployed | **Blocks Feature 3.** Nothing to detect until a model is trained and flashed |
 | OLED (Grove SSD1315 0.96") | Verified | On the I2C connector, GPIO5/GPIO6. Driven with U8g2 (`U8G2_SSD1306_128X64_NONAME_F_HW_I2C`); the SSD1315 is SSD1306-compatible. Shows lookup status and the exact drawer label |
 | Grove 8x8 matrix | Verified | Wired and working. Idle purple face; thinking face while a lookup is in flight; then the outcome - see Matrix States. Mounted a quarter turn out, so the firmware sets `DISPLAY_ROTATE_270` every boot - that setting lives on the panel and survives power cycles |
-| Microphone | Records on hardware; audio not yet confirmed | The XIAO's own PDM mic on the Sense board, fitted 2026-08-28. GPIO 42 clock, GPIO 41 data. Proven 2026-08-28 in 0.15.0: `Mic ready=1`, and a full 32,000-sample two-second read into PSRAM. The mic rides on a **positive DC bias** (samples run ~+981 to +2568, never crossing zero), so RMS must be taken about the mean - measuring raw samples reads the offset, not the sound. Corrected in 0.17.0. The remaining gate is `docs/PLAN-mic-bringup.md` Step 1: DC-corrected RMS multiplying when spoken into. The feature it feeds is `docs/PLAN-voice-lookup.md` |
+| Microphone | Verified | The XIAO's own PDM mic on the Sense board, fitted 2026-08-28. GPIO 42 clock, GPIO 41 data. Proven 2026-08-28 in 0.15.0: `Mic ready=1`, and a full 32,000-sample two-second read into PSRAM. The mic rides on a **positive DC bias** (samples run ~+981 to +2568, never crossing zero), so RMS must be taken about the mean - measuring raw samples reads the offset, not the sound. Corrected in 0.17.0. Step 1 passed 2026-08-29: DC-corrected RMS of 17 in a quiet room against 210 spoken into. Voice lookup shipped on it in 0.22.0 - see `docs/PLAN-voice-lookup.md`. **Known thin:** the audio sits at 4-10% of full scale, with no gain applied and the DC offset not stripped |
 | PIR motion sensor | Deferred | Needs two GPIO. No longer necessarily blocked - the Pi's 40-pin header is free; see the Open Hardware Question |
 | Grove Red LED Button | **Mis-wired** | Currently plugged into the Grove I2C Hub, where it cannot work: it is a passive switch and LED with no I2C chip, so its two pins land on SDA and SCL. The LED is lit only because a bus line idles high. **Pressing it disturbs the I2C bus** the OLED and matrix depend on. Unplug it until it has real GPIO |
 | Pi 40-pin GPIO header | Free, unpopulated | 26 usable GPIO, nothing in this project uses them. `gpioget`/`gpiomon` (libgpiod) are installed and `/dev/gpiochip0` is present - confirmed 2026-08-27 |
@@ -89,7 +89,9 @@ Updated 2026-08-27. This table is the single place to check what is physically w
 - **Host Device**: Raspberry Pi Zero 2
 - **OS**: Raspberry Pi OS Lite (64-bit recommended)
 - **Runtime**: Bun
-- **Framework**: Hono
+- **Framework**: none. Routing is a hand-rolled `if` chain in `api/src/index.ts`.
+  Hono was a dependency once, never routed anything, and has been removed - the API has
+  no runtime dependencies at all
 - **Database**: SQLite (located in `api/data/`)
 - **Purpose**: RESTful API server for data storage and retrieval
 - **Key Files**:
@@ -183,6 +185,7 @@ When working on this project:
 - [x] Wire the OLED and the 8x8 matrix on the shared I2C bus - both initialised in `setup()` and running
 - [x] Select microphone hardware - the XIAO's own PDM mic on the Sense board, fitted 2026-08-28
 - [x] Prove the microphone on hardware - RMS 17 quiet against 210 spoken into, 2026-08-29 (`docs/PLAN-mic-bringup.md` Step 1)
+- [x] Carry the audio to the Pi and back as a drawer - voice lookup end to end in 0.22.0
 - [ ] Add power management
 
 ## Notes
@@ -211,7 +214,7 @@ planned; see **Firmware OTA Updates** under Firmware Project Specifications.
 ## Technology Stack
 
 - **Runtime**: Bun (JavaScript/TypeScript runtime)
-- **Server Framework**: Hono (lightweight web framework)
+- **Server Framework**: none - `serve()` imported from `bun`, with a hand-rolled `if` chain in `api/src/index.ts`. Hono was removed; the API has no runtime dependencies
 - **Database**: SQLite3
 - **Package Manager**: Bun
 - **Build Tool**: Bun (native TypeScript support)
@@ -373,7 +376,7 @@ removed, and the API now has no runtime dependencies at all.
 | POST | `/api/tools/assign` | **Move an existing tool to another drawer**, by `toolId`. 400 on a missing/invalid id, 404 on an unknown tool or drawer, 409 when the target drawer already holds that name. Does not create tools |
 | POST | `/api/vision/observations` | Record camera detections for a drawer. **All or nothing**: the whole batch is validated before any of it is written, and written in one transaction |
 | GET | `/api/firmware/latest?currentVersion=` | **OTA update check.** Requires an `X-Device-Key` header. 200 streams the newer `.bin`, 204 means already current, 401 rejects a bad key, 503 means `DEVICE_KEY` is unconfigured |
-| GET | `/api/devices` | Device status: last contact, firmware version, boot count, plus the latest firmware on disk and whether the serial listener is running |
+| GET | `/api/devices` | Device status: last contact, firmware version, boot count, plus the latest firmware on disk and whether the serial listener is running. Also returns `pendingCommand` - `{command, queuedAt}` for a command queued but not yet collected, or `null` |
 | POST | `/api/devices/command` | Queue `check-firmware` or `reboot` for the device to collect on its next heartbeat. The Pi cannot push - see Device Commands |
 | GET | `/api/logs?limit=` | Recent request log (default 50, capped at 200). Includes serial traffic, logged with method `SERIAL` and path `serial:<endpoint>` |
 | GET | `/api/settings/toolbox` | Toolbox row count and the panel's ceiling |
@@ -476,8 +479,10 @@ a lookup that matched nothing is a successful lookup, not an error.
 
 ### Planned Endpoints
 
-**Status: Planned** - none of the paths below exist in the router. The reason differs
-by flow, and for neither one is it still "blocked on hardware".
+**Status: Planned** - none of the eight paths below exist in the router. Two of them
+carry a rationale that is now wrong elsewhere in this file, so they are corrected here;
+the other six are simply unbuilt and unexplained, and `- [ ] Reconcile remaining planned
+endpoints` under Current Goals is the item that covers them.
 
 `identify` was the voice flow's planned shape, and it was superseded rather than
 blocked. Voice lookup shipped in 0.22.0 over the `voice/audio` serial endpoint and
@@ -1002,9 +1007,10 @@ I2S.begin(I2S_MODE_PDM_RX, 16000, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO);
 - **Buffers go in PSRAM.** Seeed's own example uses `ps_malloc` for exactly this reason:
   four seconds of 16 kHz 16-bit mono is 128 KB against the XIAO's 320 KB of SRAM, of
   which this sketch already uses 49 KB.
-- **Status**: attached but never initialised by this project's firmware. Bring it up in
-  isolation first - an uninitialised mic and a mic returning silence are
-  indistinguishable everywhere else in this system.
+- **Status**: initialised and carrying speech since 0.20.0 - `ESP_I2S.h`, PDM RX on
+  GPIO42/41, and `sendVoiceAudio` in the sketch. Proven by a person speaking to the box
+  2026-08-29, not by inspection. **Known thin:** the audio sits at 4-10% of full scale,
+  with no gain applied and the DC offset not stripped.
 - **Use Cases**: push-to-talk tool lookup (Feature 2). A wake word is out of scope.
 
 ### PIR Motion Sensor (Grove PIR Sensor, SKU 101020020)
@@ -1027,7 +1033,7 @@ I2S.begin(I2S_MODE_PDM_RX, 16000, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO);
 
 **OLED Display (MVP)**:
 - **Type**: Grove OLED Display 0.96 inch (SSD1315)
-- **Interface**: I2C through the Grove - I2C Hub (6 Port)
+- **Interface**: I2C on the XIAO's I2C connector **directly**, not through the hub
 - **Use Cases**: Status, errors, and exact drawer labels, such as `1A` and `3`.
 
 **WS2813 Strip (Planned - this is where row indication is going)**:
@@ -1334,7 +1340,9 @@ void loop() {
 
 **Status: Implemented** - `startWaitingForPi` / `promoteToReady` /
 `pollWaitingRetry` / `pollWaitingLong` in `firmware/smarttoolbox/smarttoolbox.ino`.
-Written 2026-08-29, **not yet run on hardware**; see `docs/PLAN-startup-readiness.md`.
+Running on hardware since 0.19.0, with promotion proven on every boot since; see
+`docs/PLAN-startup-readiness.md`. **Untested:** a whole-box cold start, and the
+90-second no-reply face.
 
 Both halves of the box boot from the same power and do not arrive together:
 
@@ -2222,7 +2230,7 @@ Use consistent data formats across both projects:
 - [x] Implement drawer and tool storage endpoints
 - [x] Implement the row-aware lookup (`/api/tools/lookup`, `tools/lookup`)
 - [x] Implement observation storage (`/api/vision/observations`, `vision/observe`)
-- [x] Establish the Grove Vision AI to XIAO link over I2C (`Seeed_Arduino_SSCMA`)
+- [x] Establish the Grove Vision AI to XIAO link over I2C (bring-up only; the sketch does not yet include `Seeed_Arduino_SSCMA`)
 - [x] Build the management dashboard
 - [x] Serial reconnect (`api/src/serialTransport.ts` retries with backoff up to 5s, unlimited attempts)
 - [x] Make the firmware send real `tools/lookup` requests (touch pad bench harness)

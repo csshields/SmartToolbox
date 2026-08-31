@@ -33,9 +33,27 @@ failure this convention is meant to prevent.
 Find every tag and check it against reality:
 
 ```bash
-grep -n '\*\*Status:' .github/copilot-instructions.md
+grep -n '\*\*Status:'   .github/copilot-instructions.md   # section tags
+grep -n '\*\*Status\*\*:' .github/copilot-instructions.md   # component entries - different spelling
 grep -n '^status:' docs/PLAN-*.md
 ```
+
+**Two greps, because the file uses two spellings.** Section tags are `**Status:` and
+component entries under Hardware Components are `**Status**:` with the asterisks closed
+before the colon. A pattern for one silently misses the other. On 2026-08-31 an audit
+that ran only the first grep passed a Microphone entry reading "attached but never
+initialised by this project's firmware" three versions after voice lookup shipped.
+
+**Then read the three places that carry no tag at all**, because no grep will find them:
+
+- **The Hardware Bring-Up Status table** near the top. It calls itself "the single place
+  to check what is physically working", which makes it the most-trusted and
+  worst-punished prose in the file. Check its `Updated <date>` stamp too - it is part of
+  the claim.
+- **The API Project and Firmware Project bullets** - runtime, framework, board. These
+  read as fixed facts and drift silently; `**Framework**: Hono` outlived the dependency.
+- **The two Development Priorities checklists**, which duplicate each other in wording
+  and membership and must both be updated for any change.
 
 For each one that the current work touches, confirm the claim rather than assuming it:
 
