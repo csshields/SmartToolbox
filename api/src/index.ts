@@ -189,6 +189,14 @@ async function handleSerialRequest(request: SerialRequest): Promise<SerialRespon
       return serialSuccess(request.id, lookup ? { found: true, ...lookup } : { found: false, message: "Tool not found." });
     }
 
+    // Everything above returns, so what is left is vision/observe. Said out loud
+    // rather than left as a fall-through: serialProtocol admits exactly four
+    // endpoints today, and a fifth added there would otherwise land in the
+    // observation handler and be read as a malformed batch.
+    if (request.endpoint !== "vision/observe") {
+      return serialError(request.id, "UNKNOWN_ENDPOINT", `No handler for endpoint ${request.endpoint}.`);
+    }
+
     const body = request.body as {
       drawerLabel?: unknown;
       modelVersion?: unknown;
