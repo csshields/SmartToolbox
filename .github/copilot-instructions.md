@@ -796,7 +796,11 @@ cd api\scripts
 
 1. Rewrites `#define FIRMWARE_VERSION "x.y.z"` in `firmware/smarttoolbox/smarttoolbox.ino`.
    That exact line shape is the anchor - do not reformat it.
-2. Compiles for `esp32:esp32:XIAO_ESP32S3` into a temp build directory.
+2. Compiles with the `release` profile from `firmware/smarttoolbox/sketch.yaml` into a
+   temp build directory. The profile pins the fqbn (including `PSRAM=opi`), the core
+   version and the library versions, and it refuses to run if that file is missing -
+   a release that silently built against whatever libraries the machine happened to
+   have installed is the failure this prevents.
 3. Copies the result to `api/firmware/smarttoolbox-<version>.bin` (gitignored).
 4. With `-Push`, `scp`s it to `~/smarttoolbox/firmware/` on the Pi using the same
    deploy key as `sync.ps1`.
@@ -906,7 +910,7 @@ ssh -i "$env:USERPROFILE\.ssh\smarttoolbox_pi_ed25519" shields@192.168.50.30
 `docs/xiao-screenshot.PNG` for the exact part)
 - **MCU**: Espressif ESP32-S3
 - **Connectivity**: Wi-Fi and BLE are available; the MVP connects to the Pi Zero 2 over **wired USB serial** (USB-C, CDC/ACM), not Wi-Fi
-- **Memory**: 8MB PSRAM, 8MB flash. **PSRAM is on as of 2026-08-28**, and was off before that: a bare `esp32:esp32:XIAO_ESP32S3` takes the first entry of every board menu, and for PSRAM that is `disabled`, so `ps_malloc` returned null in every binary this repo had released. `release-firmware.ps1` now compiles `esp32:esp32:XIAO_ESP32S3:PSRAM=opi`; verify with `arduino-cli compile --show-properties`, where the bare fqbn shows an empty `build.defines` and the corrected one shows `-DBOARD_HAS_PSRAM`. **Any manual `arduino-cli` invocation must carry `:PSRAM=opi` too** - the microphone buffer cannot be allocated without it, and the failure presents as a dead mic rather than a build error.
+- **Memory**: 8MB PSRAM, 8MB flash. **PSRAM is on as of 2026-08-28**, and was off before that: a bare `esp32:esp32:XIAO_ESP32S3` takes the first entry of every board menu, and for PSRAM that is `disabled`, so `ps_malloc` returned null in every binary this repo had released. The fqbn now lives in `firmware/smarttoolbox/sketch.yaml` as the default `release` profile, so `release-firmware.ps1` and a bare `arduino-cli compile firmware/smarttoolbox` both pick it up; verify with `arduino-cli compile --show-properties`, where the bare fqbn shows an empty `build.defines` and the corrected one shows `-DBOARD_HAS_PSRAM`. **A manual `arduino-cli` invocation that bypasses the profile must carry `:PSRAM=opi` itself** - the microphone buffer cannot be allocated without it, and the failure presents as a dead mic rather than a build error.
 - **Power**: 3.3V, rechargeable battery support
 - **Physical stack, confirmed 2026-08-28.** Three boards, three different connectors, all
   fitted at once. Recorded because an earlier revision of this document asserted they
@@ -1376,9 +1380,12 @@ The fast half waits. **No change to the Pi** - there is nothing it can do about 
   device in WAITING forever.
 - **Any parsed reply promotes**, success or error. This is about proving the wire works
   end to end, not about the Pi liking the message.
-- Touches during WAITING do not send lookups. The guard sits *inside* the lookup path,
-  not at the top of `onTouchStart`, because with `MIC_BRINGUP` set the pad records
-  instead and recording never involves the Pi.
+- Touches during WAITING do not record and do not send lookups. The guard sits at the
+  top of `onTouchStart`: a hold there is someone asking "is it on?", and the honest
+  answer is already on the screen. It used to sit *inside* the lookup path, so that
+  microphone bring-up stayed testable on a bench where nothing answered - `MIC_BRINGUP`
+  took the pad over entirely and recording never involved the Pi. That flag is gone: the
+  pad's one job is the voice lookup, which needs the Pi like any other.
 - **No timeout that gives up.** Past `WAITING_LONG_MS` (90s) the spinner stops and the
   face drops, but the retry continues - a change of expression, not a failure state.
   `pollWaitingLong` runs from `loop()`, deliberately not from `updateMatrix`: that

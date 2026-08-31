@@ -51,6 +51,16 @@ honest Content-Length is worse than no image.
 **Bump the version for every build that goes to the device.** The device compares
 versions; reflashing the same number is legitimate over USB but invisible over OTA.
 
+**The first release build on a machine takes many minutes and looks hung.** It is not.
+`release-firmware.ps1` builds through the `release` profile in
+`firmware/smarttoolbox/sketch.yaml`, which deliberately ignores the globally installed
+libraries and fetches its own pinned copy of the ESP32 core and toolchain into
+`Arduino15/internal`. That download is a few GB and happens once; later builds reuse it
+and run at normal speed. If the script instead throws about a missing profile, do not
+work around it by calling `arduino-cli` with a bare `--fqbn` - a release that builds
+against whatever the machine happens to have installed is exactly what the profile
+exists to prevent.
+
 ## Making the device collect it
 
 The Pi cannot push. The serial protocol has no Pi-initiated message type - the device

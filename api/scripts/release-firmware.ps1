@@ -54,16 +54,25 @@ $sketchDir = Join-Path $repoRoot "firmware\smarttoolbox"
 $sketchFile = Join-Path $sketchDir "smarttoolbox.ino"
 $dropDir = Join-Path $apiRoot "firmware"
 $buildDir = Join-Path $env:TEMP "smarttoolbox-build-$Version"
-# PSRAM=opi is load-bearing, not a tuning choice. The bare fqbn takes the first
-# PSRAM menu entry, which is Disabled, and ps_malloc then returns null on every
-# call - so the microphone buffer cannot be allocated at all. Building without
-# it looks like a dead mic rather than a build option.
-$fqbn = "esp32:esp32:XIAO_ESP32S3:PSRAM=opi"
+# The fqbn and the core and library versions all live in the sketch profile now,
+# so a release build does not depend on what happens to be installed globally on
+# the machine running this script. PSRAM=opi is pinned in there too, and it is
+# load-bearing rather than tuning: the bare fqbn takes the first PSRAM menu
+# entry, which is Disabled, and ps_malloc then returns null on every call - so
+# the microphone buffer cannot be allocated at all.
+$profileName = "release"
+$sketchProfile = Join-Path $sketchDir "sketch.yaml"
 $targetName = "smarttoolbox-$Version.bin"
 $targetPath = Join-Path $dropDir $targetName
 
 if (-not (Test-Path $sketchFile)) {
 	throw "Sketch not found at $sketchFile"
+}
+
+# Without this the compile below would silently fall back to the globally
+# installed libraries, which is the whole thing the profile exists to prevent.
+if (-not (Test-Path $sketchProfile)) {
+	throw "No build profile at $sketchProfile. A release must build against pinned versions."
 }
 
 if ((Test-Path $targetPath) -and (-not $Force)) {
@@ -103,12 +112,15 @@ $updated = [regex]::Replace($source, $pattern, "#define FIRMWARE_VERSION `"$Vers
 # to meet one at the top of it.
 [System.IO.File]::WriteAllText($sketchFile, $updated, (New-Object System.Text.UTF8Encoding($false)))
 
-Write-Host "Compiling for $fqbn..."
+Write-Host "Compiling with the '$profileName' profile..."
 if (Test-Path $buildDir) {
 	Remove-Item $buildDir -Recurse -Force
 }
 
-arduino-cli compile --fqbn $fqbn --output-dir $buildDir $sketchDir
+# The first profile build on a machine downloads its own copy of the core and
+# toolchain and takes many minutes. That is the cost of not sharing state with
+# the global install; later builds reuse the same cache and are normal speed.
+arduino-cli compile --profile $profileName --output-dir $buildDir $sketchDir
 if ($LASTEXITCODE -ne 0) {
 	throw "arduino-cli compile failed with exit code $LASTEXITCODE"
 }
