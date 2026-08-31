@@ -615,3 +615,39 @@ test("an unambiguous query still returns a single-entry array", () => {
   expect(found?.matches.length).toBe(1);
   expect(found?.matches[0].tool).toBe("Claw Hammer");
 });
+
+// Carrier words that are also tool words. "box" is the word people say around a
+// tool ("in the tool box") and the word that names one ("box wrench"), and it
+// used to be thrown away in both cases.
+
+const carrierDrawer = makeDrawer(4);
+addToolToDrawer(carrierDrawer.id, { name: "Box Wrench", quantity: 1 });
+addToolToDrawer(carrierDrawer.id, { name: "Open-end Wrench", quantity: 1 });
+addToolToDrawer(carrierDrawer.id, { name: "Box Cutter", quantity: 1 });
+
+test("resolveToolQuery keeps a carrier word that is part of the tool's name", () => {
+  // Stripping "box" reduced this to "wrench", which matched both wrenches: the
+  // box answered with one of them and a "+1" saying it had guessed, for a
+  // request that named exactly one tool.
+  const match = resolveToolQuery("where is my box wrench");
+
+  expect(match?.toolName).toBe("Box Wrench");
+  expect(match?.matchType).toBe("tokens");
+  expect(match?.alternatives).toEqual([]);
+});
+
+test("resolveToolQuery still drops that carrier word when keeping it finds nothing", () => {
+  // Second pass. Nothing is named "Phillips Screwdriver Tool Box", so the words
+  // that were carrier words after all come out and the match lands.
+  const match = resolveToolQuery("the phillips screwdriver in my tool box");
+
+  expect(match?.toolName).toBe("Phillips Screwdriver");
+  expect(match?.matchType).toBe("tokens");
+});
+
+test("resolveToolQuery reads a full token match on either pass before any partial", () => {
+  // "box cutter" is a whole-token match on the first reading. Scoring the first
+  // reading before trying the second would have answered "Box Wrench" instead,
+  // on the strength of "box" alone.
+  expect(resolveToolQuery("where is my box cutter")?.toolName).toBe("Box Cutter");
+});
