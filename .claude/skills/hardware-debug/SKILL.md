@@ -14,6 +14,10 @@ Full detail lives in the Debugging & Testing section of
 `.github/copilot-instructions.md` and in
 `.github/instructions/xiao-esp32s3-firmware.instructions.md`.
 
+**What is actually wired, and on which pin, is `docs/HARDWARE.md`** - the Bring-Up
+Status table at the top of it answers "is this part even supposed to work yet" before
+you spend an hour on a part that was never connected.
+
 ## Start here
 
 ```bash

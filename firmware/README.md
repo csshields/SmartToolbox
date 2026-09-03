@@ -11,10 +11,10 @@ Arduino firmware for the Seeed XIAO ESP32S3 microcontroller.
   - Microphone: the XIAO's own PDM mic on the Sense expansion board (GPIO 42 clock, GPIO 41 data); needs `:PSRAM=opi` in the build
   - Additional IMU hardware: not yet selected
 - **Connectivity**: USB serial to Raspberry Pi Zero 2
-- **I2C topology**: Vision AI V2 Grove port -> Grove I2C Hub (6 Port) -> Grove OLED Display 0.96 inch (SSD1315) and Grove 8x8 RGB LED Matrix with Driver
+- **I2C topology**: the XIAO bus reaches the expansion base, which carries its own OLED (SSD1306, 0x3C) and RTC, plus two Grove I2C ports - one for the Grove Vision AI V2 (0x62), one for the Grove 8x8 RGB LED Matrix. The Grove I2C Hub was removed on 2026-09-02
 - **MVP feedback**: Matrix highlights matching rows; OLED shows exact drawer labels such as `1A` and `3`.
-- **Deferred GPIO parts**: Grove PIR Motion Sensor (SKU 101020020), Grove Red LED Button (SKU 111020044), and Grove WS2813 RGB LED Strip (SKU 104020108). They must not connect to the I2C Hub; their wiring awaits a GPIO expansion solution.
-- **Owned expansion option**: Seeed Studio Expansion Board Base for XIAO with Grove OLED (SKU 103030356). Its compatibility with the Vision AI V2 stack must be verified before using it for GPIO expansion.
+- **GPIO parts**: Grove WS2813 RGB LED Strip (SKU 104020108) on the UART Grove port, data GPIO44; Grove PIR Motion Sensor (SKU 101020020) on the A0/D0 port, GPIO1, wired but read by nothing. The Grove Red LED Button (SKU 111020044) was removed.
+- **Carrier**: Seeed Studio Expansion Board Base for XIAO with Grove OLED (SKU 103030356), on the expansion header since 2026-09-02. Brings the OLED, the push-to-talk button on D1, an RTC, an SD slot and four Grove ports. Full detail in `docs/HARDWARE.md`.
 
 ## Setup
 
@@ -110,7 +110,7 @@ working OLED setup came from. The rest can be deleted whenever you like.
 - [x] Send the `device/status` USB serial boot request to the API server
 - [x] Parse USB serial responses and send tool lookup requests
 - [x] Wi-Fi OTA updates (see Releasing firmware in the spec)
-- [ ] Map the remaining touch pads to seeded tools
+- [ ] Read the PIR on GPIO1 (Feature 1 - wired, no firmware)
 - [ ] Implement camera capture
 - [ ] Implement IMU data reading
 - [ ] Add power management features

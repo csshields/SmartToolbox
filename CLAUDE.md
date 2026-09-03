@@ -12,6 +12,9 @@ This file is a pointer, not the spec. The documents of record live in `.github/`
   protocol, pin mappings, deployment, and debugging. Read it before changing anything.
 - **`.github/instructions/xiao-esp32s3-firmware.instructions.md`** covers the firmware
   and the hardware's specific traps. Read it before touching `firmware/**`.
+- **`docs/HARDWARE.md`** is the hardware record: every part owned, whether it
+  physically works (the Bring-Up Status table), and which pin carries it. Read it
+  before wiring anything or before assuming a component is live.
 - **`docs/PLAN-*.md`** are implementation plans, each with a `status:` field in its
   frontmatter saying whether it is still active.
 

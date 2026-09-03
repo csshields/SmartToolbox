@@ -2,7 +2,7 @@
 title: SmartToolbox Project Instructions
 scope: project-wide guidelines and specifications
 status: active
-updated: 2026-08-27
+updated: 2026-09-02
 ---
 
 # SmartToolbox Project
@@ -37,6 +37,7 @@ smarttoolbox/
 │   │   └── xiao-esp32s3-firmware.instructions.md
 │   └── skills/                   # Specialized knowledge modules
 ├── docs/
+│   ├── HARDWARE.md               # Parts, bring-up status, pin mappings - hardware record
 │   └── SOURCES.md                # Vendor datasheet index (PDFs are gitignored)
 ├── api/                          # Web server and database (runs on Pi Zero 2)
 │   ├── src/                      # TypeScript source code
@@ -62,28 +63,17 @@ smarttoolbox/
 ### System Overview
 - **API Server**: Raspberry Pi Zero 2 running Bun and SQLite
 - **Main Controller**: Seeed XIAO ESP32S3 (LED control, USB serial, Wi-Fi, and BLE)
-- **Vision Hardware**: Seeed Grove Vision AI Module (V2) + OV5647 camera, **connected** - stacked on the XIAO expansion header (not a 4-pin Grove cable), talking I2C via the `Seeed_Arduino_SSCMA` library. On-device WiseEye2 inference is the default (only results, not raw frames, are read over the link). **No SenseCraft model is deployed yet**, so the link is live but returns nothing useful.
+- **Vision Hardware**: Seeed Grove Vision AI Module (V2) + OV5647 camera, **cabled** to a Grove I2C port on the expansion base since the 2026-09-02 rewire, at address 0x62. On-device WiseEye2 inference is the intended method. **No SenseCraft model is deployed and no firmware here has ever addressed the module**, so the link is live and says nothing.
 - **Transcription**: Self-hosted Whisper server running on a NAS on the local network (see Communication Protocol)
 - **Communication**: XIAO ESP32S3 → API Server over **wired USB serial** for all normal operation. Wi-Fi is used *only* for OTA firmware updates, during `setup()`, and the radio is switched off before `loop()` runs. BLE is unused.
+- **Hardware record**: `docs/HARDWARE.md` holds the parts list, the bring-up status
+  table, and the pin mappings. It is the single source for what is in the box; this
+  file covers how the software uses it.
 
 ### Hardware Bring-Up Status
 
-Updated 2026-08-31. This table is the single place to check what is physically working.
-
-| Component | Status | Notes |
-|---|---|---|
-| XIAO ESP32S3 standalone | Verified | LED (GPIO21, active-low) and touch pads confirmed on hardware |
-| USB serial XIAO to Pi | Verified | `device/status` boot request reaches the Pi service |
-| Touch-triggered `tools/lookup` | Verified | Full round trip on hardware: touch, request, response, LED blink, drawer label on the OLED |
-| Wi-Fi OTA updates | Verified | Device pulled and installed 0.4.0 from the Pi over Wi-Fi. **Requires the external antenna** - without it the radio sees ~-85 dBm and cannot associate |
-| Grove Vision AI V2 link | Connected | Stacked on the expansion header; I2C link up |
-| SenseCraft model | Not deployed | **Blocks Feature 3.** Nothing to detect until a model is trained and flashed |
-| OLED (Grove SSD1315 0.96") | Verified | On the I2C connector, GPIO5/GPIO6. Driven with U8g2 (`U8G2_SSD1306_128X64_NONAME_F_HW_I2C`); the SSD1315 is SSD1306-compatible. Shows lookup status and the exact drawer label |
-| Grove 8x8 matrix | Verified | Wired and working. Idle purple face; thinking face while a lookup is in flight; then the outcome - see Matrix States. Mounted a quarter turn out, so the firmware sets `DISPLAY_ROTATE_270` every boot - that setting lives on the panel and survives power cycles |
-| Microphone | Verified | The XIAO's own PDM mic on the Sense board, fitted 2026-08-28. GPIO 42 clock, GPIO 41 data. Proven 2026-08-28 in 0.15.0: `Mic ready=1`, and a full 32,000-sample two-second read into PSRAM. The mic rides on a **positive DC bias** (samples run ~+981 to +2568, never crossing zero), so RMS must be taken about the mean - measuring raw samples reads the offset, not the sound. Corrected in 0.17.0. Step 1 passed 2026-08-29: DC-corrected RMS of 17 in a quiet room against 210 spoken into. Voice lookup shipped on it in 0.22.0 - see `docs/PLAN-voice-lookup.md`. **Known thin:** the audio sits at 4-10% of full scale, with no gain applied and the DC offset not stripped |
-| PIR motion sensor | Deferred | Needs two GPIO. No longer necessarily blocked - the Pi's 40-pin header is free; see the Open Hardware Question |
-| Grove Red LED Button | **Mis-wired** | Currently plugged into the Grove I2C Hub, where it cannot work: it is a passive switch and LED with no I2C chip, so its two pins land on SDA and SCL. The LED is lit only because a bus line idles high. **Pressing it disturbs the I2C bus** the OLED and matrix depend on. Unplug it until it has real GPIO |
-| Pi 40-pin GPIO header | Free, unpopulated | 26 usable GPIO, nothing in this project uses them. `gpioget`/`gpiomon` (libgpiod) are installed and `/dev/gpiochip0` is present - confirmed 2026-08-27 |
+**Moved to `docs/HARDWARE.md`.** That table is the single place to check what is
+physically working, and it is deliberately not duplicated here.
 
 ### API Project
 - **Host Device**: Raspberry Pi Zero 2
@@ -469,7 +459,7 @@ two kinds of "more than one": `+2` means the query matched two other tools - the
 admitting it guessed - and a bare `+` means this one tool is on record in more than one
 drawer, which is not a guess at all. Showing several tools at once waits for the WS2813
 strip, which is where row indication is going anyway; see the Row Indication decision
-under Open Hardware Question. `query` carries what was
+in `docs/HARDWARE.md`. `query` carries what was
 actually asked, which is what makes a mishearing diagnosable: "found Needle-Nose Pliers
 for 'needle nose players'" is a diagnosis where the tool name alone hides the interesting
 half.
@@ -904,318 +894,19 @@ ssh -i "$env:USERPROFILE\.ssh\smarttoolbox_pi_ed25519" shields@192.168.50.30
 
 # Firmware Project Specifications
 
-## Hardware Platform
+## Hardware
 
-**Main Controller**: Seeed **XIAO ESP32S3 Sense** (not the plain XIAO ESP32S3 - see
-`docs/xiao-screenshot.PNG` for the exact part)
-- **MCU**: Espressif ESP32-S3
-- **Connectivity**: Wi-Fi and BLE are available; the MVP connects to the Pi Zero 2 over **wired USB serial** (USB-C, CDC/ACM), not Wi-Fi
-- **Memory**: 8MB PSRAM, 8MB flash. **PSRAM is on as of 2026-08-28**, and was off before that: a bare `esp32:esp32:XIAO_ESP32S3` takes the first entry of every board menu, and for PSRAM that is `disabled`, so `ps_malloc` returned null in every binary this repo had released. The fqbn now lives in `firmware/smarttoolbox/sketch.yaml` as the default `release` profile, so `release-firmware.ps1` and a bare `arduino-cli compile firmware/smarttoolbox` both pick it up; verify with `arduino-cli compile --show-properties`, where the bare fqbn shows an empty `build.defines` and the corrected one shows `-DBOARD_HAS_PSRAM`. **A manual `arduino-cli` invocation that bypasses the profile must carry `:PSRAM=opi` itself** - the microphone buffer cannot be allocated without it, and the failure presents as a dead mic rather than a build error.
-- **Power**: 3.3V, rechargeable battery support
-- **Physical stack, confirmed 2026-08-28.** Three boards, three different connectors, all
-  fitted at once. Recorded because an earlier revision of this document asserted they
-  competed and that assertion drove decisions for weeks:
+**Status: Moved** - see `docs/HARDWARE.md`.
 
-```
-   Sense board        camera (OV2640) + PDM mic, facing up
-        |             board-to-board connector
-   XIAO ESP32S3       the core board
-        |             expansion header
-   Grove Vision AI V2 stacked below, I2C
-```
+The parts list with SKUs, the physical stack, the sensor and peripheral detail, the pin
+mappings, and the Open Hardware Question all live in `docs/HARDWARE.md`, along with the
+Hardware Bring-Up Status table. Nothing here duplicates them. They were spread across
+four sections of this file that had begun to contradict each other - the microphone was
+described as both shipping and never initialised - which is why they are now in one
+place with one entry per part.
 
-  `docs/xiao-screenshot.PNG` is the vendor photo showing the camera on the top face. The
-  Sense board does **not** use the expansion header, so it has never been in competition
-  with the Vision AI V2.
-
-- **Built-in Sensors**: a **PDM digital microphone** and an **OV2640 camera**, both on the Sense board, which mates through the dedicated board-to-board connector rather than the expansion header - see the stack above. Neither has ever been initialised by this project's firmware. IMU is still external and unselected.
-
-**Vision Hardware**: Seeed Grove Vision AI Module (V2), SKU 101021112, + OV5647 Camera
-- **Connection**: Stacked on the XIAO ESP32S3 expansion header, communicating over I2C. **Verified on hardware 2026-08-27** - the link is up. This also means the header is occupied; see the Open Hardware Question under Pin Mappings.
-- **Onboard MCU**: Himax WiseEye2 (capable of on-device ML inference)
-- **Storage**: 32GB microSD card on the module itself
-- **Identification Method (default)**: On-device inference on the WiseEye2 MCU via a model deployed through **SenseCraft AI** (no-code; supports MobileNet V1/V2, EfficientNet-lite, YOLOv5/v8). Only inference results (label/confidence) are read by the Xiao — Seeed's hardware doesn't support reading both a live frame and results simultaneously over the link. Cloud vision model fallback (e.g., Claude, GPT-4o) remains an option if on-device accuracy is insufficient, but requires pulling raw frames a different way (e.g., the module's own SD card or Type-C port) since they aren't available over the I2C results link.
-- **Xiao ↔ Vision AI Link**: **I2C** (4-pin cable: SCL, SDA, VCC 3.3V, GND), using the `Seeed_Arduino_SSCMA` Arduino library — confirmed via Seeed's Grove Vision AI (V2) documentation
-
-**I2C Expansion**: Grove - I2C Hub (6 Port)
-- **Connection**: Plugs into the Grove Vision AI V2's I2C Grove port.
-- **Connected Devices**: Grove OLED Display 0.96 inch (SSD1315) and Grove 8x8 RGB LED Matrix with Driver.
-- **Constraint**: All attached devices share the I2C bus and must have compatible I2C addresses.
-
-**MVP Feedback Hardware**
-- **OLED**: Shows status and exact drawer labels, such as `1A` and `3`.
-- **8x8 RGB LED Matrix**: Acts as the six-row location indicator; matching rows illuminate on a tool lookup.
-- **Power**: These low-power I2C devices run from the existing Pi/Xiao USB-powered setup; no separate LED-strip supply is required for the MVP.
-
-**Owned, Deferred GPIO Hardware**
-- **Grove PIR Motion Sensor**, SKU 101020020: digital motion output; planned for wake detection.
-- **Grove Red LED Button**, SKU 111020044: planned push-to-talk control and capture-status indicator.
-- **Grove WS2813 RGB LED Strip Waterproof, 30 LEDs/m, 1 m**, SKU 104020108: deferred; it needs a dedicated GPIO data path and an external 5V power supply.
-- **Seeed Studio Expansion Board Base for XIAO with Grove OLED**, SKU 103030356: owned; provides Grove I2C, UART, and A0/D0 ports, plus an onboard OLED, button, and buzzer. Its physical stacking and pin compatibility with the Vision AI V2 must be verified before use.
-- **Constraint**: The Vision AI V2 is stacked on the XIAO expansion header, so these non-I2C components are not yet wired. Do not connect them to the I2C Hub.
-
-**API Server**: Raspberry Pi Zero 2
-- **CPU**: Broadcom BCM2710A1 (ARM Cortex-A53 @ 1GHz, quad-core)
-- **Memory**: 512MB RAM
-- **Storage**: MicroSD card (16GB+ recommended)
-- **OS**: Raspberry Pi OS Lite (64-bit recommended)
-- **Connectivity**: WiFi 802.11n, Bluetooth 4.2
-- **Power**: 5V via micro-USB (2.5A minimum recommended)
-- **Purpose**: Host Bun API server and SQLite database
-- **Use Cases**:
-  - Process tool identification requests
-  - Store sensor data and tool inventory
-  - Manage system configuration
-  - Serve web dashboard (optional)
-
-## Sensors & Peripherals
-
-### Vision: Grove Vision AI Module (V2) + OV5647 Camera
-- **Resolution**: OV5647, up to 5MP (2592x1944)
-- **Connection**: I2C, stacked on the XIAO expansion header. Verified 2026-08-27.
-- **Interface**: I2C (SCL, SDA, VCC 3.3V, GND) — confirmed via Seeed documentation
-- **Use Cases**: Tool identification (voice-requested lookup context and drawer-return detection)
-- **Identification Method (default)**: On-device inference on the module's WiseEye2 MCU via a SenseCraft AI-deployed model (send only tool name/confidence to the API). Cloud vision model fallback (e.g., Claude, GPT-4o) if needed — see Feature 3.
-- **Model status**: **none deployed.** The module is connected and responds, but no
-  model trained on the actual tools has been flashed to it, so it produces no useful
-  labels. This is the next firmware milestone and the blocker for Feature 3.
-- **Library/SDK**: `Seeed_Arduino_SSCMA` (Arduino library for I2C communication with the module)
-
-### IMU (External, TBD)
-- **Type**: 6-axis (3-axis accelerometer + 3-axis gyroscope)
-- **Interface**: I2C
-- **Data Rate**: Up to 1.6kHz
-- **Use Cases**: Motion detection, orientation tracking
-- **Library**: TBD
-
-### Microphone (On board)
-- **Type**: The XIAO's own digital microphone, on the **Sense expansion board**. No
-  external part is needed or planned. **Attached as of 2026-08-28, alongside the Vision
-  AI V2** - they use different connectors and do not conflict.
-- **Interface**: PDM. Pins are fixed by the board, confirmed against Seeed's own
-  documentation: **GPIO 42 = clock, GPIO 41 = data.**
-- **Sample Rate**: 16 kHz mono, 16-bit. Not a preference - the ESP32-S3 supports *only*
-  PDM mono at 16-bit, so the bit width and slot mode are the chip's, not a choice. The
-  rate is adjustable; Seeed reports 16 kHz as the stable one, and it is also what Whisper
-  wants, so there is no reason to move it.
-- **Library**: `ESP_I2S.h` from the installed esp32 core (3.3.11), *not* the core-2.x
-  `I2S.h` that Seeed's published examples still lead with. The two have different APIs
-  and picking the wrong page is the likely first failure:
-
-```cpp
-// Core 3.x - what this project has.
-I2S.setPinsPdmRx(42, 41);
-I2S.begin(I2S_MODE_PDM_RX, 16000, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO);
-```
-
-- **Two ways to read, and they are not interchangeable.** `recordWAV(seconds, &size)`
-  returns a `ps_malloc`'d buffer with a WAV header already attached, but takes a fixed
-  duration - fine for a bring-up, useless for hold-to-talk, where the length is not known
-  when recording starts. That path reads in a loop instead and lets the Pi write the
-  header. See `docs/PLAN-mic-bringup.md` and `docs/PLAN-voice-lookup.md`.
-- **Buffers go in PSRAM.** Seeed's own example uses `ps_malloc` for exactly this reason:
-  four seconds of 16 kHz 16-bit mono is 128 KB against the XIAO's 320 KB of SRAM, of
-  which this sketch already uses 49 KB.
-- **Status**: initialised and carrying speech since 0.20.0 - `ESP_I2S.h`, PDM RX on
-  GPIO42/41, and `sendVoiceAudio` in the sketch. Proven by a person speaking to the box
-  2026-08-29, not by inspection. **Known thin:** the audio sits at 4-10% of full scale,
-  with no gain applied and the DC offset not stripped.
-- **Use Cases**: push-to-talk tool lookup (Feature 2). A wake word is out of scope.
-
-### PIR Motion Sensor (Grove PIR Sensor, SKU 101020020)
-- **Type**: Passive Infrared Motion Detector
-- **Model**: Grove PIR Motion Sensor
-- **Interface**: Digital GPIO via Grove connector
-- **Connection**: Deferred pending a GPIO expansion/wiring solution compatible with the stacked Vision AI V2
-- **Use Cases**: Wake mode trigger, activity detection
-- **Trigger**: HIGH signal on motion detection
-- **Detection Range**: Configurable (typically 3-7 meters)
-- **Power**: 3.3V-5V from Grove port
-
-### Display and Indicators
-
-**Row Indicator Matrix (MVP)**:
-- **Type**: Grove 8x8 RGB LED Matrix with Driver
-- **Interface**: I2C through the Grove - I2C Hub (6 Port)
-- **Behavior**: Six matrix positions represent rows 1-6. Matching rows light by certainty; row 1 remains a single shared indicator for drawers 1A, 1B, and 1C.
-- **Use Cases**: Row location indication and status feedback.
-
-**OLED Display (MVP)**:
-- **Type**: Grove OLED Display 0.96 inch (SSD1315)
-- **Interface**: I2C on the XIAO's I2C connector **directly**, not through the hub
-- **Use Cases**: Status, errors, and exact drawer labels, such as `1A` and `3`.
-
-**WS2813 Strip (Planned - this is where row indication is going)**:
-- **Type**: Grove WS2813 RGB LED Strip Waterproof, 30 LEDs/m, 1 m (SKU 104020108). Owned.
-- **Interface**: Single-wire data signal **from the Pi**, not the XIAO. See the Row
-  Indication decision under Open Hardware Question.
-- **Power**: External regulated 5V supply, sized for up to 1.8A at full white. Common
-  ground with the Pi. Do not run the strip from the Pi's 5V pin.
-- **Levels**: the Pi drives 3.3V and the strip wants 5V logic. Usually works, sometimes
-  flaky; a 74AHCT125 is the proper fix.
-- **Status**: Planned. Not wired, no code.
-
-**Camera Illumination LED**:
-- **Type**: High-brightness white LED or LED ring
-- **Purpose**: Illuminate tools for image capture
-- **Interface**: Digital GPIO with PWM for brightness control
-- **Control**: Direct from XIAO ESP32S3
-- **Power**: Current-limiting resistor or constant current driver
-
-
-## Pin Mappings
-
-**Status: Partial** - the XIAO's own pins are confirmed on hardware. Peripherals that
-are not yet wired have no pin assignment, and none is invented here.
-
-### Confirmed
-
-```cpp
-// Onboard user LED. Active-low: LOW turns it ON, HIGH turns it OFF.
-// Verified on hardware; see .github/instructions/xiao-esp32s3-firmware.instructions.md
-#define LED_PIN           LED_BUILTIN   // GPIO21 on the XIAO_ESP32S3 board definition
-
-// I2C to the Grove Vision AI V2. The module is stacked on the XIAO expansion
-// header rather than cabled to a Grove port, so it sits on the board's default
-// I2C pair and `Wire.begin()` needs no arguments.
-//   SDA = D4, SCL = D5
-// Confirm the GPIO numbers against the Seeed board doc in docs/SOURCES.md before
-// relying on the numeric values rather than the D-labels.
-
-// Also on that same bus, and needing no pin define of their own:
-//   - SSD1306 128x64 OLED, driven by U8g2 over hardware I2C.
-//   - Grove 8x8 RGB matrix. Its address is discovered at boot by
-//     scanGroveTwoRGBLedMatrixI2CAddress() and confirmed against the VID, so a
-//     missing panel degrades to matrixReady = false rather than hanging.
-// Both are wired and running; see updateMatrix() and the OLED calls in the sketch.
-```
-
-Touch-capable exposed pads are GPIO1-9 (D0-D5, D8-D10). GPIO0 is the BOOT strapping
-pin and is not usable as a touch input. `RST` and `BOOT` are physical buttons, not
-touch pads.
-
-### Not Yet Assigned
-
-These parts are owned but unwired, because the Vision AI V2 occupies the expansion
-header that would carry their GPIO. Assign pins when the expansion question below is
-resolved - not before.
-
-```cpp
-#define PIR_SENSOR_PIN    TBD   // Grove PIR motion sensor, digital in
-#define BUTTON_PIN        TBD   // Grove Red LED Button, push-to-talk
-#define BUTTON_LED_PIN    TBD   // Same module, status indicator
-```
-
-The microphone used to sit in this list. It does not belong here: it is on the Sense
-board's underside connector, not the expansion header, so it was never blocked by the
-Vision AI V2. Its pins are fixed by the board and recorded under Microphone below.
-
-### Deliberately Absent
-
-- **No per-row LED GPIO pins.** Row indication is the I2C 8x8 RGB matrix, addressed
-  over the shared bus. Earlier drafts of this document defined `ROW_LED_1`..`ROW_LED_6`
-  as GPIO data pins; that design was replaced by the matrix and those defines should
-  not reappear. The WS2813 strip needs a real data pin and is planned on the *Pi's*
-  header, not the XIAO's - see the Row Indication decision under Open Hardware Question.
-- **No per-drawer sensors.** Drawer open/close detection is one of three candidate
-  methods in Feature 3 and no hardware has been chosen.
-
-### Open Hardware Question
-
-**Revised 2026-08-27.** This section used to say Features 1 and 3 stayed blocked until
-the XIAO's expansion header was freed. That framing was wrong, and it was wrong because
-of an assumption nobody had stated: **that GPIO has to come from the XIAO.** It does
-not. The Pi Zero 2 W's 40-pin header is entirely unused - 26 usable pins - and the Pi is
-already in the box, already running, and already talking to the XIAO.
-
-**Corrected 2026-08-28.** This section used to say the Vision AI V2 and the Sense board
-compete for the same space and that only one could be there. **That was wrong, and it had
-been shaping decisions.** They use different connectors: the Sense board mates with the
-XIAO's dedicated board-to-board connector and carries the camera and mic on top, while
-the Vision AI V2 stacks on the expansion header below. **Both are fitted and both work.**
-
-What remains true is narrower and unchanged: **the Vision AI V2 occupies the expansion
-header**, so parts wanting GPIO from it - the PIR, the Red LED Button - still have
-nowhere to go. That is the only conflict, and the options below address it.
-
-Two things follow from the correction:
-
-- **The microphone was never blocked.** Its pins are fixed by the Sense board - GPIO 42
-  clock, GPIO 41 data - and are recorded under Microphone. `docs/PLAN-mic-bringup.md`
-  can start.
-- **The Expansion Board Base (SKU 103030356) is still out, but not for the reason
-  recorded earlier.** It is a carrier the XIAO plugs into, so it wants the expansion
-  header the Vision AI V2 is using; it has no quarrel with the Sense board. The buzzer it
-  carries is the only sound hardware owned, so sound still means putting a transducer on
-  the Pi - the same conclusion as the LED strip, reached by a different route.
-
-**Options, and what each costs:**
-
-| Option | Cost | Gets you |
-|---|---|---|
-| **Put GPIO parts on the Pi's header** | Two wires per part, or a Grove Base Hat for Pi Zero (SKU 103030276, ~$6) for solderless Grove ports | Button and PIR both work, with no XIAO surgery. Costs a Pi-to-XIAO message for anything the firmware must react to |
-| **Touch pads on the XIAO** | Nothing | A trigger with no connector at all. D0 is proven. Not a mechanical button feel |
-| Seeed Expansion Board Base (SKU 103030356, owned) | Wants the expansion header the Vision AI V2 is on - so it costs the camera, not the mic | Grove I2C and a digital port without soldering, plus the only buzzer owned |
-| Solder to the XIAO's exposed pads | One soldering session | Everything on one device, no cross-device coordination |
-| Move the Vision AI V2 to a Grove cable | A cable | Frees the header - but the hub currently chains off the Vision AI's Grove port, so this also moves the I2C path |
-
-### Decision: row indication moves to the LED strip, driven from the Pi
-
-**Status: Planned** - decided 2026-08-28. Nothing is wired and no code exists.
-
-The 8x8 matrix indicates a row by lighting matrix row N for toolbox row N. That has two
-faults, and they are the same fault seen from different sides:
-
-- **It caps at eight.** The unit of meaning is the panel's own height, so a toolbox with
-  more rows than the panel has cannot be addressed at all. `MAX_TOOLBOX_ROWS` is 8 for
-  this reason - it is a symptom of the design, not a hardware limit worth keeping.
-- **It is hard to read.** A single lit row gives the eye no scale to count against, so it
-  reads as "higher" or "lower" rather than as row 3. Every fix for that - a ruler column,
-  a sweep animation, filling to the row - adds machinery to make a number legible that
-  the box should not have been asking anyone to read.
-
-The WS2813 strip removes both by not encoding position at all. One LED sits beside each
-row, so the light **is** the answer; nobody counts anything, and thirty LEDs is thirty
-rows. Grid coordinates on the matrix were considered - the existing `1A`/`1B`/`1C` labels
-are already a row and a column - and rejected: it scales only to 64, still has to be
-read, and costs a schema change for a column concept the strip makes unnecessary.
-
-**The strip hangs off the Pi, not the XIAO.** The XIAO's expansion header is occupied by
-the Vision AI V2, which is the same wall the PIR and the Red LED Button hit, and the
-answer is the same one this section already reached: the Pi's 40-pin header is unused.
-
-**This needs no protocol change, which is the surprising part.** Everything else
-interactive is blocked on the device speaking first - see Communication Protocol. Row
-indication is not. The Pi already receives `tools/lookup`, already computes the `rows`
-array, and can light the strip inside `handleSerialRequest` before it composes the
-response. The one output that ought to be hardest to move is the one that moves for free.
-
-**Drive it over SPI, not `rpi_ws281x`.** The usual library uses PWM+DMA on GPIO18 and
-ships as a native addon; the API is Bun, and native Node addons under Bun are a gamble
-worth not taking. Encoding each WS2812 bit as three SPI bits at ~2.4MHz and writing the
-buffer to `/dev/spidev0.0` is plain file I/O - no native module, no root, and the strip
-stays inside the existing Bun process instead of behind a Python sidecar.
-
-**What this does to the other outputs.** Each ends up with one job and no overlap:
-
-| Output | Job |
-|---|---|
-| WS2813 strip | Points at the row, physically |
-| 8x8 matrix | The face: idle, thinking, not found, not understood |
-| OLED | Names the exact drawer - `1A` against `1B`, which the strip cannot distinguish |
-
-Once the strip exists the matrix stops encoding numbers, so the digit phase and
-`MATRIX_RESULT_ROW_MS` can go. Do not invest further in making the matrix legible as a
-row indicator; that work is superseded by this decision.
-
-**Do not connect a passive Grove module to the I2C Hub.** Every Grove connector is the
-same four-pin shape, but an I2C port's two signal pins are SDA and SCL. A module with no
-I2C chip - the Red LED Button, the PIR - cannot be addressed there, and its switch pulls
-on a line the OLED and matrix are using. See the Grove Red LED Button row in the
-Hardware Bring-Up table for what that looks like in practice.
-
-**Current decision**: touch pad for the voice trigger, no new hardware. See
-`docs/PLAN-voice-lookup.md`, Decision 2.
+What stays in this file: how the firmware and API *use* the hardware. See Communication
+Protocol, Firmware Architecture, Power Management, and Feature Specifications below.
 
 ## Communication Protocol
 
@@ -1504,8 +1195,9 @@ Add to Arduino Library Manager:
       `firmware/smarttoolbox/smarttoolbox.ino` for the `tools/lookup` request and response.
 - [ ] Seeed_Arduino_SSCMA - I2C communication with the Grove Vision AI Module V2.
       Needed for Feature 3.
-- [x] U8g2 (2.35.30) - the SSD1315 OLED. In use by `firmware/smarttoolbox/smarttoolbox.ino`
-      for lookup status. The OLED is on the I2C connector directly; the hub is not needed for it.
+- [x] U8g2 (2.35.30) - the OLED, which since 2026-09-02 is the expansion base's own
+      SSD1306 at the same address the Grove SSD1315 used. Same constructor, no code change.
+      In use by `firmware/smarttoolbox/smarttoolbox.ino` for lookup status.
 - [x] `Seeed_RGB_Led_Matrix` (1.0.0) - the Grove 8x8 RGB matrix. In use by
       `firmware/smarttoolbox/smarttoolbox.ino` for the row indicator and the idle face.
       The driver is frame-based, not pixel-addressed: `displayFrames` takes 64 bytes,
@@ -1572,23 +1264,24 @@ understand the word is a different kind of statement from having no answer to it
 Once voice lands, a failed transcription surfaces as a `success: false` response and so
 gets the question mark for free - that is the case it was drawn for.
 
-- [ ] FastLED or Adafruit_NeoPixel - **not needed, and now never will be.** These are
-      Arduino libraries for the WS2813 strip, which is planned on the Pi rather than the
-      XIAO; the Pi drives it over SPI from the Bun process. The matrix is I2C and has
-      never used them.
+- [x] Adafruit NeoPixel (1.15.5) - the WS2813 strip, on GPIO44. **This entry used to say
+      the library would never be needed**, on the reasoning that the strip would hang off
+      the Pi and be driven over SPI from the Bun process. The 2026-09-02 rewire freed a
+      GPIO on the XIAO and reversed that decision; see the Row Indication decision in
+      `docs/HARDWARE.md`. FastLED remains unnecessary. The matrix is I2C and uses neither.
 
 ## Feature Specifications
 
 ### Feature 1: Wake Mode (Motion-Activated)
 
-**Status: Blocked** - the PIR sensor is owned but has nowhere to connect. See the Open
-Hardware Question under Pin Mappings. The design below is unvalidated: no part of it
-has run on hardware.
+**Status: Planned** - the PIR is wired to GPIO1 as of the 2026-09-02 rewire and nothing
+reads it. It is no longer blocked on hardware, merely unwritten. The design below is
+unvalidated: no part of it has run on hardware.
 
 **Purpose**: Automatically activate the toolbox when motion is detected, providing illumination and readying the camera for tool identification.
 
 **Hardware Requirements**:
-- PIR motion sensor (deferred until GPIO expansion is available)
+- PIR motion sensor, wired to GPIO1 on the expansion base's A0/D0 Grove port
 - 8x8 RGB LED matrix (MVP row indication)
 - OLED display (MVP status display)
 
@@ -1612,7 +1305,8 @@ has run on hardware.
 **Power Considerations**:
 - Use PIR interrupt to wake from deep sleep
 - The OLED and matrix operate from the existing low-power I2C setup
-- Revisit power budgeting when the deferred WS2813 strip is added
+- The WS2813 strip runs under-volted from a 3.3V Grove port and needs its own 5V
+  supply before it is mounted - see `docs/HARDWARE.md`
 
 ---
 
@@ -1638,8 +1332,9 @@ left to guess, which is both more reliable on quiet audio and about 2.5s faster.
 dashboard has no voice-test panel, so the flow can only be exercised at the box - the
 one piece of `docs/PLAN-voice-lookup.md` Phase 1 that was not built.
 
-Row indication runs on the 8x8 matrix via `matrixFillRow`; the WS2813 strip it is
-eventually moving to is still not wired. The lookup half is reachable without any of the
+Row indication runs on the 8x8 matrix via `matrixFillRow` and, since 0.27.0, on the
+WS2813 strip beside it: one LED lights next to the matching row, coloured by the same
+certainty rule. Proven on hardware 2026-09-02. The lookup half is reachable without any of the
 voice path, through `GET /api/tools/lookup` and the `tools/lookup` serial endpoint, so
 the dashboard can exercise it directly.
 
@@ -2284,7 +1979,8 @@ Use consistent data formats across both projects:
 - [ ] Make the firmware send real `vision/observe` requests
 
 ## Phase 3: Advanced Features
-- [ ] Resolve the GPIO expansion question (unblocks PIR and button)
+- [x] Resolve the GPIO expansion question - the expansion base took the header and the
+      Vision AI V2 moved to a Grove cable, 2026-09-02. PIR, button and strip are all wired
 - [x] Select microphone hardware - the XIAO's own PDM mic on the Sense board, fitted 2026-08-28
 - [x] Prove the microphone on hardware - RMS 17 quiet against 210 spoken into, 2026-08-29 (`docs/PLAN-mic-bringup.md` Step 1)
 - [x] Carry the audio to the Pi as a single base64 line, shipped 0.20.0 (the chunked protocol was rejected - see Communication Protocol)
