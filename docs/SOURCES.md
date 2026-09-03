@@ -2,7 +2,7 @@
 title: Vendor Documentation Sources
 scope: index of external datasheets and reference pages
 status: active
-updated: 2026-08-28
+updated: 2026-09-02
 ---
 
 # Vendor Documentation Sources
@@ -42,6 +42,11 @@ as strapping pins) and cross-reference it against Seeed's D-numbering.
 | Seeed_RGB_LED_Matrix (Arduino library) | The `grove_two_rgb_led_matrix.h/.cpp` driver, **vendored into `firmware/smarttoolbox/`** (MIT, v1.0.0). Not in the Arduino library registry, so `sketch.yaml` cannot pin it. The registry's "Grove - LED Matrix Driver" is a **different part** - an STM32-based 64x32 dual-colour driver - and is not a substitute | `https://github.com/Seeed-Studio/Seeed_RGB_LED_Matrix` | 2026-08-31 | vendored in-tree |
 | Seeed XIAO ESP32S3 Sense - product photo | The physical stack: camera and mic face up on the board-to-board connector, leaving the expansion header free for the Vision AI V2. Evidence that the two boards do not compete | Amazon listing, saved locally | 2026-08-28 | `xiao-screenshot.PNG` |
 | Seeed XIAO ESP32S3 Sense - PDM microphone | On-board mic: GPIO 42 clock / 41 data, `ESP_I2S.h` init calls, PDM-mono-16-bit-only constraint, `ps_malloc` buffering. **Documents core 2.x and 3.x side by side and leads with 2.x — read the 3.0.x half** | `https://wiki.seeedstudio.com/xiao_esp32s3_sense_mic/` | 2026-08-28 | — (web) |
+| Expansion Board Base for XIAO (SKU 103030356) | Grove port list and voltage (all ports 3V3), onboard OLED, button, buzzer, RTC and SD slot, and the note that the XIAO's own USB-C stays usable when seated | `https://wiki.seeedstudio.com/Seeeduino-XIAO-Expansion-Board/` | 2026-09-02 | - (web) |
+| Expansion Board Base - Zephyr shield definition | The pin facts the wiki leaves out, as a devicetree overlay: button on D1, SD chip select on D2, SSD1306 at 0x3C, PCF8563 RTC at 0x51 | `https://github.com/zephyrproject-rtos/zephyr/blob/main/boards/shields/seeed_xiao_expansion_board/seeed_xiao_expansion_board.overlay` | 2026-09-02 | - (web) |
+| Grove Vision AI V2 - connection methods | Confirms the module is an ordinary I2C peripheral at 0x62 and can be cabled to a Grove port rather than stacked on the expansion header | `https://wiki.seeedstudio.com/grove_vision_ai_v2a/` | 2026-09-02 | - (web) |
+| Adafruit NeoPixel (Arduino library) | WS2813 timing on the ESP32's RMT peripheral. Pinned at 1.15.5 in `sketch.yaml` | `https://github.com/adafruit/Adafruit_NeoPixel` | 2026-09-02 | - (web) |
+| SmartToolbox wiring photograph | The box as rebuilt on 2026-09-02, with every Grove port populated | taken locally | 2026-09-02 | `wiring-2026-09-02.jpg` |
 | OV5647 camera sensor | Resolution modes, MIPI interface (used via the Vision AI V2, not driven directly) | vendor datasheet — source not yet identified | not verified | — |
 
 ## Examples

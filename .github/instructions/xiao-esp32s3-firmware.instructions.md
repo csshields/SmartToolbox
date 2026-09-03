@@ -178,6 +178,31 @@ http.collectHeaders(wantedHeaders, 1);
 It fails silently, not loudly - the update still installs, it just cannot name the
 version it installed.
 
+### A large reply overflows the USB receive buffer, silently
+
+The USB CDC receive buffer defaults to **256 bytes**. A found-tool reply from the Pi is
+about a kilobyte and lands in under a millisecond, while the loop blocks for roughly
+10ms at a time pushing a frame to the matrix over I2C. When the two coincide, one
+buffer's worth of bytes is lost from the middle of the line - and the newline goes with
+them, so what remains fuses with the next reply and `deserializeJson` rejects the pair.
+
+Raise it before `Serial.begin()`, which is the only time it can be set:
+
+```cpp
+Serial.setRxBufferSize(4096);
+Serial.begin(115200);
+```
+
+**The symptom names the wrong culprit.** The dropped line leaves the request pending, so
+a hundred seconds later the voice timeout puts "No response - Is the Pi service up?" on
+the screen, against a Pi that answered correctly and logged doing so. Small replies
+survive and large ones do not, so "not found" works perfectly while every successful
+lookup fails - which reads as a lookup bug rather than a transport one.
+
+Found 2026-09-02, and only after `handleIncomingLine` was made to print what it could
+not parse. It had been returning in silence, which is what made a damaged reply and a
+missing reply indistinguishable. Keep that print.
+
 ## Reference
 
 Seeed documentation URL checked on 2026-08-27:

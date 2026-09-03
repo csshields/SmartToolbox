@@ -1,7 +1,7 @@
 /**
  * SmartToolbox - Seeed XIAO ESP32S3 Firmware
  *
- * Touching a mapped pad sends a tools/lookup request to the Pi over USB
+ * Holding the expansion base's button sends a tools/lookup request to the Pi
  * serial and reports the result three ways: the onboard LED blinks N slow for
  * the row number, 3 fast for not found, 1 long for error or timeout; the OLED
  * names the tool and its exact drawer label; and the 8x8 matrix lights the
@@ -19,20 +19,23 @@
 #include <HTTPClient.h>
 #include <Update.h>
 #include <ESP_I2S.h>
+#include <Adafruit_NeoPixel.h>
 #include "arduino_secrets.h"
 
 // Single source of truth for the version this build reports. Rewritten by
 // api/scripts/release-firmware.ps1 on release, and compared against the Pi's
 // drop folder to decide whether an OTA update is available - keep the exact
 // `#define FIRMWARE_VERSION "x.y.z"` shape so the script can find it.
-#define FIRMWARE_VERSION "0.23.1"
+#define FIRMWARE_VERSION "0.27.0"
 
 const int LED_PIN = LED_BUILTIN; // Active-low: LOW = on, HIGH = off.
 const int LED_ON = LOW;
 const int LED_OFF = HIGH;
 
-// Grove SSD1315 0.96" on the I2C connector. The SSD1315 is SSD1306-compatible,
-// so the NONAME constructor drives it - same one the PIR bring-up sketch used.
+// The expansion base's onboard 0.96" OLED, on the shared I2C bus at 0x3C. This
+// used to be the Grove SSD1315 on the XIAO's own I2C pins; the base carries an
+// SSD1306 at the same address, so the panel changed and this line did not - the
+// two cannot both be on the bus, which is why the Grove one came off.
 U8G2_SSD1306_128X64_NONAME_F_HW_I2C oled(U8G2_R0, U8X8_PIN_NONE);
 bool oledReady = false;
 
@@ -71,33 +74,51 @@ const uint8_t MATRIX_LAST_ROW_Y = 6;
 // output does.
 const orientation_type_t MATRIX_ORIENTATION = DISPLAY_ROTATE_270;
 
-// GPIO5/GPIO6 are deliberately absent: they are the I2C bus (SDA/SCL) the OLED
-// runs on, so touch-reading them would fight the display.
-const uint8_t TOUCH_PINS[] = {1, 2, 3, 4, 7, 8, 9};
-const size_t TOUCH_PIN_COUNT = sizeof(TOUCH_PINS) / sizeof(TOUCH_PINS[0]);
-uint32_t touchBaseline[TOUCH_PIN_COUNT];
-
-// The S3's touch peripheral (sensor v2) reads *higher* when a pad is touched -
-// the opposite of the original ESP32. See esp32-hal-touch.h in the core.
-// Tune this ratio against the TOUCH_DEBUG output if a pad misses or false-fires.
-const float TOUCH_TRIGGER_RATIO = 1.15f;
-
-// Prints per-scan touch readings so the ratio above can be tuned on hardware.
-// Off now that D0 is trusted: at ~3 lines/second these drowned the Pi's log,
-// where the only interesting entries are real requests. Turn it back on when
-// bringing up a new pad, then turn it off again.
-#define TOUCH_DEBUG 0
-
-// Parallel to TOUCH_PINS. Only pad D0 is wired for now; turn one on as more pads
-// are added. Inactive pads are never scanned - reading a pad back to back with
-// another is what makes the S3 touch peripheral return a frozen value.
+// --- WS2813 row indicator strip ----------------------------------------------
 //
-// This used to be a tool name per pad, from before the pad had a microphone
-// behind it. Every pad now does the same thing - hold it and say what you want -
-// so what the array has to say is which pads exist.
-const bool TOUCH_PAD_ACTIVE[TOUCH_PIN_COUNT] = {
-  true, false, false, false, false, false, false,
-};
+// Grove WS2813, 30 LED/m, 1m (SKU 104020108), on the expansion base's UART Grove
+// port. Nothing in this sketch uses UART0 - Serial is the native USB CDC port -
+// so the pins are free.
+//
+// **DIN is GPIO44, BIN is GPIO43.** Proven on hardware 2026-09-02 by driving
+// each pin in turn and watching which one the strip answered on. That also
+// explains the pixel that lights at power-up before the sketch runs: the boot
+// ROM prints its log on GPIO43, which is the backup input, and a WS2813 falls
+// back to that line when the main one is idle. The first write clears it.
+const uint8_t STRIP_DATA_PIN = 44;  // D7, UART0 RX.
+const uint16_t STRIP_LED_COUNT = 30;
+
+// The base's Grove ports are silkscreened 3V3 and a WS2813 wants 5V, so these
+// LEDs run under-volted: the colours skew and the top of the range is not there.
+// Kept low anyway, because every lit LED draws through the XIAO's regulator on
+// the Pi's USB feed. Read the power note in docs/HARDWARE.md before raising it.
+const uint8_t STRIP_BRIGHTNESS = 40;
+
+// Row N lights LED N-1. A placeholder: one LED beside each row is the whole
+// argument for the strip, but which LED ends up beside which drawer is a
+// physical fact nobody has fixed yet, because the strip is still on the bench.
+const uint16_t STRIP_ROW_FIRST_LED = 0;
+
+Adafruit_NeoPixel strip(STRIP_LED_COUNT, STRIP_DATA_PIN, NEO_GRB + NEO_KHZ800);
+
+// --- Push-to-talk button -----------------------------------------------------
+//
+// The expansion base's own button, on D1. It shorts the pin to ground and the
+// base carries no pull-up of its own, so the internal one holds it high and a
+// press reads LOW.
+//
+// This replaced the D0 touch pad, which the PIR now drives from the base's A0/D0
+// Grove port: touch charges a pad while the sensor drives it, which is two
+// drivers on one net. The pads are still on the board and still touch-capable,
+// but nothing here reads them, so the baselines, the trigger ratio and the
+// per-scan debug print went with the pad. What that machinery taught is recorded
+// in .github/instructions/xiao-esp32s3-firmware.instructions.md, which is where
+// the next person to reach for a pad will look.
+const uint8_t BUTTON_PIN = 2; // D1 on the XIAO ESP32S3.
+
+bool buttonPressed() {
+  return digitalRead(BUTTON_PIN) == LOW;
+}
 
 const uint16_t RESPONSE_TIMEOUT_MS = 2000;
 
@@ -231,9 +252,9 @@ const size_t MIC_CHUNK_BYTES = (size_t)MIC_SAMPLE_RATE * MIC_BYTES_PER_SAMPLE / 
 I2SClass mic;
 bool micReady = false;
 
-uint8_t consecutiveTouched = 0;
+uint8_t consecutivePressed = 0;
 uint8_t consecutiveReleased = 0;
-bool wasTouched = false;
+bool wasPressed = false;
 
 String serialLineBuffer = "";
 String pendingRequestId = "";
@@ -628,6 +649,11 @@ void showMatrixRow(int rowNumber, bool hasCertainty, int certainty) {
   matrixResultDigitDrawn = !validRow; // Nothing to follow up with for an unknown row.
   matrixResultDigitAt = millis() + MATRIX_RESULT_ROW_MS;
 
+  // The strip is the row indicator the matrix has been standing in for. Both run
+  // while the strip is on the bench; see the Row Indication decision in
+  // docs/HARDWARE.md for what happens to the matrix once it is mounted.
+  stripShowRow(rowNumber, hasCertainty, certainty);
+
   matrixMode = MATRIX_RESULT;
   matrixResultUntil = millis() + MATRIX_RESULT_HOLD_MS;
   matrixPush();
@@ -637,6 +663,9 @@ void showMatrixRow(int rowNumber, bool hasCertainty, int certainty) {
 // thinking for exactly as long as it is waiting, and every exit from
 // awaitingResponse - answer, rejection, or timeout - sets another mode.
 void startMatrixThinking() {
+  // The previous answer stops being true the moment a new question is asked.
+  stripClear();
+
   matrixMode = MATRIX_THINKING;
   matrixThinkPhase = 0;
   matrixThinkNextAt = millis() + MATRIX_THINK_STEP_MS;
@@ -728,6 +757,8 @@ void updateMatrix() {
     }
 
     if (millis() >= matrixResultUntil) {
+      stripClear();
+
       // Back to what the box actually is, which is not always the idle face. A
       // result can be shown before the Pi has ever answered - the response
       // timeout raises its alert on a cold start - and falling through to
@@ -786,9 +817,43 @@ void showStatus(const char* title, const String& line2, const String& line3) {
   oled.sendBuffer();
 }
 
+// Mirrors certaintyColor, which does the same job for the matrix. The two must
+// never disagree about how sure the box is, so they answer to the same rule and
+// the same threshold.
+uint32_t stripCertaintyColor(bool hasCertainty, int certainty) {
+  if (!hasCertainty) {
+    return strip.Color(255, 255, 255);
+  }
+  return certainty >= 75 ? strip.Color(0, 255, 0) : strip.Color(255, 128, 0);
+}
+
+void stripClear() {
+  strip.clear();
+  strip.show();
+}
+
+// One LED beside the row, which is the whole argument for the strip: nothing to
+// count and nothing to read. A found tool with no row assigned has nothing to
+// point at, so it lights the whole indicator run instead - the same answer the
+// matrix gives, for the same reason.
+void stripShowRow(int rowNumber, bool hasCertainty, int certainty) {
+  const uint32_t color = stripCertaintyColor(hasCertainty, certainty);
+  const bool validRow = rowNumber >= 1 && rowNumber <= 6;
+
+  strip.clear();
+  if (validRow) {
+    strip.setPixelColor(STRIP_ROW_FIRST_LED + (uint16_t)(rowNumber - 1), color);
+  } else {
+    for (uint16_t offset = 0; offset < 6; offset++) {
+      strip.setPixelColor(STRIP_ROW_FIRST_LED + offset, color);
+    }
+  }
+  strip.show();
+}
+
 void showWaitingStatus() {
   // The version stays on screen because this is exactly when someone wants to
-  // know what is running, and the line it replaces ("Touch a pad") is an
+  // know what is running, and the line it replaces ("Hold the button") is an
   // instruction the box cannot honour yet.
   showStatus("SmartToolbox", waitingLong ? "No reply from Pi" : "Waiting for Pi",
              "v" FIRMWARE_VERSION);
@@ -855,14 +920,14 @@ void promoteToReady() {
   // any parsed line, before the pending-id check, and a request can be in flight
   // when the first reply lands: pollWaitingRetry keeps sending device/status
   // while a transcription runs, deliberately unguarded by awaitingResponse. The
-  // reply to one of those was painting "Ready / Hold D0 to record" over
+  // reply to one of those was painting "Ready / Hold the button" over
   // "Transcribing", so the box claimed to be idle in the middle of the one
   // operation it cannot interrupt. Whoever owns the screen redraws when it ends.
   if (awaitingResponse) {
     return;
   }
 
-  showStatus("SmartToolbox", "Ready", "Hold D0 to record");
+  showStatus("SmartToolbox", "Ready", "Hold the button");
 
   matrixMode = MATRIX_EYES;
   matrixEyesClosed = false;
@@ -1081,7 +1146,7 @@ bool beginMicrophone() {
 // Both numbers, because a hold too short to be a word and a microphone that
 // yields nothing are different failures with different fixes, and folding them
 // into one zero return meant the box could only ever name the first of them.
-size_t recordWhileHeld(int16_t* samples, size_t pinIndex, uint32_t* heldMs) {
+size_t recordWhileHeld(int16_t* samples, uint32_t* heldMs) {
   size_t bytesRead = 0;
   const uint32_t startedAt = millis();
   uint8_t wavePhase = 0;
@@ -1100,27 +1165,24 @@ size_t recordWhileHeld(int16_t* samples, size_t pinIndex, uint32_t* heldMs) {
 
     bytesRead += mic.readBytes((char*)samples + bytesRead, MIC_CHUNK_BYTES);
 
-    // Read the pad directly rather than calling pollTouch. That function owns
-    // the press/release debounce and was the thing that dispatched us;
+    // Read the button directly rather than calling pollButton. That function
+    // owns the press/release debounce and was the thing that dispatched us;
     // re-entering it from inside its own handler would leave that state
-    // describing a moment that has already passed. One read per ~100ms chunk is
-    // also far enough apart to keep the S3's touch peripheral happy - reading it
-    // back to back is what makes it return a frozen value.
-    const uint32_t touchValue = touchRead(TOUCH_PINS[pinIndex]);
-    if (touchValue > touchBaseline[pinIndex] * TOUCH_TRIGGER_RATIO) {
+    // describing a moment that has already passed.
+    if (buttonPressed()) {
       releasedReads = 0;
     } else {
       releasedReads++;
     }
 
-    // Two consecutive below-threshold reads, the same rule pollTouch debounces
-    // with: one noisy sample must not end a word mid-syllable. Checked after the
-    // read, so the chunk a release lands in is still kept - it holds the end of
-    // what was said.
+    // Two consecutive released reads, the same rule pollButton debounces with:
+    // one noisy sample must not end a word mid-syllable. Checked after the read,
+    // so the chunk a release lands in is still kept - it holds the end of what
+    // was said.
     //
     // The release ends the recording whatever its length. Refusing to break
     // before MIC_MIN_HOLD_MS made the too-short check below unreachable: a 50ms
-    // brush against the pad kept recording to exactly the floor and went off to
+    // brush against the button kept recording to exactly the floor and went off to
     // Whisper as though it were a word, locking the pad for the whole round trip.
     if (releasedReads >= 2) {
       break;
@@ -1193,7 +1255,7 @@ void sendVoiceAudio(const int16_t* samples, size_t byteCount) {
   pendingIsVoice = true; // Transcription takes ~10s; the lookup timeout would fire long before.
 }
 
-void recordAndReportMic(size_t pinIndex) {
+void recordAndReportMic() {
   if (!micReady) {
     Serial.println("MIC error=not-initialised");
     showStatus("Microphone", "Not initialised", "");
@@ -1214,7 +1276,7 @@ void recordAndReportMic(size_t pinIndex) {
   }
 
   uint32_t heldMs = 0;
-  const size_t bytesRead = recordWhileHeld(samples, pinIndex, &heldMs);
+  const size_t bytesRead = recordWhileHeld(samples, &heldMs);
   const size_t sampleCount = bytesRead / MIC_BYTES_PER_SAMPLE;
 
   // Two failures that used to say the same thing. No bytes at all is a
@@ -1315,6 +1377,27 @@ void setup() {
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LED_OFF);
 
+  // A plain switch to ground, so the internal pull-up is what makes an unpressed
+  // button read as anything at all.
+  pinMode(BUTTON_PIN, INPUT_PULLUP);
+
+  // Early, because until the first write the strip is still showing whatever the
+  // boot ROM's log left on the backup line.
+  strip.begin();
+  strip.setBrightness(STRIP_BRIGHTNESS);
+  stripClear();
+
+  // Raised from the 256-byte default. The Pi's found-tool replies run to about a
+  // kilobyte, and a frame push to the matrix blocks the loop for ~10ms of I2C -
+  // long enough for a whole reply to land and overflow that buffer mid-line. The
+  // bytes that go missing take the newline with them, so what is left fuses with
+  // the next reply and the pair is dropped as unparseable, and a hundred seconds
+  // later the voice timeout blames the Pi.
+  //
+  // Diagnosed 2026-09-02 from a PARSE line of 947 bytes that opened with a
+  // lookup reply and closed with a heartbeat's. Must be called before begin().
+  Serial.setRxBufferSize(4096);
+
   Serial.begin(115200);
   // Bounded: the XIAO is often powered up before the Pi service opens the port,
   // and an unbounded wait here would hang the sketch before setup() finishes.
@@ -1350,32 +1433,11 @@ void setup() {
   startWaitingForPi();
 
 #if OTA_ENABLED
-  // Before touch calibration: if an update is waiting there is no point
-  // spending half a second calibrating pads we are about to reboot away from.
+  // Early, because there is no point finishing a boot we are about to reboot
+  // away from. The touch calibration this used to sit in front of is gone: a
+  // button needs no baseline, which is half of why it is the better trigger.
   checkForFirmwareUpdate();
 #endif
-
-  showStatus("SmartToolbox", "Starting up", "Calibrating touch");
-
-  for (size_t pinIndex = 0; pinIndex < TOUCH_PIN_COUNT; pinIndex++) {
-    if (!TOUCH_PAD_ACTIVE[pinIndex]) {
-      continue; // Inactive pad - never scanned, so never needs a baseline.
-    }
-    // The first reads after boot come back roughly 8x high while the touch
-    // peripheral settles. Discard them, or the baseline lands far above any
-    // value a real touch can reach and the pad goes permanently dead.
-    for (int warmUp = 0; warmUp < 10; warmUp++) {
-      touchRead(TOUCH_PINS[pinIndex]);
-      delay(2);
-    }
-
-    uint32_t total = 0;
-    for (int sample = 0; sample < 20; sample++) {
-      total += touchRead(TOUCH_PINS[pinIndex]);
-      delay(2);
-    }
-    touchBaseline[pinIndex] = total / 20;
-  }
 
   // The boot check has already run by here, and on a cold whole-box start it
   // will have failed for the reason given at FIRMWARE_FIRST_CHECK_MS. Re-check
@@ -1396,7 +1458,7 @@ void setup() {
 }
 
 void loop() {
-  pollTouch();
+  pollButton();
   pollSerialResponses();
   pollResponseTimeout();
   pollWaitingRetry();
@@ -1409,77 +1471,38 @@ void loop() {
   updateMatrix();
 }
 
-uint32_t lastTouchScanValue0 = 0; // Shared with the debug print below - no extra reads.
-
-void debugPrintTouchD0() {
-#if TOUCH_DEBUG
-  static uint32_t lastPrint = 0;
-  if (millis() - lastPrint < 300) {
-    return;
-  }
-  lastPrint = millis();
-  Serial.print("DBG D0 value=");
-  Serial.print(lastTouchScanValue0);
-  Serial.print(" baseline=");
-  Serial.print(touchBaseline[0]);
-  Serial.print(" trigger-above=");
-  Serial.println((uint32_t)(touchBaseline[0] * TOUCH_TRIGGER_RATIO));
-#endif
-}
-
-// The scan is throttled to ~50ms - the ESP32-S3 touch peripheral times
-// out ("Wait for measurement done timeout") if polled with no gap at all.
-void pollTouch() {
+// Throttled to ~50ms, which is also the debounce interval below. A mechanical
+// button bounces for a millisecond or two; reading it every 50ms and requiring
+// two agreeing reads puts the decision well clear of that.
+void pollButton() {
   static uint32_t lastScan = 0;
   if (millis() - lastScan < 50) {
     return;
   }
   lastScan = millis();
 
-  bool touched = false;
-  int touchedPinIndex = -1;
-
-  for (size_t pinIndex = 0; pinIndex < TOUCH_PIN_COUNT; pinIndex++) {
-    // Skip inactive pads. Beyond saving work, reading every pad back-to-back
-    // with no gap makes the S3 touch peripheral return a frozen garbage value.
-    if (!TOUCH_PAD_ACTIVE[pinIndex]) {
-      continue;
-    }
-    const uint32_t touchValue = touchRead(TOUCH_PINS[pinIndex]);
-    if (pinIndex == 0) {
-      lastTouchScanValue0 = touchValue;
-    }
-    if (touchValue > touchBaseline[pinIndex] * TOUCH_TRIGGER_RATIO) {
-      touched = true;
-      touchedPinIndex = pinIndex;
-      break;
-    }
-  }
-
-  debugPrintTouchD0();
-
-  if (touched) {
-    consecutiveTouched++;
+  if (buttonPressed()) {
+    consecutivePressed++;
     consecutiveReleased = 0;
   } else {
-    consecutiveTouched = 0;
+    consecutivePressed = 0;
     consecutiveReleased++;
   }
 
   // Debounce both edges. Press needs 2 consecutive readings; release needs 2 as
-  // well, so a single noisy sub-threshold sample mid-touch cannot end the press
-  // and re-arm the next one.
-  const bool isTouched = wasTouched ? consecutiveReleased < 2 : consecutiveTouched >= 2;
-  if (isTouched && !wasTouched) {
-    onTouchStart(touchedPinIndex);
+  // well, so a single noisy sample mid-press cannot end the press and re-arm the
+  // next one.
+  const bool isPressed = wasPressed ? consecutiveReleased < 2 : consecutivePressed >= 2;
+  if (isPressed && !wasPressed) {
+    onButtonPress();
   }
-  wasTouched = isTouched;
+  wasPressed = isPressed;
 }
 
 // Only start a new recording when idle - not already waiting on a lookup or
 // blinking its result.
-void onTouchStart(int pinIndex) {
-  if (pinIndex < 0 || awaitingResponse || blinkRemaining > 0) {
+void onButtonPress() {
+  if (awaitingResponse || blinkRemaining > 0) {
     return;
   }
 
@@ -1487,15 +1510,16 @@ void onTouchStart(int pinIndex) {
   // on the screen. Recording anyway would spend ten seconds and come back "No
   // response", blaming a Pi that is merely booting. This guard used to sit
   // inside the lookup path so that microphone bring-up stayed testable on a
-  // bench where nothing answered; the bring-up is done, and the pad's job now
+  // bench where nothing answered; the bring-up is done, and the button's job now
   // needs the Pi like any other.
   if (!deviceReady) {
     showWaitingStatus();
     return;
   }
 
-  // Hold the pad, say what you want, and the drawer comes back on the OLED and
-  // the matrix. That is the whole of Feature 2 and the only thing a pad does.
+  // Hold the button, say what you want, and the drawer comes back on the OLED
+  // and the matrix. That is the whole of Feature 2 and the only thing the button
+  // does.
   //
   // A hard-coded tool name per pad used to live here behind MIC_BRINGUP=0, from
   // before the microphone worked. It was a compile flag whose off position
@@ -1503,7 +1527,7 @@ void onTouchStart(int pinIndex) {
   // worked. The lookup path it exercised is unchanged and still reachable two
   // other ways: the Pi's tools/lookup endpoint, and "lookup <name>" typed into a
   // serial monitor - see handleIncomingLine.
-  recordAndReportMic((size_t)pinIndex);
+  recordAndReportMic();
 }
 
 void sendToolLookupRequest(const char* toolName) {
@@ -1644,7 +1668,7 @@ void handleIncomingLine(const String& line) {
   }
 
   // Bench trigger: "lookup <tool name>" typed into a serial monitor runs the same
-  // request path as a touch, so the Pi round trip can be proven without the pads.
+  // request path as a button press, so the round trip can be proven without it.
   // The Pi only ever writes JSON here, so this cannot collide with a response.
   if (line.startsWith("lookup ")) {
     if (!awaitingResponse && blinkRemaining == 0) {
@@ -1654,7 +1678,28 @@ void handleIncomingLine(const String& line) {
   }
 
   JsonDocument doc;
-  if (deserializeJson(doc, line) != DeserializationError::Ok) {
+  const DeserializationError parseError = deserializeJson(doc, line);
+  if (parseError) {
+    // This used to return in silence, and the silence was the bug. A response
+    // that arrives damaged and a response that never arrives look identical from
+    // outside the box: the line is dropped here, nothing waits on it, and a
+    // hundred seconds later the voice timeout blames a Pi that answered
+    // correctly. Seen on 2026-09-02, on a found-tool reply that the Pi wrote and
+    // the device never acknowledged.
+    //
+    // The length is the interesting half. A line much shorter than the Pi sent
+    // is a receive buffer that overflowed while the loop was busy elsewhere -
+    // pushing a frame to the matrix takes ~10ms of blocking I2C - rather than a
+    // Pi that sent nonsense. Head and tail together say whether the damage is at
+    // one end or all through it.
+    Serial.print("PARSE error=");
+    Serial.print(parseError.c_str());
+    Serial.print(" len=");
+    Serial.print(line.length());
+    Serial.print(" head=");
+    Serial.print(line.substring(0, 48));
+    Serial.print(" tail=");
+    Serial.println(line.substring(line.length() > 48 ? line.length() - 48 : 0));
     return;
   }
 
@@ -1687,7 +1732,7 @@ void handleIncomingLine(const String& line) {
 
   // A voice reply carries a transcript *and* an ordinary lookup body. Name what
   // was heard, then fall through - the found / not-found / error branches below
-  // are the same ones a touch lookup uses, which is the point: one set of
+  // are the same ones a typed lookup uses, which is the point: one set of
   // pictures, one set of rules, nothing to drift out of step.
   const bool wasVoice = pendingIsVoice;
   if (wasVoice) {
@@ -1730,7 +1775,7 @@ void handleIncomingLine(const String& line) {
 
   // Say so when the tool is on record in more than one drawer, rather than
   // showing one of them as though it were the answer.
-  // Name the tool that was matched, not the phrase that was heard. On a touch
+  // Name the tool that was matched, not the phrase that was heard. On a typed
   // lookup they are the same string; on a voice one, "where are my needle nose
   // pliers" is what you said and "Needle-nose Pliers" is what you go and fetch.
   // The phrase is already on the serial log for diagnosing a mishearing.
