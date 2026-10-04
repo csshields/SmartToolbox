@@ -1,0 +1,156 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Settings | SmartToolBox</title>
+    <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+    <header class="topbar">
+        <div class="topbar-inner">
+            <a class="brand" href="/">
+                <span class="brand-mark" aria-hidden="true">ST</span>
+                <span class="brand-text">SmartToolBox</span>
+            </a>
+            <nav class="nav">
+                <a href="/">Dashboard</a>
+                <a href="/toolboxes">Toolboxes</a>
+                <a href="/devices">Devices</a>
+                <a href="/ai-settings" aria-current="page">AI Settings</a>
+            </nav>
+            <div class="health">
+                <span id="healthDot" class="health-dot"></span>
+                <span id="healthLabel" class="health-text">Checking API…</span>
+            </div>
+        </div>
+    </header>
+
+    <main class="page">
+        <div class="page-head">
+            <h1>AI Settings</h1>
+            <p>Where the box sends what it hears to be turned into text.</p>
+        </div>
+
+        <section class="card">
+            <div class="card-head">
+                <div>
+                    <h2>Transcription</h2>
+                    <p>Choose where push-to-talk audio is transcribed. API keys remain on the Pi and are never shown here.</p>
+                </div>
+            </div>
+            <div class="card-body">
+                <form id="transcriptionSettingsForm">
+                    <div class="form-grid">
+                        <div class="field">
+                            <label for="transcriptionProvider">Provider</label>
+                            <select id="transcriptionProvider" name="provider">
+                                <option value="nas_whisper">NAS Whisper</option>
+                                <option value="openai">OpenAI</option>
+                            </select>
+                        </div>
+                        <div id="nasUrlField" class="field">
+                            <label for="nasUrl">NAS Whisper URL</label>
+                            <input id="nasUrl" name="nasUrl" type="url" placeholder="http://192.168.50.10:9000" required>
+                        </div>
+                    </div>
+                    <p id="transcriptionHint" class="field-hint" style="margin-top: 14px;"></p>
+                    <div class="form-actions" style="margin-top: 18px;">
+                        <button class="btn btn-primary" type="submit">Save settings</button>
+                        <button id="testTranscriptionButton" class="btn btn-secondary" type="button">Test connection</button>
+                    </div>
+                </form>
+                <div id="transcriptionStatus" class="status" aria-live="polite"></div>
+            </div>
+        </section>
+
+        <div class="footer">SmartToolBox v1.0</div>
+    </main>
+
+    <script src="/app.js"></script>
+    <script>
+        const transcriptionSettingsForm = document.getElementById('transcriptionSettingsForm');
+        const transcriptionProvider = document.getElementById('transcriptionProvider');
+        const nasUrl = document.getElementById('nasUrl');
+        const nasUrlField = document.getElementById('nasUrlField');
+        const transcriptionHint = document.getElementById('transcriptionHint');
+        const transcriptionStatus = document.getElementById('transcriptionStatus');
+        const testTranscriptionButton = document.getElementById('testTranscriptionButton');
+
+        function updateTranscriptionFields(openaiApiKeyConfigured = false) {
+            const usesNas = transcriptionProvider.value === 'nas_whisper';
+            nasUrlField.hidden = !usesNas;
+            nasUrl.required = usesNas;
+            transcriptionHint.textContent = usesNas
+                ? 'The Pi sends audio to the configured NAS Whisper service.'
+                : openaiApiKeyConfigured
+                    ? 'OpenAI is configured on the Pi. Its API key is not exposed to this page.'
+                    : 'OpenAI requires OPENAI_API_KEY to be configured on the Pi.';
+        }
+
+        async function loadTranscriptionSettings() {
+            try {
+                const response = await fetch('/api/settings/transcription');
+                if (!response.ok) {
+                    throw new Error('Unable to load transcription settings.');
+                }
+
+                const data = await response.json();
+                const settings = data.settings;
+                transcriptionProvider.value = settings.provider;
+                nasUrl.value = settings.nasUrl;
+                updateTranscriptionFields(settings.openaiApiKeyConfigured);
+            } catch (error) {
+                setStatus(transcriptionStatus, error.message, 'error');
+            }
+        }
+
+        transcriptionProvider.addEventListener('change', () => updateTranscriptionFields());
+
+        transcriptionSettingsForm.addEventListener('submit', async (event) => {
+            event.preventDefault();
+            const payload = { provider: transcriptionProvider.value, nasUrl: nasUrl.value };
+
+            try {
+                const response = await fetch('/api/settings/transcription', {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.error || 'Unable to save transcription settings.');
+                }
+
+                transcriptionProvider.value = data.settings.provider;
+                nasUrl.value = data.settings.nasUrl;
+                updateTranscriptionFields(data.settings.openaiApiKeyConfigured);
+                setStatus(transcriptionStatus, 'Transcription settings saved.', 'success');
+            } catch (error) {
+                setStatus(transcriptionStatus, error.message, 'error');
+            }
+        });
+
+        testTranscriptionButton.addEventListener('click', async () => {
+            try {
+                const response = await fetch('/api/settings/transcription/test', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ provider: transcriptionProvider.value, nasUrl: nasUrl.value })
+                });
+                const data = await response.json();
+                if (!response.ok) {
+                    throw new Error(data.error || 'Unable to test transcription provider.');
+                }
+
+                setStatus(transcriptionStatus, data.message, 'success');
+            } catch (error) {
+                setStatus(transcriptionStatus, error.message, 'error');
+            }
+        });
+
+        startHealthIndicator();
+        loadTranscriptionSettings();
+    </script>
+</body>
+</html>

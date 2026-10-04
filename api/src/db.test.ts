@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -13,23 +13,31 @@ process.chdir(workingDirectory);
 const {
   addToolToDrawer,
   createDrawer,
+  createToolbox,
   DEFAULT_TOOLBOX_ROWS,
   deleteDrawer,
   deleteTool,
+  deleteToolbox,
+  DrawerNotFoundError,
+  findDrawerByLabel,
   assignToolToDrawer,
   findToolLocations,
   getDeviceStatus,
   resolveToolQuery,
-  getToolboxRowCount,
+  getDeviceToolboxId,
+  getToolbox,
   MAX_TOOLBOX_ROWS,
   listDrawers,
+  listToolboxes,
   recordDeviceContact,
   recordDrawerObservation,
   recordDrawerObservations,
   pruneRequestLogs,
   recordRequestLog,
-  saveToolboxRowCount,
+  ToolboxNotFoundError,
   ToolNameConflictError,
+  updateDrawer,
+  updateToolbox,
 } = await import("./db");
 
 // A second connection to the same file, for asserting on columns the module's
@@ -414,7 +422,7 @@ test("pruneRequestLogs drops entries past the retention window and keeps the res
 });
 
 test("a drawer cannot claim a row the panel has no indicator for", () => {
-  const rowCount = getToolboxRowCount();
+  const rowCount = getToolbox(getDeviceToolboxId())!.rowCount;
 
   expect(() => createDrawer(`TooHigh ${++uniqueSuffix}`, { rowNumber: rowCount + 1 }))
     .toThrow(`Matrix row must be a whole number between 1 and ${rowCount}.`);
@@ -428,31 +436,213 @@ test("a drawer cannot claim a row the panel has no indicator for", () => {
 // The bound follows the setting rather than a constant, so a bigger toolbox
 // just works once its row count is recorded.
 test("raising the toolbox row count admits rows that were rejected before", () => {
+  const deviceToolboxId = getDeviceToolboxId();
   const drawerName = `Seven ${++uniqueSuffix}`;
 
   expect(() => createDrawer(drawerName, { rowNumber: 7 })).toThrow();
 
-  saveToolboxRowCount(7);
+  updateToolbox(deviceToolboxId, { rowCount: 7 });
   const seventh = createDrawer(drawerName, { rowNumber: 7 });
   expect(seventh.rowNumber).toBe(7);
 
   // The drawer has to go before the count can come back down - which is the
   // strand guard, exercised here as cleanup.
-  expect(() => saveToolboxRowCount(DEFAULT_TOOLBOX_ROWS)).toThrow(drawerName);
+  expect(() => updateToolbox(deviceToolboxId, { rowCount: DEFAULT_TOOLBOX_ROWS })).toThrow(drawerName);
   deleteDrawer(seventh.id);
-  expect(saveToolboxRowCount(DEFAULT_TOOLBOX_ROWS)).toBe(DEFAULT_TOOLBOX_ROWS);
+  expect(updateToolbox(deviceToolboxId, { rowCount: DEFAULT_TOOLBOX_ROWS }).rowCount).toBe(DEFAULT_TOOLBOX_ROWS);
 });
 
 test("the row count is capped by the panel and refuses to strand a drawer", () => {
-  expect(() => saveToolboxRowCount(MAX_TOOLBOX_ROWS + 1)).toThrow(/between 1 and/);
-  expect(() => saveToolboxRowCount(2.5)).toThrow(/whole number/);
+  const deviceToolboxId = getDeviceToolboxId();
+
+  expect(() => updateToolbox(deviceToolboxId, { rowCount: MAX_TOOLBOX_ROWS + 1 })).toThrow(/between 1 and/);
+  expect(() => updateToolbox(deviceToolboxId, { rowCount: 2.5 })).toThrow(/whole number/);
 
   const drawer = createDrawer(`Stranded ${++uniqueSuffix}`, { rowNumber: DEFAULT_TOOLBOX_ROWS });
 
-  expect(() => saveToolboxRowCount(1)).toThrow(drawer.name);
+  expect(() => updateToolbox(deviceToolboxId, { rowCount: 1 })).toThrow(drawer.name);
   // A refused change must leave the setting untouched, not half-applied.
-  expect(getToolboxRowCount()).toBe(DEFAULT_TOOLBOX_ROWS);
+  expect(getToolbox(deviceToolboxId)!.rowCount).toBe(DEFAULT_TOOLBOX_ROWS);
   deleteDrawer(drawer.id);
+});
+
+// --- toolboxes --------------------------------------------------------------
+
+test("a fresh database has one toolbox, and it holds the device", () => {
+  const holders = listToolboxes().filter((toolbox) => toolbox.hasDevice);
+
+  expect(holders.length).toBe(1);
+  expect(holders[0]!.id).toBe(getDeviceToolboxId());
+  expect(holders[0]!.rowCount).toBe(DEFAULT_TOOLBOX_ROWS);
+});
+
+test("creating a toolbox with a drawer count creates that many drawers", () => {
+  const toolbox = createToolbox(`Cart ${++uniqueSuffix}`, { drawerCount: 10 });
+  const drawers = listDrawers().filter((drawer) => drawer.toolboxId === toolbox.id);
+
+  expect(toolbox.drawerCount).toBe(10);
+  expect(toolbox.hasDevice).toBe(false);
+  // Rows default to the drawer count, capped at what the panel can show.
+  expect(toolbox.rowCount).toBe(MAX_TOOLBOX_ROWS);
+
+  // Drawers past the row count are made without a row rather than refused.
+  const byName = new Map(drawers.map((drawer) => [drawer.name, drawer]));
+  expect(byName.get("Drawer 1")!.rowNumber).toBe(1);
+  expect(byName.get("Drawer 1")!.label).toBe("1");
+  expect(byName.get("Drawer 8")!.rowNumber).toBe(8);
+  expect(byName.get("Drawer 9")!.rowNumber).toBeNull();
+  expect(byName.get("Drawer 10")!.rowNumber).toBeNull();
+});
+
+test("a bad drawer count creates neither the toolbox nor any drawers", () => {
+  const name = `Typo ${++uniqueSuffix}`;
+
+  expect(() => createToolbox(name, { drawerCount: 5000 })).toThrow(/between 0 and/);
+  expect(() => createToolbox(name, { drawerCount: 1.5 })).toThrow(/whole number/);
+  expect(listToolboxes().some((toolbox) => toolbox.name === name)).toBe(false);
+});
+
+test("toolbox names are unique, case-insensitively", () => {
+  const name = `Chest ${++uniqueSuffix}`;
+  createToolbox(name, { drawerCount: 0 });
+
+  expect(() => createToolbox(name.toUpperCase(), { drawerCount: 0 })).toThrow("A toolbox with that name already exists.");
+});
+
+// The constraint this replaced was a globally unique drawer name, which made a
+// second box's "Drawer 1" impossible.
+test("two toolboxes can each have a drawer with the same name", () => {
+  const first = createToolbox(`Left ${++uniqueSuffix}`, { drawerCount: 1 });
+  const second = createToolbox(`Right ${++uniqueSuffix}`, { drawerCount: 1 });
+  const named = listDrawers().filter((drawer) => drawer.name === "Drawer 1" && [first.id, second.id].includes(drawer.toolboxId));
+
+  expect(named.length).toBe(2);
+  // Still unique within one box.
+  expect(() => createDrawer("Drawer 1", { toolboxId: first.id })).toThrow("already exists in this toolbox");
+});
+
+test("a drawer's row is bounded by its own toolbox, not the device's", () => {
+  const small = createToolbox(`Small ${++uniqueSuffix}`, { drawerCount: 0, rowCount: 2 });
+
+  expect(() => createDrawer(`Third ${++uniqueSuffix}`, { toolboxId: small.id, rowNumber: 3 })).toThrow("between 1 and 2");
+  expect(createDrawer(`Second ${++uniqueSuffix}`, { toolboxId: small.id, rowNumber: 2 }).rowNumber).toBe(2);
+});
+
+test("a drawer for an unknown toolbox is refused", () => {
+  expect(() => createDrawer(`Nowhere ${++uniqueSuffix}`, { toolboxId: 999999 })).toThrow(ToolboxNotFoundError);
+});
+
+test("editing a drawer changes only the fields given, and keeps its tools", () => {
+  const drawer = makeDrawer(1);
+  addToolToDrawer(drawer.id, { name: `Spanner ${uniqueSuffix}` });
+
+  const renamed = updateDrawer(drawer.id, { name: `Renamed ${++uniqueSuffix}` });
+  expect(renamed.label).toBe(drawer.label);
+  expect(renamed.rowNumber).toBe(drawer.rowNumber);
+
+  const cleared = updateDrawer(drawer.id, { label: "", rowNumber: null });
+  expect(cleared.label).toBe(renamed.name);
+  expect(cleared.rowNumber).toBeNull();
+
+  expect(listDrawers().find((candidate) => candidate.id === drawer.id)?.toolCount).toBe(1);
+});
+
+test("a drawer with no row is listed after the drawers that have one", () => {
+  const box = createToolbox(`Order box ${++uniqueSuffix}`, { drawerCount: 0, rowCount: 2 });
+  createDrawer("Unlit", { toolboxId: box.id });
+  createDrawer("Second", { toolboxId: box.id, rowNumber: 2 });
+  createDrawer("First", { toolboxId: box.id, rowNumber: 1 });
+
+  const names = listDrawers().filter((drawer) => drawer.toolboxId === box.id).map((drawer) => drawer.name);
+  expect(names).toEqual(["First", "Second", "Unlit"]);
+});
+
+test("editing a drawer is held to the same rules as creating one", () => {
+  const box = createToolbox(`Edit box ${++uniqueSuffix}`, { drawerCount: 2, rowCount: 2 });
+  const [first] = listDrawers().filter((drawer) => drawer.toolboxId === box.id);
+
+  expect(() => updateDrawer(first.id, { rowNumber: 3 })).toThrow("between 1 and 2");
+  expect(() => updateDrawer(first.id, { name: "Drawer 2" })).toThrow("already exists in this toolbox");
+  expect(() => updateDrawer(first.id, { name: "  " })).toThrow("Drawer name is required.");
+  expect(() => updateDrawer(999999, { name: "Ghost" })).toThrow(DrawerNotFoundError);
+});
+
+test("the device lights only its own box, and prefers it as the primary", () => {
+  const elsewhere = createToolbox(`Garage ${++uniqueSuffix}`, { drawerCount: 3 });
+  const garageDrawer = listDrawers().find((drawer) => drawer.toolboxId === elsewhere.id && drawer.rowNumber === 3)!;
+  const homeDrawer = makeDrawer(1);
+
+  addToolToDrawer(garageDrawer.id, { name: "Scribe", quantity: 1 });
+  // The camera is very sure about the garage one. It still loses: it is not
+  // within reach of the box the user is standing at.
+  recordDrawerObservation({ drawerId: garageDrawer.id, toolName: "Scribe", confidence: 99 });
+  addToolToDrawer(homeDrawer.id, { name: "Scribe", quantity: 1 });
+
+  const lookup = findToolLocations("Scribe")!;
+
+  expect(lookup.primaryLocation?.drawerId).toBe(homeDrawer.id);
+  expect(lookup.primaryLocation?.onDevice).toBe(true);
+  expect(lookup.drawers.find((drawer) => drawer.drawerId === garageDrawer.id)?.toolboxName).toBe(elsewhere.name);
+  // Row 3 of the garage must not light row 3 on this box.
+  expect(lookup.rows.map((row) => row.rowNumber)).toEqual([homeDrawer.rowNumber!]);
+});
+
+test("a tool only in another box is found, but lights nothing", () => {
+  const elsewhere = createToolbox(`Shed ${++uniqueSuffix}`, { drawerCount: 2 });
+  const shedDrawer = listDrawers().find((drawer) => drawer.toolboxId === elsewhere.id && drawer.rowNumber === 2)!;
+  addToolToDrawer(shedDrawer.id, { name: "Froe", quantity: 1 });
+
+  const lookup = findToolLocations("Froe")!;
+
+  expect(lookup.primaryLocation?.onDevice).toBe(false);
+  expect(lookup.primaryLocation?.toolboxName).toBe(elsewhere.name);
+  expect(lookup.primaryLocation?.label).toBe("2");
+  expect(lookup.rows).toEqual([]);
+});
+
+test("the camera's drawer label means the device's box", () => {
+  const elsewhere = createToolbox(`Loft ${++uniqueSuffix}`, { drawerCount: 0 });
+  const label = `Cam${++uniqueSuffix}`;
+  createDrawer(`Loft drawer ${uniqueSuffix}`, { toolboxId: elsewhere.id, label });
+
+  expect(findDrawerByLabel(label)).toBeNull();
+
+  const home = createDrawer(`Home drawer ${uniqueSuffix}`, { label });
+  expect(findDrawerByLabel(label)?.id).toBe(home.id);
+});
+
+test("moving the device to another toolbox unmarks the old one", () => {
+  const original = getDeviceToolboxId();
+  const next = createToolbox(`Next ${++uniqueSuffix}`, { drawerCount: 0 });
+
+  expect(updateToolbox(next.id, { hasDevice: true }).hasDevice).toBe(true);
+  expect(getDeviceToolboxId()).toBe(next.id);
+  expect(getToolbox(original)!.hasDevice).toBe(false);
+
+  // Put it back, so later tests still create drawers in the original box.
+  updateToolbox(original, { hasDevice: true });
+  expect(getDeviceToolboxId()).toBe(original);
+});
+
+test("the device cannot be left on no toolbox", () => {
+  const deviceToolboxId = getDeviceToolboxId();
+
+  expect(() => updateToolbox(deviceToolboxId, { hasDevice: false })).toThrow(/Mark another toolbox/);
+  expect(() => deleteToolbox(deviceToolboxId)).toThrow(/holds the device/);
+  expect(getDeviceToolboxId()).toBe(deviceToolboxId);
+});
+
+test("deleting a toolbox cascades to its drawers, tools and observations", () => {
+  const doomed = createToolbox(`Doomed ${++uniqueSuffix}`, { drawerCount: 1 });
+  const drawer = listDrawers().find((candidate) => candidate.toolboxId === doomed.id)!;
+  addToolToDrawer(drawer.id, { name: "Doomed Gimlet", quantity: 1 });
+  recordDrawerObservation({ drawerId: drawer.id, toolName: "Doomed Gimlet", confidence: 90 });
+
+  expect(deleteToolbox(doomed.id)).toBe(true);
+
+  expect(listDrawers().some((candidate) => candidate.id === drawer.id)).toBe(false);
+  expect(findToolLocations("Doomed Gimlet")).toBeNull();
+  expect(deleteToolbox(doomed.id)).toBe(false);
 });
 
 
@@ -650,4 +840,49 @@ test("resolveToolQuery reads a full token match on either pass before any partia
   // reading before trying the second would have answered "Box Wrench" instead,
   // on the strength of "box" alone.
   expect(resolveToolQuery("where is my box cutter")?.toolName).toBe("Box Cutter");
+});
+
+// db.ts migrates at import time, and this file has already imported it against a
+// fresh database. The upgrade path runs in a child process instead, pointed at a
+// database built with the schema from before toolboxes - the shape the Pi has.
+test("an existing database moves every drawer into one toolbox, losing nothing", () => {
+  const legacyDirectory = mkdtempSync(join(tmpdir(), "smarttoolbox-legacy-"));
+  mkdirSync(join(legacyDirectory, "data"));
+  const legacy = new Database(join(legacyDirectory, "data", "smarttoolbox.sqlite"));
+
+  // Foreign keys are left off, as older code evidently ran with them: the dev
+  // database holds a tool whose drawer is gone, and the rebuild has to tolerate
+  // that rather than refuse to start.
+  legacy.exec(`
+    CREATE TABLE drawers (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, label TEXT, row_number INTEGER, created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+    CREATE TABLE tools (id INTEGER PRIMARY KEY AUTOINCREMENT, drawer_id INTEGER NOT NULL, name TEXT NOT NULL, quantity INTEGER NOT NULL DEFAULT 1 CHECK (quantity >= 1), notes TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY(drawer_id) REFERENCES drawers(id) ON DELETE CASCADE);
+    CREATE TABLE drawer_observations (id INTEGER PRIMARY KEY AUTOINCREMENT, drawer_id INTEGER NOT NULL, tool_name TEXT NOT NULL, quantity INTEGER NOT NULL CHECK (quantity >= 1), confidence INTEGER NOT NULL CHECK (confidence >= 0 AND confidence <= 100), model_version TEXT NOT NULL DEFAULT '', observed_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP, superseded_at TEXT, FOREIGN KEY(drawer_id) REFERENCES drawers(id) ON DELETE CASCADE);
+    CREATE TABLE config (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+    CREATE UNIQUE INDEX idx_tools_drawer_name ON tools(drawer_id, name COLLATE NOCASE);
+    INSERT INTO config (key, value) VALUES ('toolbox_row_count', '7');
+    INSERT INTO drawers (id, name, label, row_number) VALUES (3, 'Top', '1A', 1), (9, 'Bottom', '7', 7);
+    INSERT INTO tools (drawer_id, name, quantity) VALUES (3, 'Awl', 2), (9, 'Mallet', 1), (42, 'Orphaned Rasp', 1);
+    INSERT INTO drawer_observations (drawer_id, tool_name, quantity, confidence) VALUES (9, 'Mallet', 1, 88);
+  `);
+  legacy.close();
+
+  const script = `const db = await import(${JSON.stringify(join(import.meta.dir, "db.ts"))});
+    console.log(JSON.stringify({ toolboxes: db.listToolboxes(), drawers: db.listDrawers(), mallet: db.findToolLocations("Mallet") }));`;
+  const child = Bun.spawnSync([process.execPath, "-e", script], { cwd: legacyDirectory });
+  expect(child.stderr.toString()).toBe("");
+
+  const output = child.stdout.toString().trim().split("\n");
+  const result = JSON.parse(output[output.length - 1]!);
+
+  expect(result.toolboxes.length).toBe(1);
+  expect(result.toolboxes[0].hasDevice).toBe(true);
+  // The old setting carries over, so drawer 9's row 7 is still a legal row.
+  expect(result.toolboxes[0].rowCount).toBe(7);
+  // Ids survive the rebuild, so tools and observations still point at the right drawer.
+  expect(result.drawers.map((drawer: { id: number }) => drawer.id)).toEqual([3, 9]);
+  expect(result.drawers.every((drawer: { toolboxId: number }) => drawer.toolboxId === result.toolboxes[0].id)).toBe(true);
+  expect(result.drawers[0].tools[0].name).toBe("Awl");
+  expect(result.mallet.primaryLocation.drawerId).toBe(9);
+  expect(result.mallet.primaryLocation.confidence).toBe(88);
+  expect(result.mallet.rows).toEqual([{ rowNumber: 7, certainty: 88 }]);
 });

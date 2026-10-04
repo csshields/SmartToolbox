@@ -370,6 +370,9 @@ should be built alongside Feature 2 of the spec (voice), where it actually matte
 
 1. Add a search input to the Toolbox Inventory panel, matching the existing markup and
    glassmorphism styling.
+   **Since 2026-10-04 that panel shows one toolbox at a time**, picked from a dropdown in
+   its title. Decide whether a search covers only that box or every box - a tool in
+   another box is exactly the one a user cannot find by browsing.
 2. Filter the already-fetched drawer list on each keystroke; render matches with drawer
    label, row number, and quantity.
 3. Empty query → show everything, the current behavior.

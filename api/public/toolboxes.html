@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Toolboxes | SmartToolBox</title>
+    <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+    <header class="topbar">
+        <div class="topbar-inner">
+            <a class="brand" href="/">
+                <span class="brand-mark" aria-hidden="true">ST</span>
+                <span class="brand-text">SmartToolBox</span>
+            </a>
+            <nav class="nav">
+                <a href="/">Dashboard</a>
+                <a href="/toolboxes" aria-current="page">Toolboxes</a>
+                <a href="/devices">Devices</a>
+                <a href="/ai-settings">AI Settings</a>
+            </nav>
+            <div class="health">
+                <span id="healthDot" class="health-dot"></span>
+                <span id="healthLabel" class="health-text">Checking API…</span>
+            </div>
+        </div>
+    </header>
+
+    <main class="page">
+        <div class="page-head">
+            <h1>Toolboxes</h1>
+            <p>Set up your toolboxes and their drawers. Tools go into them on the <a href="/">Dashboard</a>.</p>
+        </div>
+
+        <section class="card">
+            <div class="card-head">
+                <div>
+                    <h2>Toolboxes</h2>
+                    <p>Each toolbox has its own drawers and rows of lights. Only the box the device is mounted on lights up; a tool in any other box is shown by name on the device's screen.</p>
+                </div>
+                <div class="card-head-actions">
+                    <button id="showToolboxFormButton" class="btn btn-primary" type="button">Add toolbox</button>
+                </div>
+            </div>
+            <div class="card-body">
+                <form id="toolboxForm" class="inline-add-form" hidden>
+                    <div class="form-grid">
+                        <div class="field">
+                            <label for="toolboxNameInput">Name</label>
+                            <input id="toolboxNameInput" type="text" placeholder="Garage cart" maxlength="80" required>
+                        </div>
+                        <div class="field">
+                            <label for="drawerCountInput">Drawers</label>
+                            <input id="drawerCountInput" type="number" min="0" max="50" value="6" required>
+                            <span class="field-hint">Creates Drawer 1 to Drawer N, to rename or relabel afterwards.</span>
+                        </div>
+                        <div class="field">
+                            <label for="toolboxRowsInput">Light rows <span class="muted">(optional)</span></label>
+                            <input id="toolboxRowsInput" type="number" min="1" max="8" placeholder="Same as drawers, up to 8">
+                            <span class="field-hint">Rows of lights on the device's 8×8 LED grid, one per row of drawers. Drawers side by side can share one.</span>
+                        </div>
+                    </div>
+                    <div class="form-actions" style="margin-top: 18px;">
+                        <button class="btn btn-primary" type="submit">Add toolbox</button>
+                        <button id="cancelToolboxFormButton" class="btn btn-secondary" type="button">Cancel</button>
+                    </div>
+                </form>
+                <div id="toolboxStatus" class="status" aria-live="polite"></div>
+                <div id="toolboxTable"></div>
+            </div>
+        </section>
+
+        <section class="card">
+            <div class="card-head">
+                <div>
+                    <label class="visually-hidden" for="drawerTableToolbox">Toolbox</label>
+                    <select id="drawerTableToolbox" class="card-title-select"></select>
+                    <p id="drawerCount">Every drawer in this toolbox.</p>
+                </div>
+                <div class="card-head-actions">
+                    <button id="showDrawerFormButton" class="btn btn-primary" type="button">Add drawer</button>
+                </div>
+            </div>
+            <div class="card-body">
+                <form id="drawerForm" class="inline-add-form" hidden>
+                    <p class="field-hint">Goes into the toolbox picked above. Only the name is required.</p>
+                    <div class="form-grid">
+                        <div class="field">
+                            <label for="drawerNameInput">Name</label>
+                            <input id="drawerNameInput" type="text" placeholder="Wrenches" maxlength="80" required>
+                        </div>
+                        <div class="field">
+                            <label for="drawerLabelInput">Label <span class="muted">(optional)</span></label>
+                            <input id="drawerLabelInput" type="text" placeholder="Defaults to the name" maxlength="80">
+                            <span class="field-hint">Matched against the camera's <code>drawerLabel</code>.</span>
+                        </div>
+                        <div class="field">
+                            <label for="drawerRowInput">Light row <span class="muted">(optional)</span></label>
+                            <input id="drawerRowInput" type="number" min="1" placeholder="1">
+                            <span id="drawerRowHint" class="field-hint">The row of lights that turns on when this drawer is looked up.</span>
+                        </div>
+                    </div>
+                    <div class="form-actions" style="margin-top: 18px;">
+                        <button class="btn btn-primary" type="submit">Add drawer</button>
+                        <button id="cancelDrawerFormButton" class="btn btn-secondary" type="button">Cancel</button>
+                    </div>
+                </form>
+                <div id="drawerStatus" class="status" aria-live="polite"></div>
+                <div id="drawerTable"></div>
+            </div>
+        </section>
+
+        <div class="footer">SmartToolBox v1.0</div>
+    </main>
+
+    <script src="/app.js"></script>
+    <script>
+        const drawerForm = document.getElementById('drawerForm');
+        const drawerNameInput = document.getElementById('drawerNameInput');
+        const drawerLabelInput = document.getElementById('drawerLabelInput');
+        const drawerRowInput = document.getElementById('drawerRowInput');
+        const drawerStatus = document.getElementById('drawerStatus');
+        const drawerTable = document.getElementById('drawerTable');
+        const drawerCount = document.getElementById('drawerCount');
+        const toolboxForm = document.getElementById('toolboxForm');
+        const toolboxNameInput = document.getElementById('toolboxNameInput');
+        const drawerCountInput = document.getElementById('drawerCountInput');
+        const toolboxRowsInput = document.getElementById('toolboxRowsInput');
+        const toolboxStatus = document.getElementById('toolboxStatus');
+        const toolboxTable = document.getElementById('toolboxTable');
+        const drawerRowHint = document.getElementById('drawerRowHint');
+        const drawerTableToolbox = document.getElementById('drawerTableToolbox');
+        const showDrawerFormButton = document.getElementById('showDrawerFormButton');
+        const cancelDrawerFormButton = document.getElementById('cancelDrawerFormButton');
+        const showToolboxFormButton = document.getElementById('showToolboxFormButton');
+        const cancelToolboxFormButton = document.getElementById('cancelToolboxFormButton');
+
+        let toolboxes = [];
+        let drawers = [];
+        let editingDrawerId = null;
+
+        // The add-drawer form adds to the toolbox being viewed, and takes its
+        // row bound from it, since each box has its own row count.
+        function applySelectedToolbox() {
+            const toolbox = toolboxes.find((candidate) => String(candidate.id) === drawerTableToolbox.value);
+
+            if (!toolbox) {
+                return;
+            }
+
+            drawerRowInput.max = toolbox.rowCount;
+            drawerRowHint.textContent = toolbox.hasDevice
+                ? `The row of lights that turns on when this drawer is looked up, 1 to ${toolbox.rowCount}.`
+                : `1 to ${toolbox.rowCount}. This box has no device, so nothing lights up for it.`;
+        }
+
+        function renderToolboxes() {
+            // Keep the viewed box across a reload of the list, falling back
+            // to the first - the device's box.
+            const selected = drawerTableToolbox.value;
+
+            drawerTableToolbox.innerHTML = toolboxes.map((toolbox) => `
+                <option value="${toolbox.id}">${escapeHtml(toolbox.name)}${toolbox.hasDevice ? ' (device)' : ''}</option>
+            `).join('');
+
+            if (toolboxes.some((toolbox) => String(toolbox.id) === selected)) {
+                drawerTableToolbox.value = selected;
+            }
+
+            applySelectedToolbox();
+            renderDrawers();
+
+            const rowsMarkup = toolboxes.map((toolbox) => `
+                <tr>
+                    <td><strong>${escapeHtml(toolbox.name)}</strong></td>
+                    <td class="nowrap">${toolbox.drawerCount} drawer${toolbox.drawerCount === 1 ? '' : 's'}</td>
+                    <td class="nowrap">
+                        <input class="row-count-input" type="number" min="1" max="8" value="${toolbox.rowCount}" aria-label="Light rows in ${escapeHtml(toolbox.name)}">
+                        <button class="btn-inline" type="button" data-action="rows" data-toolbox-id="${toolbox.id}">Save</button>
+                    </td>
+                    <td class="nowrap">${toolbox.hasDevice
+                        ? '<span class="chip accent">Device is here</span>'
+                        : `<button class="btn-inline" type="button" data-action="device" data-toolbox-id="${toolbox.id}">Move device here</button>`}</td>
+                    <td class="nowrap">${toolbox.hasDevice
+                        ? ''
+                        : `<button class="btn-delete" type="button" data-action="delete" data-toolbox-id="${toolbox.id}">Delete</button>`}</td>
+                </tr>
+            `).join('');
+
+            toolboxTable.innerHTML = `
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr><th>Toolbox</th><th>Drawers</th><th>Light rows</th><th>Device</th><th></th></tr>
+                        </thead>
+                        <tbody>${rowsMarkup}</tbody>
+                    </table>
+                </div>
+            `;
+
+            toolboxTable.querySelectorAll('button[data-action]').forEach((button) => {
+                button.addEventListener('click', handleToolboxAction);
+            });
+        }
+
+        async function loadToolboxes() {
+            try {
+                const response = await fetch('/api/toolboxes');
+
+                if (!response.ok) {
+                    throw new Error('Unable to load toolboxes.');
+                }
+
+                toolboxes = (await response.json()).toolboxes ?? [];
+                renderToolboxes();
+            } catch (error) {
+                setStatus(toolboxStatus, error.message, 'error');
+            }
+        }
+
+        async function handleToolboxAction(event) {
+            const button = event.currentTarget;
+            const toolbox = toolboxes.find((candidate) => String(candidate.id) === button.dataset.toolboxId);
+
+            if (!toolbox) {
+                return;
+            }
+
+            try {
+                let response;
+                let message;
+
+                if (button.dataset.action === 'delete') {
+                    // Spell out the cascade, as the drawer delete does: every
+                    // drawer goes, and with them their tools and camera history.
+                    const warning = [
+                        `Delete toolbox "${toolbox.name}"?`,
+                        '',
+                        `This also deletes its ${toolbox.drawerCount} drawer${toolbox.drawerCount === 1 ? '' : 's'}, every tool in them, and their observation history.`,
+                        'This cannot be undone.',
+                    ].join('\n');
+
+                    if (!confirm(warning)) {
+                        return;
+                    }
+
+                    response = await fetch(`/api/toolboxes/${toolbox.id}`, { method: 'DELETE' });
+                    message = `Deleted toolbox: ${toolbox.name}.`;
+                } else {
+                    const changes = button.dataset.action === 'device'
+                        ? { hasDevice: true }
+                        : { rowCount: Number(button.parentElement.querySelector('input').value) };
+
+                    response = await fetch(`/api/toolboxes/${toolbox.id}`, {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(changes)
+                    });
+                    message = button.dataset.action === 'device'
+                        ? `The device is now on ${toolbox.name}.`
+                        : `${toolbox.name} saved.`;
+                }
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Unable to save the toolbox.');
+                }
+
+                setStatus(toolboxStatus, message, 'success');
+                await loadToolboxes();
+                await loadDrawers();
+            } catch (error) {
+                setStatus(toolboxStatus, error.message, 'error');
+            }
+        }
+
+        toolboxForm.addEventListener('submit', async (event) => {
+            event.preventDefault();
+
+            // Rows are omitted rather than sent empty, so the API can default
+            // them to the drawer count.
+            const payload = { name: toolboxNameInput.value, drawerCount: Number(drawerCountInput.value) };
+
+            if (toolboxRowsInput.value) {
+                payload.rowCount = Number(toolboxRowsInput.value);
+            }
+
+            try {
+                const response = await fetch('/api/toolboxes', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Unable to create the toolbox.');
+                }
+
+                setFormOpen(toolboxForm, showToolboxFormButton, toolboxNameInput, false);
+                setStatus(toolboxStatus, `Added ${data.toolbox.name} with ${data.toolbox.drawerCount} drawer${data.toolbox.drawerCount === 1 ? '' : 's'}.`, 'success');
+                await loadToolboxes();
+                drawerTableToolbox.value = String(data.toolbox.id);
+                applySelectedToolbox();
+                await loadDrawers();
+            } catch (error) {
+                setStatus(toolboxStatus, error.message, 'error');
+            }
+        });
+
+        drawerTableToolbox.addEventListener('change', () => {
+            editingDrawerId = null;
+            applySelectedToolbox();
+            renderDrawers();
+        });
+
+        // Both add forms stay out of the way behind a button in their card's
+        // heading, which hides while its form is open.
+        function setFormOpen(form, showButton, firstInput, open) {
+            form.hidden = !open;
+            showButton.hidden = open;
+
+            if (open) {
+                firstInput.focus();
+            } else {
+                form.reset();
+            }
+        }
+
+        showDrawerFormButton.addEventListener('click', () => setFormOpen(drawerForm, showDrawerFormButton, drawerNameInput, true));
+        cancelDrawerFormButton.addEventListener('click', () => setFormOpen(drawerForm, showDrawerFormButton, drawerNameInput, false));
+        showToolboxFormButton.addEventListener('click', () => setFormOpen(toolboxForm, showToolboxFormButton, toolboxNameInput, true));
+        cancelToolboxFormButton.addEventListener('click', () => setFormOpen(toolboxForm, showToolboxFormButton, toolboxNameInput, false));
+
+        function drawerRowMarkup(drawer) {
+            return `
+                <tr>
+                    <td><strong>${escapeHtml(drawer.name)}</strong></td>
+                    <td class="${drawer.label === drawer.name ? 'muted' : ''}">${escapeHtml(drawer.label)}</td>
+                    <td class="nowrap">${drawer.rowNumber != null
+                        ? `<span class="chip accent">Row ${escapeHtml(drawer.rowNumber)}</span>`
+                        : '<span class="muted">—</span>'}</td>
+                    <td class="nowrap">${drawer.toolCount} tool${drawer.toolCount === 1 ? '' : 's'}</td>
+                    <td class="nowrap muted">${escapeHtml(drawer.createdAt)}</td>
+                    <td class="nowrap">
+                        <button class="btn-inline" type="button" data-action="edit" data-drawer-id="${drawer.id}">Edit</button>
+                        <button class="btn-delete" type="button" data-action="delete" data-drawer-id="${drawer.id}" title="Delete this drawer">Delete</button>
+                    </td>
+                </tr>
+            `;
+        }
+
+        // The row is left empty so no light turns on for the drawer, which is
+        // why it is sent as null rather than omitted.
+        function drawerEditMarkup(drawer, rowCount) {
+            return `
+                <tr class="editing">
+                    <td><input type="text" name="name" value="${escapeHtml(drawer.name)}" maxlength="80" aria-label="Name"></td>
+                    <td><input type="text" name="label" value="${escapeHtml(drawer.label)}" maxlength="80" placeholder="Defaults to the name" aria-label="Label"></td>
+                    <td class="nowrap"><input class="row-count-input" type="number" name="rowNumber" min="1" max="${rowCount}" value="${drawer.rowNumber ?? ''}" placeholder="—" aria-label="Light row, 1 to ${rowCount}"></td>
+                    <td class="nowrap">${drawer.toolCount} tool${drawer.toolCount === 1 ? '' : 's'}</td>
+                    <td class="nowrap muted">${escapeHtml(drawer.createdAt)}</td>
+                    <td class="nowrap">
+                        <button class="btn-inline" type="button" data-action="save" data-drawer-id="${drawer.id}">Save</button>
+                        <button class="btn-inline" type="button" data-action="cancel" data-drawer-id="${drawer.id}">Cancel</button>
+                    </td>
+                </tr>
+            `;
+        }
+
+        function renderDrawers() {
+            const toolbox = toolboxes.find((candidate) => String(candidate.id) === drawerTableToolbox.value);
+            const shown = toolbox ? drawers.filter((drawer) => drawer.toolboxId === toolbox.id) : [];
+
+            drawerCount.textContent = shown.length
+                ? `${shown.length} drawer${shown.length === 1 ? '' : 's'}, by light row.`
+                : 'Every drawer in this toolbox.';
+
+            if (!shown.length) {
+                drawerTable.innerHTML = `
+                    <div class="empty">
+                        <h3>No drawers in this toolbox</h3>
+                        <p>Add one above, then put tools in it from the <a href="/">Dashboard</a>.</p>
+                    </div>
+                `;
+                return;
+            }
+
+            const rowsMarkup = shown.map((drawer) => drawer.id === editingDrawerId
+                ? drawerEditMarkup(drawer, toolbox.rowCount)
+                : drawerRowMarkup(drawer)).join('');
+
+            drawerTable.innerHTML = `
+                <div class="table-wrap">
+                    <table>
+                        <thead>
+                            <tr>
+                                <th>Name</th><th>Label</th><th>Light row</th>
+                                <th>Tools</th><th>Created</th><th></th>
+                            </tr>
+                        </thead>
+                        <tbody>${rowsMarkup}</tbody>
+                    </table>
+                </div>
+            `;
+
+            drawerTable.querySelectorAll('button[data-action]').forEach((button) => {
+                button.addEventListener('click', handleDrawerAction);
+            });
+
+            const nameInput = drawerTable.querySelector('tr.editing input[name="name"]');
+
+            if (nameInput) {
+                nameInput.focus();
+            }
+        }
+
+        async function handleDrawerAction(event) {
+            const button = event.currentTarget;
+            const drawer = drawers.find((candidate) => String(candidate.id) === button.dataset.drawerId);
+
+            if (!drawer) {
+                return;
+            }
+
+            if (button.dataset.action === 'delete') {
+                await handleDrawerDelete(drawer);
+                return;
+            }
+
+            if (button.dataset.action === 'save') {
+                await saveDrawer(drawer, button.closest('tr'));
+                return;
+            }
+
+            editingDrawerId = button.dataset.action === 'edit' ? drawer.id : null;
+            renderDrawers();
+        }
+
+        async function saveDrawer(drawer, row) {
+            const rowValue = row.querySelector('input[name="rowNumber"]').value;
+            const changes = {
+                name: row.querySelector('input[name="name"]').value,
+                label: row.querySelector('input[name="label"]').value,
+                rowNumber: rowValue ? Number(rowValue) : null
+            };
+
+            try {
+                const response = await fetch(`/api/drawers/${drawer.id}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(changes)
+                });
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Unable to save the drawer.');
+                }
+
+                editingDrawerId = null;
+                setStatus(drawerStatus, `Saved drawer: ${data.drawer.name}.`, 'success');
+                await loadDrawers();
+            } catch (error) {
+                // Stay in edit mode so the typed values are not lost.
+                setStatus(drawerStatus, error.message, 'error');
+            }
+        }
+
+        async function handleDrawerDelete(drawer) {
+            const drawerId = drawer.id;
+            const drawerName = drawer.name;
+            const count = drawer.toolCount;
+
+            // Spell out the cascade. drawer_observations also references drawers
+            // with ON DELETE CASCADE, so this discards the camera's history for
+            // this drawer as well as its tools - not obvious from the button.
+            const warning = [
+                `Delete drawer "${drawerName}"?`,
+                '',
+                count > 0
+                    ? `This also deletes ${count} tool${count === 1 ? '' : 's'} in it, along with any observation history for this drawer.`
+                    : 'This also deletes any observation history for this drawer.',
+                'This cannot be undone.',
+            ].join('\n');
+
+            if (!confirm(warning)) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/drawers/${drawerId}`, { method: 'DELETE' });
+                const payload = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(payload.error ?? 'Delete failed.');
+                }
+
+                setStatus(drawerStatus, `Deleted drawer: ${drawerName}.`, 'success');
+                await loadDrawers();
+                await loadToolboxes();
+            } catch (error) {
+                setStatus(drawerStatus, error.message, 'error');
+            }
+        }
+
+        async function loadDrawers() {
+            try {
+                const response = await fetch('/api/drawers');
+
+                if (!response.ok) {
+                    throw new Error('Unable to load drawers.');
+                }
+
+                drawers = (await response.json()).drawers ?? [];
+                renderDrawers();
+            } catch (error) {
+                setStatus(drawerStatus, error.message, 'error');
+            }
+        }
+
+        drawerForm.addEventListener('submit', async (event) => {
+            event.preventDefault();
+
+            // Both optional fields are omitted rather than sent empty: the API
+            // defaults the label to the name and leaves the row null.
+            const payload = { name: drawerNameInput.value, toolboxId: Number(drawerTableToolbox.value) };
+
+            if (drawerLabelInput.value.trim()) {
+                payload.label = drawerLabelInput.value.trim();
+            }
+
+            if (drawerRowInput.value) {
+                payload.rowNumber = Number(drawerRowInput.value);
+            }
+
+            try {
+                const response = await fetch('/api/drawers', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+
+                const data = await response.json();
+
+                if (!response.ok) {
+                    throw new Error(data.error || 'Unable to create drawer.');
+                }
+
+                // The form stays open, so several drawers can go in one after
+                // another; Cancel closes it.
+                drawerForm.reset();
+                drawerNameInput.focus();
+                setStatus(drawerStatus, `Added drawer: ${data.drawer.name}.`, 'success');
+                await loadDrawers();
+                await loadToolboxes();
+            } catch (error) {
+                setStatus(drawerStatus, error.message, 'error');
+            }
+        });
+
+        startHealthIndicator();
+        loadToolboxes();
+        loadDrawers();
+    </script>
+</body>
+</html>
