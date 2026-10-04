@@ -1,87 +1,98 @@
 # SmartToolbox Firmware
 
-Arduino firmware for the Seeed XIAO ESP32S3 microcontroller.
+Arduino firmware for the Seeed XIAO ESP32S3 Sense that sits on the toolbox. It listens
+for a request, sends the audio to the Pi over USB serial, and shows the answer on the
+OLED, the 8x8 matrix and the LED strip.
+
+Pins, wiring and the state of every part are in [docs/HARDWARE.md](../docs/HARDWARE.md).
+The hardware traps worth knowing before changing anything are in
+[.github/instructions/xiao-esp32s3-firmware.instructions.md](../.github/instructions/xiao-esp32s3-firmware.instructions.md).
 
 ## Hardware
 
-- **Board**: Seeed XIAO ESP32S3
-- **Processor**: Espressif ESP32-S3
-- **Sensors**:
-  - Vision: Grove Vision AI Module V2 (SKU 101021112) with OV5647 camera; on-device SenseCraft AI inference over I2C
-  - Microphone: the XIAO's own PDM mic on the Sense expansion board (GPIO 42 clock, GPIO 41 data); needs `:PSRAM=opi` in the build
-  - Additional IMU hardware: not yet selected
-- **Connectivity**: USB serial to Raspberry Pi Zero 2
-- **I2C topology**: the XIAO bus reaches the expansion base, which carries its own OLED (SSD1306, 0x3C) and RTC, plus two Grove I2C ports - one for the Grove Vision AI V2 (0x62), one for the Grove 8x8 RGB LED Matrix. The Grove I2C Hub was removed on 2026-09-02
-- **MVP feedback**: Matrix highlights matching rows; OLED shows exact drawer labels such as `1A` and `3`.
-- **GPIO parts**: Grove WS2813 RGB LED Strip (SKU 104020108) on the UART Grove port, data GPIO44; Grove PIR Motion Sensor (SKU 101020020) on the A0/D0 port, GPIO1, wired but read by nothing. The Grove Red LED Button (SKU 111020044) was removed.
-- **Carrier**: Seeed Studio Expansion Board Base for XIAO with Grove OLED (SKU 103030356), on the expansion header since 2026-09-02. Brings the OLED, the push-to-talk button on D1, an RTC, an SD slot and four Grove ports. Full detail in `docs/HARDWARE.md`.
+- **Board**: Seeed XIAO ESP32S3 Sense, seated in the Expansion Board Base for XIAO
+- **Carrier**: the Expansion Board Base brings the OLED (SSD1306, 0x3C), the
+  push-to-talk button on D1, an RTC, an SD slot, and four Grove ports
+- **Microphone**: the Sense board's PDM mic (GPIO 42 clock, GPIO 41 data). It feeds
+  both push-to-talk and the "Hi ESP" wake word, and needs `PSRAM=opi` in the build
+- **Indicators**: Grove 8x8 RGB LED matrix on a Grove I2C port; Grove WS2813 LED strip
+  on the UART port, data GPIO44
+- **Wired, not yet used**: Grove PIR motion sensor on the A0/D0 port (GPIO1), and the
+  Grove Vision AI V2 on a Grove I2C port (0x62)
+- **Link to the Pi**: USB serial to a Raspberry Pi Zero 2
 
-## Setup
+## Building
 
-### Arduino IDE
-
-1. Install Arduino IDE 2.0 or later
-2. Add Seeed board support:
-   - Go to File > Preferences
-   - Add to Additional Board Manager URLs:
-     ```
-     https://files.seeedstudio.com/arduino/package_seeeduino_boards_index.json
-     ```
-3. Install `esp32` by Espressif Systems from Board Manager
-4. Select **Tools > Board > esp32 > XIAO_ESP32S3**
-
-### Libraries
-
-Required libraries (install via Library Manager):
-- `Seeed_Arduino_SSCMA` for Grove Vision AI V2 communication
-- `ArduinoJson` for USB serial messages
-- `U8g2` for the OLED
-- `Seeed_RGB_Led_Matrix` for the Grove 8x8 RGB matrix (row indicator and idle face)
-
-`WiFi`, `HTTPClient`, and `Update` ship with the ESP32 core - no install needed.
-
-## Flashing
-
-1. Open `smarttoolbox/smarttoolbox.ino` in Arduino IDE
-2. Connect the Seeed XIAO ESP32S3 via USB-C
-3. Select the correct COM port under Tools > Port
-4. Click Upload
-
-The tested Windows command-line upload uses the ESP32 core's XIAO target. Replace `COM6` with the port assigned to the XIAO:
+The sketch builds with `arduino-cli`. `smarttoolbox/sketch.yaml` pins the ESP32 core
+(3.3.11) and every library, and is the default profile, so a plain compile uses those
+exact versions rather than whatever is installed on the machine:
 
 ```powershell
-C:\arduino\arduino-cli.exe compile --fqbn esp32:esp32:XIAO_ESP32S3:PSRAM=opi C:\code\smarttoolbox\firmware\smarttoolbox
-C:\arduino\arduino-cli.exe upload --fqbn esp32:esp32:XIAO_ESP32S3:PSRAM=opi --port COM6 C:\code\smarttoolbox\firmware\smarttoolbox
+arduino-cli compile firmware/smarttoolbox
 ```
 
-## USB Serial Handshake
+Libraries, all pinned in `sketch.yaml`:
 
-Connect the flashed XIAO to the Raspberry Pi over USB-C. The Pi detects it as `/dev/ttyACM0`, and the `smarttoolbox` systemd service opens that device automatically. On boot, the sketch sends this newline-delimited request:
+- `ArduinoJson` - the serial messages
+- `U8g2` - the OLED
+- `Adafruit NeoPixel` - the WS2813 strip
 
-```json
-{"id":"boot-1","type":"request","endpoint":"device/status","body":{"firmwareVersion":"0.5.0"}}
+The Grove matrix driver is not in the Arduino library registry, so it is vendored into
+the sketch folder (`grove_two_rgb_led_matrix.*`). `ESP_SR` (the wake word), `ESP_I2S`,
+`WiFi`, `HTTPClient` and `Update` ship with the ESP32 core.
+
+`smarttoolbox/partitions.csv` replaces the board's default flash layout to make room
+for the 3.3 MB speech model the wake word needs. Arduino picks it up from the sketch
+folder automatically.
+
+## Getting a build onto the device
+
+Normally over Wi-Fi, from the `api/scripts` folder:
+
+```powershell
+.\release-firmware.ps1 -Version x.y.z -Push -Now   # the device fetches it within a heartbeat
+.\flash-device.ps1 -Version x.y.z                  # over USB from the Pi, when OTA cannot help
 ```
 
-Press `RST` after connecting and verify the Pi received it:
+Over-the-air updates need working firmware to receive them, and cannot change the
+partition table. A bad build, or a partition change, goes on with `flash-device.ps1`,
+which flashes through the XIAO's ROM bootloader over the USB cable it already shares
+with the Pi. The `firmware-release` skill in `.claude/skills/` walks through all three.
+
+Bump `FIRMWARE_VERSION` in `smarttoolbox.ino` for every release; the device compares it
+with what the Pi offers.
+
+## Talking to the Pi
+
+The XIAO and the Pi exchange newline-delimited JSON over USB serial at 115200 baud. The
+Pi sees the XIAO as `/dev/ttyACM0` and the `smarttoolbox` service opens it on start.
+The device sends a `device/status` heartbeat every 30 seconds, which is how the Pi
+knows it is alive and how it hands over queued commands such as "check for firmware".
+
+To watch it:
 
 ```bash
 tail -f ~/smarttoolbox/logs/service.log
 ```
 
-Expected output:
-
 ```text
-[serial] request id=boot-1 endpoint=device/status
+[serial] request id=status-12 endpoint=device/status
+[serial] response written id=status-12
 ```
 
-If the XIAO is unplugged, reset, or reflashed, the serial transport reconnects on its own with a growing backoff capped at 5s - no service restart needed. Reconnects are logged as `[serial] disconnected, retrying in Nms` followed by `[serial] connected`.
+If the XIAO is unplugged, reset, or reflashed, the serial link reconnects on its own
+with a growing backoff capped at 5s - no service restart needed. The full protocol is
+in the spec.
 
-## Project Structure
+## Project structure
 
 ```
 firmware/
 ├── smarttoolbox/
 │   ├── smarttoolbox.ino            # The firmware
+│   ├── sketch.yaml                 # Pinned core and library versions
+│   ├── partitions.csv              # Flash layout, with room for the speech model
+│   ├── grove_two_rgb_led_matrix.*  # Vendored matrix driver
 │   ├── arduino_secrets.example.h   # Template - copy to arduino_secrets.h
 │   └── arduino_secrets.h           # Wi-Fi and device key (gitignored)
 └── README.md                       # This file
@@ -99,18 +110,12 @@ an early Arduino Cloud project and nothing builds or references them.
 sketch, and its `U8G2_SSD1306_128X64_NONAME_F_HW_I2C` constructor is where the
 working OLED setup came from. The rest can be deleted whenever you like.
 
-## Development Notes
-
-- Serial baud rate: 115200
-- USB-C connection for programming and serial monitoring
-- Board automatically enters bootloader mode on upload
-
 ## TODO
 
-- [x] Send the `device/status` USB serial boot request to the API server
-- [x] Parse USB serial responses and send tool lookup requests
-- [x] Wi-Fi OTA updates (see Releasing firmware in the spec)
-- [ ] Read the PIR on GPIO1 (Feature 1 - wired, no firmware)
-- [ ] Implement camera capture
-- [ ] Implement IMU data reading
-- [ ] Add power management features
+- [x] USB serial link to the Pi, with lookups and a heartbeat
+- [x] Push-to-talk voice lookup
+- [x] "Hi ESP" wake word (0.28.0)
+- [x] Wi-Fi OTA updates, and USB recovery flashing
+- [ ] Recognise common tool names on the device, skipping Whisper
+- [ ] Read the PIR on GPIO1 (wired, no firmware)
+- [ ] Talk to the Grove Vision AI V2 (needs a trained model first)
