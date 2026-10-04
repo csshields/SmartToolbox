@@ -3,12 +3,15 @@ title: Plan of Attack - On-board recognition (the box hears the common ones itse
 scope: implementation plan, written 2026-08-31, revised 2026-09-02 after a source
   review of the pinned core - ESP-SR wake word and a local tool vocabulary carried
   from the Pi, with today's Whisper path as the fallback
-status: PLANNED - nothing built. Phase 1 is a partition change, so it can only arrive
-  over USB. Two unmeasured facts gate the whole thing - whether this microphone drives
-  WakeNet at 4-10% of full scale, and whether the ten seconds is even the device's
-  problem to solve (see "Is the ten seconds ours to fix"). The 2026-09-02 review
-  against esp32-hal-sr.c corrected three claims that were wrong in the first draft;
-  they are marked **Corrected 2026-09-02** where they appear.
+status: PHASE 2 PROVEN ON HARDWARE 2026-10-04. A person said "Hi ESP" at the box; it
+  recorded its four-second window, Whisper heard "screwdriver" and the lookup resolved.
+  That also answers the microphone question Phase 1 was skipped over - the mic is good
+  enough for WakeNet, thin signal and all. The log does not separately show a second
+  wake in a row, so the re-arm line below is accepted on the person's word, not the log.
+  Phase 3 is untouched. Everything ships in 0.28.0 behind a partition change, so it
+  arrives over USB or not at all. The 2026-09-02 review against esp32-hal-sr.c corrected
+  three claims that were wrong in the first draft; they are marked
+  **Corrected 2026-09-02** where they appear.
 ---
 
 # Plan: the box hears the common tools itself, and only asks Whisper when it is unsure
@@ -372,6 +375,37 @@ downstream matters, and the cheapest way to find out is a throwaway sketch.
 
 ## Phase 1 - does this microphone work with ESP-SR at all
 
+> **Skipped 2026-09-06.** Phase 2 was built without it, on the instruction to hook the
+> wake word up to search mode. The risk this phase existed to retire is therefore still
+> live: **nobody knows whether this microphone drives WakeNet.** What that changes in
+> practice is where the answer comes from - the first person to stand at the box and say
+> "Hi ESP" is now running Phase 1, without the throwaway sketch that would have isolated
+> it. If it does not fire, the recording path is not the suspect. Gain and DC-offset
+> correction on the mic feed are, and they are Step 1 of `docs/PLAN-mic-bringup.md`.
+>
+> **The binary size this phase was meant to produce was measured anyway**, by compiling
+> the real firmware rather than the example, and the partition table is sized from it
+> instead of from the estimate this document originally carried:
+>
+> | Build | Bytes |
+> |---|---|
+> | 0.27.0, no `ESP_SR` | 1,096,267 |
+> | 0.28.0, `ESP_SR` linked | 2,189,531 |
+> | app slot in `firmware/smarttoolbox/partitions.csv` | 2,424,832 |
+> | headroom | 235,301 (90.3% full) |
+>
+> Static RAM went from 50,340 to 62,868 bytes, and that is before the SR tasks allocate
+> at runtime. **The estimate in "The partition change" below was right**, which is worth
+> recording because it was arithmetic rather than luck: the model needs 3.34 MB and the
+> two app slots and the model share 8,257,536 bytes, so there was never a second option.
+>
+> One trap found while doing it, and it is the reason the release script now checks:
+> **arduino-cli reports the wrong maximum.** It takes the "Maximum is ..." figure from
+> the board definition, not from `partitions.csv`, so it called this binary 65% of
+> 3,342,336 when it is 90.3% of 2,424,832. A build that overflows the real slot compiles
+> clean and fails at the box. `release-firmware.ps1` now reads the app slot size out of
+> the partition table itself and refuses the release.
+
 ### Design
 
 Repartition, flash the stock `ESP_SR` `Basic` example with the PDM pins changed to 42/41
@@ -432,6 +466,8 @@ the thing that still functions when recognition does not, and it costs nothing t
    like it, or the first failure is indistinguishable from the second.
 
 ### Done when
+
+**Met 2026-10-04** - see the status above for what the log does and does not show.
 
 - Saying "Hi ESP" starts a recording that reaches Whisper and lights a row.
 - Saying it **twice in a row** works twice. That is the re-arm bug, and it earns its own
@@ -534,6 +570,13 @@ of digits and fractions announces itself instead of going quietly deaf.
 3. Is "Hi ESP" acceptable to live with? If not, Decision 1 says the plan still works with
    the pad as the trigger, and microWakeWord is the fork worth costing before Phase 2
    rather than after.
+   **Answered 2026-10-04: yes, for now.** A switch to "Computer" was looked at and is
+   smaller than Decision 1 assumes - the wake word is one 291 KB model inside
+   `srmodels.bin`, and esp-sr 2.4.6 (the version the pinned core links) ships
+   `wn9_computer_tts`, so it is a repack of the model blob rather than a rebuild of
+   `esp32-arduino-libs`. Deferred because it was not free: `release-firmware.ps1` would
+   need to splice our own blob instead of the core's, and the `_tts` model is trained on
+   synthetic speech.
 4. **Do we vendor `esp32-hal-sr.c`?** Decision 3 needs an answer before Phase 3 is
    designed, not during it. Vendoring buys the detection threshold, the re-arm, the tee
    and the five candidates in one file we control, at the cost of a file we now maintain.

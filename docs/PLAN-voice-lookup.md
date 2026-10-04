@@ -20,6 +20,12 @@ project; a button gives the same user-facing feature for a fraction of the work,
 everything built here is reused if a wake word is added later. The spec's Feature 2
 workflow step 1 should be re-scoped to say so.
 
+> **The separate project happened, in 0.28.0 - see `docs/PLAN-onboard-commands.md`.**
+> The prediction held: everything in this plan was reused unchanged, and the wake word
+> only added a second way to start the same capture. The phrase is **"Hi ESP"** rather
+> than "Smart Toolbox", which is a constraint of the prebuilt esp-sr libraries and not a
+> preference. It was proven on hardware on 2026-10-04.
+
 **The microphone is the XIAO's own PDM mic.** The spec's Microphone section and the
 Hardware Bring-Up table have been corrected to say so.
 

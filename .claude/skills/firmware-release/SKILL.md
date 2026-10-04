@@ -17,6 +17,19 @@ from the Pi is the one that works when the convenient one cannot.
 | Build you do not trust, or one that touched `setup()` / the serial link | Release it, then `flash-device.ps1 -Version x.y.z -Upload` |
 | Device has gone silent - no heartbeat, stale `uptimeMs` | `flash-device.ps1 -Version <last known good>` |
 | Build already published, just want it collected now | `push-to-device.ps1 check-firmware` |
+| **Partition table changed** (`firmware/smarttoolbox/partitions.csv` differs from what is on the device) | `release-firmware.ps1 -Version x.y.z -Push -MergedOnly`, then `flash-device.ps1 -Version x.y.z` |
+
+**A partition change must never be published for OTA.** An over-the-air update writes an
+application into an app slot; it does not repartition flash. A device still on the old
+table that pulls such a build comes up running firmware that expects partitions it does
+not have - and it has already overwritten its working firmware to get there, so the way
+back is the cable. `-MergedOnly` exists for exactly this: it puts the flashable image on
+the Pi and leaves the OTA folder alone. Publish for OTA only once the box is up on the
+new table.
+
+This is not hypothetical. 0.28.0 links ESP-SR, which calls `esp_srmodel_init("model")`
+and needs a `model` partition holding a 3.34 MB blob. On the old table that lookup
+returns nothing and the AFE is handed a null model set, in `setup()`.
 
 **Why USB is not optional as a fallback.** An application-level update needs working
 firmware to receive it. A build that crashes in `setup()`, wedges the loop, or breaks

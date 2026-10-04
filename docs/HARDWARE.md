@@ -2,7 +2,7 @@
 title: Hardware - parts, bring-up status, and pin mappings
 scope: the single record of what is in the box, what physically works, and which pin carries it
 status: active
-updated: 2026-09-02
+updated: 2026-09-13
 ---
 
 # SmartToolbox Hardware
@@ -43,8 +43,9 @@ constraints for weeks:
 
 ## Bring-Up Status
 
-Updated 2026-09-02. This table is the single place to check what is physically working.
-Each row is a summary; the detail lives in the section named beside it.
+Updated 2026-09-02, with the Grove Base Hat row added 2026-09-06. This table is the
+single place to check what is physically working. Each row is a summary; the detail
+lives in the section named beside it.
 
 | Component | Status | Notes |
 |---|---|---|
@@ -56,7 +57,7 @@ Each row is a summary; the detail lives in the section named beside it.
 | Grove 8x8 matrix | Verified | On one of the base's Grove I2C ports, no longer through the hub. Mounted a quarter turn out, so the firmware sets `DISPLAY_ROTATE_270` every boot - that setting lives on the panel and survives power cycles |
 | WS2813 LED strip | Verified, under-volted | Pointed at a real drawer row on 2026-09-02, in 0.27.0. Data is GPIO44; see the strip section for how that was proven and why the supply is a problem |
 | Push-to-talk button | Verified | The base's own button on D1, shipped in 0.24.0. Hold-to-talk confirmed end to end on 2026-09-02: press, speak, release, drawer on the screen and the row on the strip |
-| Microphone (PDM, on the Sense board) | Verified | Reported ready on the 0.24.0 boot. **Known thin:** the audio sits at 4-10% of full scale. Detail and the DC-bias trap are under Microphone |
+| Microphone (PDM, on the Sense board) | Verified for Whisper and the wake word | Reported ready on the 0.24.0 boot and carries speech to Whisper. Since 0.28.0 it also feeds ESP-SR, and **"Hi ESP" fired on hardware on 2026-10-04.** **Known thin:** the audio sits at 4-10% of full scale (that capture's rms was 52) - enough for WakeNet up close, and the first suspect if it stops firing from further away. Detail and the DC-bias trap are under Microphone |
 | PIR motion sensor | Wired, no firmware | On the base's A0/D0 Grove port, so its signal is GPIO1. **Nothing in the firmware reads it.** No longer blocked, merely unwritten |
 | Grove Vision AI V2 link | Cabled, unused | Moved from the expansion header to a Grove I2C cable. No firmware has ever talked to it - there is no SSCMA include in the sketch and no such library in `sketch.yaml` |
 | SenseCraft model | Not deployed | **Blocks Feature 3.** Nothing to detect until a model is trained and flashed |
@@ -64,7 +65,9 @@ Each row is a summary; the detail lives in the section named beside it.
 | Grove I2C Hub | Removed | Out of the box. The base's two I2C ports made it unnecessary |
 | Grove Red LED Button | Removed | Out of the box. It was mis-wired into the I2C hub, where its switch pulled on lines the displays depend on. The base's own button does its job now |
 | Touch pads | Unused | Still on the board and still touch-capable, but nothing reads them. GPIO1 carries the PIR |
-| Pi 40-pin GPIO header | Free, unpopulated | 26 usable GPIO, nothing in this project uses them. `gpioget`/`gpiomon` are installed and `/dev/gpiochip0` is present |
+| Grove Base Hat for Pi Zero | Owned, not fitted | Added to the list 2026-09-06. Never mounted, never powered, no software has addressed it. It would occupy the Pi's 40-pin header |
+| Pi 40-pin GPIO header | Free, unpopulated | 26 usable GPIO, nothing in this project uses them. `gpioget`/`gpiomon` are installed and `/dev/gpiochip0` is present. The Grove Base Hat above is what would take it |
+| Mounting magnets | Owned, not fitted | Added to the list 2026-09-13. Six 12 x 3 mm neodymium discs, intended to hold the back plate to the toolbox. Nothing holds them yet, and **the toolbox has not been checked for steel** - see Mechanical |
 
 ## Hardware Platform
 
@@ -101,6 +104,12 @@ connector, a charging circuit and a power switch, none of which this project use
 happens.** The XIAO's own USB-C stays accessible with the base fitted; seat the XIAO
 first, then plug the cable.
 
+**Footprint, for the back plate**: the board is 58 x 42.5 mm with a 3.0 mm hole at each
+corner, on a 50 x 35 mm rectangle - 4.0 mm in from the short edges and 3.75 mm from the
+long ones. The v5 plate had these as M2 holes on a 50.8 x 38.1 pattern, measured by hand
+on the assumption the board was imperial; both were wrong, and the board would not bolt
+down. v6 in `cad/` uses the figures above, at 3.4 mm to leave the print some slack.
+
 **Grove port allocation.** All four are in use, which is the whole budget:
 
 | Port | Carries | Pins |
@@ -134,8 +143,26 @@ is correct for everything here except the strip, which wants 5V - see below.
 - **OS**: Raspberry Pi OS Lite (64-bit recommended)
 - **Connectivity**: WiFi 802.11n, Bluetooth 4.2
 - **Power**: 5V via micro-USB (2.5A minimum recommended)
-- **GPIO**: 40-pin header, entirely unused. 26 usable pins; libgpiod installed.
+- **GPIO**: 40-pin header, entirely unused. 26 usable pins; libgpiod installed. A Grove Base Hat for it is owned and not fitted - see below.
 - **Purpose**: Host the Bun API server, the SQLite database, and the dashboard, and process tool identification requests.
+
+### Grove Base Hat for Raspberry Pi Zero
+
+Seeed Grove Base Hat for Raspberry Pi Zero, SKU 103030276. **Owned as of 2026-09-06 and
+never fitted.** It has not been mounted, powered, or addressed by any software, so every
+fact below comes from Seeed's documentation rather than from this box. Treat the whole
+section as a lead until something here has been checked against the part.
+
+It is the Pi-side answer to the question the Expansion Board Base answered on the XIAO
+side: it turns a bare 40-pin header into Grove ports. It is the Pi Zero form factor, so
+it fits the Zero 2, and it keeps 24 pins passed through.
+
+- **Port count is disputed by the vendor's own pages.** Seeed's product title advertises 1 I2C, 1 UART, 2 digital, 4 analog and 1 PWM; Seeed's wiki for the same board lists three analog ports, labelled A0, A1 and A2. **Count them on the board before designing against them.**
+- **The Grove ports are 3.3V**, and the wiki says plainly that 5V Grove modules will not work on it. **This does not solve the WS2813 supply problem.** The strip still needs its own regulated 5V, and it could not move to the Pi in any case - see the strip section, where the timing comes off the ESP32's RMT peripheral.
+- **The analog ports are not GPIO.** They land on an onboard 12-bit ADC that the Pi reads over I2C, so an analog part costs a bus transaction rather than a pin. The chip is an STM32F030F4P6 on older boards and an MM32F031F6P6 on newer ones, and **the two answer at different addresses, 0x04 and 0x08.** The product page for this SKU says MM32. `i2cdetect -y 1` settles it, and it is the first thing to run once the hat is on.
+- **Pin mapping, from the wiki and unverified against the part**: digital on BCM 5 and 16, PWM on BCM 12 and 13, UART on BCM 14 and 15, and the I2C port straight onto the Pi's own bus.
+- **The UART Grove port is the Pi's serial console** by default, so anything plugged in there needs the console disabled first. The XIAO link is USB CDC and is not affected by this.
+- **Nothing in this project needs it yet.** Every part that wanted a GPIO is on the XIAO, and the 2026-09-02 rewire freed the header that had been blocking them. What the hat buys is a second place to put a plain digital or analog part, now that the XIAO's four Grove ports are fully allocated. It is also a third answer to the constraint discussed under the MCP23017 in `docs/PLAN-drawer-activity.md` - though that plan dropped per-drawer switches over the cost of a magnet and a wire run on every drawer, which having somewhere to plug them does not change.
 
 ## Sensors & Peripherals
 
@@ -182,13 +209,16 @@ I2S.begin(I2S_MODE_PDM_RX, 16000, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO);
 - **Two ways to read, and they are not interchangeable.** `recordWAV(seconds, &size)` returns a `ps_malloc`'d buffer with a WAV header already attached, but takes a fixed duration - fine for a bring-up, useless for hold-to-talk, where the length is not known when recording starts. That path reads in a loop instead and lets the Pi write the header. See `docs/PLAN-mic-bringup.md` and `docs/PLAN-voice-lookup.md`.
 - **Buffers go in PSRAM.** Four seconds of 16 kHz 16-bit mono is 128 KB against the XIAO's 320 KB of SRAM, of which this sketch already uses 49 KB.
 - **The mic rides on a positive DC bias.** Samples run roughly +981 to +2568 and never cross zero, so RMS must be taken about the mean - measuring raw samples reads the offset, not the sound. Corrected in 0.17.0. A DC-corrected RMS read 17 in a quiet room against 210 spoken into, on 2026-08-29.
-- **Status**: carrying speech since 0.20.0, voice lookup shipped in 0.22.0. **Known thin:** the audio sits at 4-10% of full scale, with no gain applied and the DC offset not stripped.
+- **It feeds two consumers now, and they do not share.** Since 0.28.0 ESP-SR's feed task reads this same `I2SClass` continuously for the wake word, and the recording loop takes it back for the duration of a capture. Both traps that follow from that - draining the pause rather than trusting it, and the `portMAX_DELAY` the feed task leaves on the shared object - are in `.github/instructions/xiao-esp32s3-firmware.instructions.md`.
+- **Status**: carrying speech since 0.20.0, voice lookup shipped in 0.22.0. Wake word written in 0.28.0 and **proven on hardware 2026-10-04**: "Hi ESP" started a capture that Whisper transcribed as "screwdriver". **Known thin:** the audio sits at 4-10% of full scale, with no gain applied and the DC offset not stripped. That was tolerable for Whisper and turned out to be enough for WakeNet at close range. It is still the weakness that makes the box mis-hear "screwdriver", and the first thing to look at if the wake word gets unreliable with distance.
 
 ### PIR motion sensor (Grove PIR Sensor, SKU 101020020)
 
 - **Connection**: the base's A0/D0 Grove port, so the signal is **GPIO1 (D0)**. Wired 2026-09-02.
 - **Type**: passive infrared, digital output, HIGH on motion. 3.3V-5V from the Grove port.
 - **Detection Range**: configurable, typically 3-7 meters.
+- **Board**: 40 x 20 mm, with three 2.2 mm mounting holes, **all centred on the board's edge** inside small round ears. Two are on the long edges, 10 mm from the connector end and 20 mm apart. The third is on the centreline of the sensor end. The PIR element itself sits 13.3 mm from the board centre, towards that end. These figures come from Seeed's Eagle board file for v1.2 (see `docs/SOURCES.md`). An earlier guess of two holes 5 mm in from each end was wrong, and so was the first bracket built on it.
+- **Bracket**: `pir_bracket.stl`, reshaped 2026-09-27 and **not yet printed**. Seen from the side it is a C, open at the bottom: the upright bolts to the plate, a shelf runs forward off its top, and a hood hangs down the front. The board screws under the shelf facing down, inside the 26 mm channel, so the hood blocks the view forward into the room and the sensor looks down at the drawers. Nothing hangs below the plate's bottom edge, so nothing gets in the way of the top drawer. A PIR sees warm, moving things, so what it catches at the drawers is the hand and arm, not the drawer itself.
 - **Status**: **wired and unread.** No firmware touches GPIO1. Feature 1 is no longer blocked on hardware; it is simply unwritten.
 
 ### Vision: Grove Vision AI Module (V2) + OV5647 Camera
@@ -196,6 +226,7 @@ I2S.begin(I2S_MODE_PDM_RX, 16000, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO);
 - **Resolution**: OV5647, up to 5MP (2592x1944)
 - **Connection**: Grove I2C cable to the base, address 0x62.
 - **Identification Method (default)**: on-device inference on the module's WiseEye2 MCU via a model deployed through **SenseCraft AI** (no-code; supports MobileNet V1/V2, EfficientNet-lite, YOLOv5/v8). Only the label and confidence are read - Seeed's hardware cannot serve a live frame and results over the link at the same time. A cloud vision model remains a fallback, but it needs raw frames pulled a different way: the module's own SD card or its Type-C port.
+- **Enclosure**: a printed three-part holder - base, tilting cap, camera holder - taken from Thingiverse rather than drawn here. Source and licence are under Printed parts in `docs/SOURCES.md`; it is CC BY-SA, so merging its geometry into a part of ours would carry that licence across. **It is superglued to the back plate.** The plate is on its sixth revision and will be reprinted again, and every reprint means breaking that bond or losing the enclosure, so a cradle bolting to the plate's 10 mm grid is the better fixing - see `cad/`.
 - **Status**: **connected and unused.** No model is deployed, and no firmware in this repo has ever addressed the module. Both have to change before Feature 3 means anything.
 
 ### Camera (OV2640, on board)
@@ -282,7 +313,9 @@ decisions:
 - **The Sense board never competed with anything.** It mates through the XIAO's own board-to-board connector. An earlier revision of the spec claimed otherwise and that claim drove decisions for weeks.
 
 What is still constrained: the base has one digital Grove port and the PIR has it, so
-another digital part means the Pi's header, a soldered wire, or the buzzer's pin.
+another digital part means the Pi's header, a soldered wire, or the buzzer's pin. As of
+2026-09-06 the first of those has a Grove-shaped answer sitting unused in a drawer - see
+the Grove Base Hat for Raspberry Pi Zero above.
 
 ## Decision: row indication runs on the strip, driven from the XIAO
 
@@ -313,9 +346,67 @@ the light **is** the answer. Thirty LEDs is thirty rows.
 | 8x8 matrix | The face: idle, thinking, not found, not understood |
 | OLED | Names the exact drawer - `1A` against `1B`, which the strip cannot distinguish |
 
-Once the strip is mounted the matrix stops encoding numbers, so the digit phase and
-`MATRIX_RESULT_ROW_MS` can go. Do not invest further in making the matrix legible as a
-row indicator.
+The lit-row phase is already gone - a result goes straight to the digit, because the
+strip is the spatial cue now. Once the strip is mounted the matrix stops encoding
+numbers at all, so the digit phase can go too. Do not invest further in making the
+matrix legible as a row indicator.
+
+## Mechanical
+
+The printed parts - the back plate, the PIR bracket and the Vision AI cradle - are
+generated by `cad/build_plate.py`, which is their source of record. The plate is
+228.6 x 76.2 x 3.0 mm with a 10 mm grid of M2 clearance holes; the bottom two rows of
+that grid run on to the right edge so the PIR bracket can bolt anywhere along the
+bottom. Component footprints that the CAD depends on are recorded with their component
+above - the expansion board's is under Expansion Board Base.
+
+### Mounting magnets
+
+- **What is owned**: six neodymium disc magnets, 12 mm diameter x 3 mm thick. Grade not
+  marked, so treat the pull as roughly 2 kg each until something says otherwise. Four
+  would mount the plate and two are spare.
+- **They cannot sit in the plate.** The magnet is 3 mm thick and the plate is 3.0 mm
+  thick, so there is no pocket to cut. They go in `magnet_bar.stl` instead: a 20 x 76.2
+  x 4.8 mm bar that bolts to the back of the plate and carries a magnet near each end.
+  Two bars, one per plate end, put four magnets near the plate's four corners. It is
+  one part printed twice - the bar is symmetric about its own centreline, so the left
+  and the right are the same STL.
+- **Each pocket is 0.2 mm shallower than the magnet**, so the magnet stands proud and
+  touches the steel. Plastic between magnet and steel is an air gap, and an air gap
+  costs pull far faster than a thicker wall would. The bolt pilots are blind for the
+  same reason: a screw tip breaking through would hold the magnet off.
+- **Where the bars bolt, and why those columns.** Grid rows 25 and 45, on columns 44 and
+  184. 184 is the rightmost full grid column - the rail past it carries rows 5 and 15
+  only, too short a base for a 76 mm bar. 44 is the leftmost column with room for a
+  screw head: the Pi ends at 34.5 and the expansion board starts at 52. That column is
+  the only thing v6 gained for this; the right bar bolts to holes that existed in v5.
+- **Budget the pull as shear, not pull.** The plate hangs on a vertical surface, so the
+  magnets work in shear, which holds on the order of a fifth of the rated figure - and
+  the rated figure assumes thick ground steel rather than thin painted toolbox sheet.
+  Against the 300-400 g the loaded plate weighs, four of these is comfortable; one is
+  not.
+
+### Feet
+
+`foot.stl`, printed twice, **drawn 2026-09-27 and not yet printed.** The alternative
+to the magnets: the plate stands on top of the toolbox rather than hanging on its side,
+landscape, Pi end on the left.
+
+- **The plate leans back 8 degrees** in a 3.4 mm slot. The lean is what holds it: the
+  plate rests against a 22 mm triangle behind, and a 6 mm lip in front only stops the
+  bottom edge sliding forward. The slot is loose on purpose, so nothing depends on
+  friction or on how accurately the plate printed.
+- **The tilt is kept slight** because the PIR and the camera tip back with the plate.
+  At 8 degrees both still look down at the drawers.
+- **The plate stands at the lid's front edge.** The PIR looks straight down from about
+  16 mm in front of the plate, so the plate has to be near the edge for the sensor to see
+  past the lid to the drawers. That is why the front of the foot is only 6 mm deep and
+  the heel behind is 35. It also means the
+  forward tipping margin is small: the camera and the PIR sit in front of the plate. If
+  the plate tips forward, raise `FOOT_TILT` before lengthening the toe.
+- **Where they go**: plate x 62-92 and 196-226. That keeps them clear of both magnet-bar
+  columns, so feet and bars can be tried together. It also clears the PIR bracket at
+  119-169 and the expansion board's screw heads at x 56 and 106.
 
 ## Open items
 
@@ -327,7 +418,19 @@ row indicator.
    offset not stripped, and it mis-hears: "screwdriver" came back from Whisper as "We're
    screwing driver" on 2026-09-02, and the box correctly found nothing for it. The fix is
    Step 1 of `docs/PLAN-mic-bringup.md`, and it is now the weakest link in the box.
-4. **Read the PIR.** It is wired and nothing looks at it, which is all that stands
+   **Raised in importance 2026-09-06:** the 0.28.0 wake word runs WakeNet on this same
+   signal, and WakeNet is fussier than Whisper. If "Hi ESP" needs shouting, this is why,
+   and this is the fix - not the recording path.
+4. **Say "Hi ESP" at the box.** The 0.28.0 wake word is written, compiles, and has never
+   been heard by anything. It needs a partition change, so it goes on over USB with
+   `flash-device.ps1` and cannot arrive over the air. Say it **twice** - the second time
+   is the test, because ESP-SR disables itself after every detection and a missing re-arm
+   looks exactly like a dead microphone.
+5. **Read the PIR.** It is wired and nothing looks at it, which is all that stands
    between here and Feature 1.
-5. **Deploy a SenseCraft model**, without which the Vision AI V2 is a connected part with
+6. **Deploy a SenseCraft model**, without which the Vision AI V2 is a connected part with
    nothing to say.
+7. **Check the toolbox is actually steel**, before any more design goes into magnet
+   mounting. A fridge magnet against the spot the plate will sit answers it. Plenty of
+   toolboxes are aluminium or plastic-skinned, and the whole approach dies if this one
+   is.
