@@ -19,6 +19,7 @@
 #include <HTTPClient.h>
 #include <Update.h>
 #include <ESP_I2S.h>
+#include <ESP_SR.h>
 #include <Adafruit_NeoPixel.h>
 #include "arduino_secrets.h"
 
@@ -26,7 +27,23 @@
 // api/scripts/release-firmware.ps1 on release, and compared against the Pi's
 // drop folder to decide whether an OTA update is available - keep the exact
 // `#define FIRMWARE_VERSION "x.y.z"` shape so the script can find it.
-#define FIRMWARE_VERSION "0.27.0"
+#define FIRMWARE_VERSION "0.28.0"
+
+// Which trigger started a voice capture. The two differ only in how the
+// recording ends - the button on its own release, the wake word on a clock -
+// but that is enough that the capture loops cannot be one function with a flag
+// in it.
+//
+// Declared up here rather than beside the microphone constants it belongs with,
+// because Arduino inserts its generated forward prototypes immediately before
+// the first function definition in the sketch. A type named in any signature
+// has to exist above that line. The compiler reports it as
+// "variable or field 'recordAndReportMic' declared void", which does not
+// mention the enum at all.
+enum VoiceTrigger {
+  VOICE_TRIGGER_BUTTON,
+  VOICE_TRIGGER_WAKEWORD
+};
 
 const int LED_PIN = LED_BUILTIN; // Active-low: LOW = on, HIGH = off.
 const int LED_ON = LOW;
@@ -252,6 +269,49 @@ const size_t MIC_CHUNK_BYTES = (size_t)MIC_SAMPLE_RATE * MIC_BYTES_PER_SAMPLE / 
 I2SClass mic;
 bool micReady = false;
 
+// How long to record after the wake word, in place of the button's release
+// edge. There is no second event to wait for: "Hi ESP" says a request is
+// starting and nothing says it has finished, so the window is fixed.
+//
+// A silence-triggered stop is the obvious improvement and is deliberately not
+// what shipped first. It needs an amplitude threshold, and this microphone sits
+// at 4-10% of full scale with the DC offset still in it - so the threshold that
+// works on the bench is the one that ends the recording mid-word in a workshop,
+// or never ends it at all. A fixed window is worse on paper and predictable in
+// the room. Revisit once the mic has gain; see docs/PLAN-mic-bringup.md Step 1.
+//
+// Four seconds against a ~7-9s Whisper round trip is not what anyone is waiting
+// for, so this is sized for the longest plausible request rather than trimmed.
+const uint32_t WAKE_RECORD_MS = 4000;
+
+// Bounded read timeout for our own recording loops. ESP-SR's feed task calls
+// I2SClass::setTimeout(portMAX_DELAY) on this same object every time it reads,
+// and that setting persists after it parks - so without this a readBytes here
+// would block forever on a microphone that stalls, rather than returning short
+// and letting the no-data path name the failure.
+const uint32_t MIC_READ_TIMEOUT_MS = 1000;
+
+// Set from the ESP-SR handler task and read in loop(), so volatile: the handler
+// runs at near-maximum priority against loop() at priority 1 on that same core
+// 1, and preempts it rather than waiting for it.
+volatile bool wakeWordHeard = false;
+bool srReady = false;
+
+// Every wake event ESP-SR has raised since boot, and every one that reached a
+// recording. They are deliberately two numbers.
+//
+// "Nothing happens when I say Hi ESP" has three causes that look identical from
+// the room: SR never started, WakeNet never fired, or it fired and the capture
+// was refused. One counter cannot tell those apart and would send the next
+// person to read the recording path when the detector was never running.
+volatile uint32_t wakeEventCount = 0;
+uint32_t wakeCaptureCount = 0;
+
+// Why begin() failed, when it did. ESP_SR.begin returns a bool and the
+// interesting distinction is upstream of it: a false with micReady already false
+// is a microphone problem wearing a speech-recognition costume.
+const char* srFailure = "not attempted";
+
 uint8_t consecutivePressed = 0;
 uint8_t consecutiveReleased = 0;
 bool wasPressed = false;
@@ -285,15 +345,10 @@ uint32_t matrixNextBlinkAt = 0;
 uint32_t matrixEyesClosedUntil = 0;
 bool matrixEyesClosed = false;
 
-// A result shows in two phases: the lit row first, which maps spatially onto the
-// physical box, then the digit, which names the row unambiguously. Row 1 is the
-// one case where a lit row and the digit 1 look alike, so showing both in turn
-// removes the ambiguity without giving up the spatial cue.
-const uint16_t MATRIX_RESULT_ROW_MS = 2000;
-// The digit gets twice the row's time. It is the part you actually have to read
-// and carry to the box, and two seconds was gone before you had looked up.
-const uint16_t MATRIX_RESULT_DIGIT_MS = 4000;
-const uint16_t MATRIX_RESULT_HOLD_MS = MATRIX_RESULT_ROW_MS + MATRIX_RESULT_DIGIT_MS;
+// A result is the digit alone. The strip is the spatial cue now, so the lit row
+// the digit used to follow was saying the same thing twice and delaying the part
+// you actually have to read and carry to the box.
+const uint16_t MATRIX_RESULT_HOLD_MS = 4000;
 
 // The faces and the alert band have no second phase and nothing to read, so
 // they keep their own hold rather than inheriting the digit's.
@@ -329,10 +384,6 @@ const uint8_t MATRIX_SPIN_PHASES = 16;
 uint32_t matrixSpinNextAt = 0;
 uint8_t matrixSpinPhase = 0;
 
-uint8_t matrixResultRow = 0;
-uint8_t matrixResultColor = 0;
-uint32_t matrixResultDigitAt = 0;
-bool matrixResultDigitDrawn = true;
 
 void matrixClear() {
   memset(matrixFrame, black, sizeof(matrixFrame));
@@ -635,7 +686,7 @@ void showMatrixRow(int rowNumber, bool hasCertainty, int certainty) {
 
   matrixClear();
   if (validRow) {
-    matrixFillRow((uint8_t)rowNumber, color);
+    drawDigit((uint8_t)rowNumber, color);
   } else {
     // Found, but in a drawer with no row assigned. There is no row to point at
     // and no digit to show, so light the whole indicator band instead.
@@ -643,11 +694,6 @@ void showMatrixRow(int rowNumber, bool hasCertainty, int certainty) {
       matrixFillRow(y, color);
     }
   }
-
-  matrixResultRow = validRow ? (uint8_t)rowNumber : 0;
-  matrixResultColor = color;
-  matrixResultDigitDrawn = !validRow; // Nothing to follow up with for an unknown row.
-  matrixResultDigitAt = millis() + MATRIX_RESULT_ROW_MS;
 
   // The strip is the row indicator the matrix has been standing in for. Both run
   // while the strip is on the bench; see the Row Indication decision in
@@ -678,8 +724,6 @@ void startMatrixThinking() {
 // Understood the word, found nothing.
 void showMatrixSad(uint8_t color) {
   drawSadFace(color);
-  matrixResultRow = 0;
-  matrixResultDigitDrawn = true; // No row, so no digit follows.
   matrixMode = MATRIX_RESULT;
   matrixResultUntil = millis() + MATRIX_NOTICE_HOLD_MS;
   matrixPush();
@@ -688,8 +732,6 @@ void showMatrixSad(uint8_t color) {
 // Did not understand the word at all.
 void showMatrixUnknown(uint8_t color) {
   drawQuestionMark(color);
-  matrixResultRow = 0;
-  matrixResultDigitDrawn = true;
   matrixMode = MATRIX_RESULT;
   matrixResultUntil = millis() + MATRIX_NOTICE_HOLD_MS;
   matrixPush();
@@ -697,8 +739,6 @@ void showMatrixUnknown(uint8_t color) {
 
 void showMatrixAlert(uint8_t color) {
   drawAlertTriangle(color);
-  matrixResultRow = 0;
-  matrixResultDigitDrawn = true; // An alert has no row, so no digit follows.
   matrixMode = MATRIX_RESULT;
   matrixResultUntil = millis() + MATRIX_NOTICE_HOLD_MS;
   matrixPush();
@@ -748,14 +788,6 @@ void updateMatrix() {
   }
 
   if (matrixMode == MATRIX_RESULT) {
-    if (!matrixResultDigitDrawn && millis() >= matrixResultDigitAt) {
-      matrixClear();
-      drawDigit(matrixResultRow, matrixResultColor);
-      matrixResultDigitDrawn = true;
-      matrixPush();
-      return;
-    }
-
     if (millis() >= matrixResultUntil) {
       stripClear();
 
@@ -913,8 +945,10 @@ void promoteToReady() {
   waitingLong = false;
 
   // This is the earliest moment a host is provably reading, which is exactly
-  // what the OTA log needs - see reportLastOtaResult.
+  // what the OTA log needs - see reportLastOtaResult. The wake word's state goes
+  // out here for the same reason and not a different one.
   reportLastOtaResult();
+  reportSpeechState();
 
   // The promotion above is unconditional; the repaint below is not. This runs on
   // any parsed line, before the pending-id check, and a request can be in flight
@@ -1128,6 +1162,108 @@ bool beginMicrophone() {
   return true;
 }
 
+// The wake word is "Hi ESP" and that is not a preference. The prebuilt esp-sr
+// libraries in the pinned core compile exactly one wake word -
+// CONFIG_SR_WN_WN9_HIESP=y - and every other phrase in the sdkconfig, Jarvis and
+// Alexa and the rest, is "is not set". A different phrase means rebuilding
+// esp32-arduino-libs; a phrase of our own means commissioning Espressif to train
+// one. See Decision 1 in docs/PLAN-onboard-commands.md, which also records the
+// microWakeWord alternative and why it was not taken.
+void onSpeechEvent(sr_event_t event, int command_id, int phrase_id) {
+  // Runs on the SR handler task, not on loop(). Set a flag and return: the
+  // recording path writes ~427 KB of base64 to the serial port and pushes I2C
+  // frames to the matrix, and doing that here would hold a task the detector
+  // needs back before it can hear anything else.
+  if (event == SR_EVENT_WAKEWORD) {
+    wakeWordHeard = true;
+    wakeEventCount++;
+  }
+}
+
+bool beginSpeechRecognition() {
+  if (!micReady) {
+    // sr_start reads through this same I2SClass; there is nothing to feed it.
+    srFailure = "microphone not ready";
+    return false;
+  }
+
+  ESP_SR.onEvent(onSpeechEvent);
+
+  // Mono needs both of these arguments, not one, and getting it half right does
+  // not return an error. SR_CHANNELS_MONO sets the I2S channel count and "M"
+  // sets the AFE's feed format; sr_start then asserts that the feed has at least
+  // as many channels as the I2S side. The defaults are stereo and "MN", so
+  // passing one without the other trips that assert and aborts the boot - which
+  // presents as a device that will not start, a long way from its cause.
+  //
+  // No command phrases: this is wake word only. MultiNet is still created,
+  // because the core builds it in regardless, but nothing is registered against
+  // it. The local tool vocabulary is Phase 3 and is not this.
+  const bool started = ESP_SR.begin(mic, nullptr, 0, SR_CHANNELS_MONO, SR_MODE_WAKEWORD, "M");
+  srFailure = started ? "none" : "ESP_SR.begin returned false - is there a model partition?";
+  return started;
+}
+
+// Prints what the wake word is doing, in one line, on demand.
+//
+// This exists because the readiness print in setup() cannot be relied on. The
+// S3's USB CDC discards anything written while no host has the port open, the
+// device starts printing ~3.5s after power-on, and the Pi's transport can still
+// be in reconnect backoff - so boot output routinely never reaches the log. A
+// build whose only evidence is printed in setup() can tell you nothing about
+// why it is not working, which is the trap this project has already paid for
+// once and recorded under "Boot output never appears".
+//
+// Reachable two ways: on the first proven reply, next to the OTA result, and at
+// any time with `printf "sr\n" > /dev/ttyACM0` from the Pi.
+void reportSpeechState() {
+  Serial.print("SR ready=");
+  Serial.print(srReady ? 1 : 0);
+  Serial.print(" wakeEvents=");
+  Serial.print((unsigned long)wakeEventCount);
+  Serial.print(" captures=");
+  Serial.print(wakeCaptureCount);
+  Serial.print(" mic=");
+  Serial.print(micReady ? 1 : 0);
+  Serial.print(" why=");
+  Serial.println(srFailure);
+}
+
+// Hands the microphone back from ESP-SR so a recording can have it.
+//
+// pause() only sets event group bits, so it is not synchronous and returning
+// from it does not mean we own the peripheral. The feed task may already be
+// parked inside our fill callback on a blocking readBytes - and it passes
+// portMAX_DELAY, so it waits for a full chunk however long that takes. It will
+// finish that read, consuming ~32ms of audio, and only then come back round and
+// see the pause bit.
+//
+// So the pause is drained rather than trusted: wait out one in-flight chunk
+// before reading a byte ourselves. Two readers on one I2SClass do not fail
+// loudly, they split the audio between them, and what comes back is half a
+// sentence with no error anywhere to say why.
+void pauseSpeechRecognition() {
+  if (!srReady) {
+    return;
+  }
+  ESP_SR.pause();
+  delay(120); // ~32ms of in-flight chunk, plus room for the task to be scheduled.
+}
+
+// Re-arms and restarts detection. **Both halves are required.** On a detection
+// the hal calls sr_set_mode(SR_MODE_OFF) itself, so a resume without the setMode
+// leaves the tasks running with wakenet disabled: the box answers "Hi ESP"
+// exactly once and is then deaf. That failure looks identical to a dead
+// microphone and to a frozen peripheral, which is why the second "Hi ESP" is the
+// test and the first one proves nothing.
+void resumeSpeechRecognition() {
+  if (!srReady) {
+    return;
+  }
+  ESP_SR.setMode(SR_MODE_WAKEWORD);
+  ESP_SR.resume();
+}
+
 // Records for as long as the pad is held, into the PSRAM buffer the caller
 // allocated, and leaves the reporting to recordAndReportMic.
 //
@@ -1198,6 +1334,44 @@ size_t recordWhileHeld(int16_t* samples, uint32_t* heldMs) {
   return bytesRead;
 }
 
+// The wake word's half of the same job. Reads for a fixed window because there
+// is no release edge to wait for - see WAKE_RECORD_MS for why this is not
+// silence detection yet.
+//
+// Names the trigger on the OLED. From here on a box that heard "Hi ESP" and a
+// box whose button was pressed are doing exactly the same thing, so when one of
+// the two triggers stops working the screen is the only place that difference
+// is visible.
+size_t recordAfterWake(int16_t* samples, uint32_t* heldMs) {
+  size_t bytesRead = 0;
+  const uint32_t startedAt = millis();
+  uint8_t wavePhase = 0;
+  uint32_t nextWaveAt = millis();
+
+  showStatus("Listening", "Speak now", "Heard Hi ESP");
+
+  while (bytesRead + MIC_CHUNK_BYTES <= MIC_MAX_BYTES) {
+    if (matrixReady && millis() >= nextWaveAt) {
+      nextWaveAt = millis() + MATRIX_WAVE_STEP_MS;
+      drawSoundWave(wavePhase);
+      wavePhase = (uint8_t)((wavePhase + 1) % 32);
+      matrixPush();
+    }
+
+    bytesRead += mic.readBytes((char*)samples + bytesRead, MIC_CHUNK_BYTES);
+
+    // Checked after the read, so the window is a floor rather than a ceiling and
+    // the chunk the deadline lands in is kept whole.
+    if (millis() - startedAt >= WAKE_RECORD_MS) {
+      break;
+    }
+  }
+
+  *heldMs = millis() - startedAt;
+
+  return bytesRead;
+}
+
 // Sends the recording as one line of base64 raw PCM on voice/audio, streamed
 // straight out of PSRAM rather than built into a String first. Ten seconds is
 // 320 KB of samples and ~427 KB of base64, which will not fit in the 320 KB of
@@ -1255,7 +1429,7 @@ void sendVoiceAudio(const int16_t* samples, size_t byteCount) {
   pendingIsVoice = true; // Transcription takes ~10s; the lookup timeout would fire long before.
 }
 
-void recordAndReportMic() {
+void recordAndReportMic(VoiceTrigger trigger) {
   if (!micReady) {
     Serial.println("MIC error=not-initialised");
     showStatus("Microphone", "Not initialised", "");
@@ -1275,8 +1449,27 @@ void recordAndReportMic() {
     return;
   }
 
+  // ESP-SR's feed task reads the microphone continuously through this same
+  // I2SClass, so it has to let go before either capture loop can have it.
+  pauseSpeechRecognition();
+
+  // Undo the portMAX_DELAY that the feed task leaves on the shared object. See
+  // MIC_READ_TIMEOUT_MS: without this a stalled microphone hangs the recording
+  // instead of returning short and being reported.
+  mic.setTimeout(MIC_READ_TIMEOUT_MS);
+
   uint32_t heldMs = 0;
-  const size_t bytesRead = recordWhileHeld(samples, &heldMs);
+  const size_t bytesRead = trigger == VOICE_TRIGGER_WAKEWORD
+                             ? recordAfterWake(samples, &heldMs)
+                             : recordWhileHeld(samples, &heldMs);
+
+  // Back on before the transcription rather than after it. The Whisper round
+  // trip is ~7-9 seconds and the guards in voiceCaptureAllowed already refuse a
+  // second capture while one is in flight, so there is nothing to gain by
+  // staying deaf for it - and a box that stops listening the moment it is busy
+  // is the one people give up on.
+  resumeSpeechRecognition();
+
   const size_t sampleCount = bytesRead / MIC_BYTES_PER_SAMPLE;
 
   // Two failures that used to say the same thing. No bytes at all is a
@@ -1292,6 +1485,9 @@ void recordAndReportMic() {
       Serial.println("MIC error=no-data");
       showStatus("Microphone", "No data", "Check the mic");
     } else {
+      // Only reachable from the button. The wake word records a fixed window
+      // that is an order of magnitude over MIC_MIN_HOLD_MS, so "hold it longer"
+      // would be advice about a control that was not used.
       Serial.println("MIC too-short");
       showStatus("Listening", "Too short", "Hold and speak");
     }
@@ -1448,6 +1644,19 @@ void setup() {
   Serial.print("Mic ready=");
   Serial.println(micReady ? 1 : 0);
 
+  // After the microphone, because sr_start feeds from that same I2SClass, and
+  // before the Pi readiness handshake below, because a box that waits for the
+  // Pi to answer before it starts listening is deaf rather than degraded on
+  // every boot where the Pi is slow - which is the boot where somebody is most
+  // likely to be standing in front of it.
+  //
+  // Prints the result rather than assuming it. A false here is the difference
+  // between "the wake word does not work" and "the wake word was never started",
+  // and those have nothing in common but their symptom.
+  srReady = beginSpeechRecognition();
+  Serial.print("SR ready=");
+  Serial.println(srReady ? 1 : 0);
+
   // The first of the waiting retries. Everything above has overwritten the OLED
   // - the update check and the calibration line both - so the waiting screen
   // goes back up here. "Ready" is no longer said at the end of setup(): it is
@@ -1459,6 +1668,7 @@ void setup() {
 
 void loop() {
   pollButton();
+  pollWakeWord();
   pollSerialResponses();
   pollResponseTimeout();
   pollWaitingRetry();
@@ -1500,20 +1710,50 @@ void pollButton() {
 }
 
 // Only start a new recording when idle - not already waiting on a lookup or
-// blinking its result.
-void onButtonPress() {
+// blinking its result. Shared by both triggers, because a wake word arriving
+// mid-lookup is the same mistake as a second button press and deserves the same
+// answer.
+bool voiceCaptureAllowed() {
   if (awaitingResponse || blinkRemaining > 0) {
-    return;
+    return false;
   }
 
-  // A hold here is someone asking "is it on?", and the honest answer is already
+  // A press here is someone asking "is it on?", and the honest answer is already
   // on the screen. Recording anyway would spend ten seconds and come back "No
   // response", blaming a Pi that is merely booting. This guard used to sit
   // inside the lookup path so that microphone bring-up stayed testable on a
-  // bench where nothing answered; the bring-up is done, and the button's job now
+  // bench where nothing answered; the bring-up is done, and the box's job now
   // needs the Pi like any other.
   if (!deviceReady) {
     showWaitingStatus();
+    return false;
+  }
+
+  return true;
+}
+
+// Picks up the flag onSpeechEvent set on the SR handler task, so the recording
+// runs on loop() where every other long job in this sketch runs.
+//
+// The flag is cleared whether or not the capture is allowed to start. A wake
+// word heard while the box was busy is stale by the time it could be acted on,
+// and queueing it would start a recording seconds later with nobody speaking.
+void pollWakeWord() {
+  if (!wakeWordHeard) {
+    return;
+  }
+  wakeWordHeard = false;
+
+  if (!voiceCaptureAllowed()) {
+    return;
+  }
+
+  wakeCaptureCount++;
+  recordAndReportMic(VOICE_TRIGGER_WAKEWORD);
+}
+
+void onButtonPress() {
+  if (!voiceCaptureAllowed()) {
     return;
   }
 
@@ -1527,7 +1767,7 @@ void onButtonPress() {
   // worked. The lookup path it exercised is unchanged and still reachable two
   // other ways: the Pi's tools/lookup endpoint, and "lookup <name>" typed into a
   // serial monitor - see handleIncomingLine.
-  recordAndReportMic();
+  recordAndReportMic(VOICE_TRIGGER_BUTTON);
 }
 
 void sendToolLookupRequest(const char* toolName) {
@@ -1677,6 +1917,13 @@ void handleIncomingLine(const String& line) {
     return;
   }
 
+  // Ask the box what the wake word is doing, without a reflash and without
+  // depending on the boot window. Answers immediately whatever else is running.
+  if (line == "sr") {
+    reportSpeechState();
+    return;
+  }
+
   JsonDocument doc;
   const DeserializationError parseError = deserializeJson(doc, line);
   if (parseError) {
@@ -1765,7 +2012,13 @@ void handleIncomingLine(const String& line) {
   // drawer's row beside the first drawer's label. The Pi now picks one location
   // and this reads only that.
   JsonObject primary = doc["body"]["primaryLocation"];
-  const int rowNumber = primary["rowNumber"] | 0;
+
+  // A drawer in another toolbox has a row number of its own, but lighting it here
+  // would point at this box's row of the same number. It takes the no-row path
+  // instead, and the OLED names the box. Absent means a Pi from before toolboxes,
+  // where every drawer was on this one.
+  const bool onDevice = primary["onDevice"] | true;
+  const int rowNumber = onDevice ? (primary["rowNumber"] | 0) : 0;
 
   // The row number is all the LED and the 8x8 matrix can convey. The drawer
   // label is the half only the OLED can show - see Physical Layout in the spec,
@@ -1804,8 +2057,18 @@ void handleIncomingLine(const String& line) {
     more = " +";
   }
 
-  showStatus("Found", pendingToolName,
-             "Row " + String(rowNumber) + "  Drawer " + drawerLabel + more);
+  if (onDevice) {
+    showStatus("Found", pendingToolName,
+               "Row " + String(rowNumber) + "  Drawer " + drawerLabel + more);
+  } else {
+    // The box name is cut to fit rather than the label, and before the marker:
+    // the label is what you open once you get there, and the OLED clips
+    // anything past its edge without saying so.
+    const String suffix = String(" ") + drawerLabel + more;
+    const int room = (int)OLED_LINE_CHARS - (int)suffix.length();
+    const String toolbox = String(primary["toolboxName"] | "Other box").substring(0, room > 1 ? room : 1);
+    showStatus("Found elsewhere", pendingToolName, toolbox + suffix);
+  }
 
   // certainty is null for a tool the camera has never observed - distinguish
   // "no reading" from a low reading rather than collapsing both to a number.

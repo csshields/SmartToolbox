@@ -1,0 +1,42 @@
+# Partition table for the 8 MB XIAO ESP32S3, replacing the core's default_8MB
+# scheme. Arduino picks up a partitions.csv from the sketch folder in preference
+# to the board's built-in choice.
+#
+# It exists for one reason: ESP-SR's speech models are a 3,340,296-byte blob that
+# has to live in a partition literally named `model`. sr_start() calls
+# esp_srmodel_init("model") and looks at nothing else, so the name is not a
+# convention, it is the lookup key.
+#
+# The core ships esp_sr_16.csv for this, which is a 16 MB table. This chip has
+# 8 MB, so the table has to be ours.
+#
+# **Changing this file cannot ship over OTA.** An over-the-air update writes an
+# application into an app slot; it does not repartition flash. Getting this onto
+# the box is one flash-device run with a USB cable, and so is getting it wrong.
+#
+# Where the space came from, since "the flash is full" was never true - it was
+# over-allocated. The old table reserved 3,342,336 bytes for each app slot
+# against a 1,091,984-byte binary, and 1,572,864 for a spiffs partition that no
+# code in this sketch ever mounted. The spiffs partition is gone and both app
+# slots are right-sized; both OTA slots survive, which is what matters.
+#
+# Sizing, measured on 2026-09-06 rather than estimated:
+#
+#   0.27.0, no ESP_SR                     1,096,267 bytes
+#   0.28.0, ESP_SR linked                 2,189,531 bytes   (2.00x)
+#   app slot below                        2,424,832 bytes
+#   headroom                                235,301 bytes   (90.3% full)
+#
+# That is tighter than anything else in this project and it is the deliberate
+# choice: the model needs 3.34 MB, the two app slots and the model have 8,257,536
+# bytes between them, and the arithmetic leaves nothing spare. If a future core
+# bump grows either the binary or srmodels.bin, this table is where it is paid
+# for - move the balance, do not assume there is slack.
+#
+# Name,   Type, SubType, Offset,    Size,     Notes
+nvs,      data, nvs,     0x9000,    0x5000
+otadata,  data, ota,     0xe000,    0x2000
+app0,     app,  ota_0,   0x10000,   0x250000
+app1,     app,  ota_1,   0x260000,  0x250000
+model,    data, spiffs,  0x4B0000,  0x340000
+coredump, data, coredump,0x7F0000,  0x10000

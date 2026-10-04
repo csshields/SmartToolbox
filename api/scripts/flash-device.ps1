@@ -58,10 +58,16 @@ if (-not $Version) {
 }
 
 if ($Upload) {
-	# The merged image is not in the repo's drop folder - release-firmware.ps1
-	# leaves it in the build directory, because it is 8 MB and only this path
-	# wants it.
-	$mergedLocal = Join-Path $env:TEMP "smarttoolbox-build-$Version\smarttoolbox.ino.merged.bin"
+	# The drop folder copy, NOT the one in the build directory, and the
+	# difference is load-bearing since 0.28.0. arduino-cli leaves the build
+	# directory image with 0xFF where the `model` partition sits; it is
+	# release-firmware.ps1 that splices srmodels.bin in, and it does that to the
+	# copy it writes here. Flashing the build directory image would put firmware
+	# on the box that links ESP-SR over a model partition full of erase pattern -
+	# a crash in setup(), reached over the one path that exists for recovering
+	# from a crash in setup().
+	$dropDir = Join-Path (Split-Path $PSScriptRoot -Parent) "firmware"
+	$mergedLocal = Join-Path $dropDir "smarttoolbox-$Version.merged.bin"
 	if (-not (Test-Path $mergedLocal)) {
 		throw "No local merged image for $Version at $mergedLocal. Build it first: .\release-firmware.ps1 -Version $Version"
 	}

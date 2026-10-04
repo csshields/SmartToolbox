@@ -203,6 +203,82 @@ Found 2026-09-02, and only after `handleIncomingLine` was made to print what it 
 not parse. It had been returning in silence, which is what made a damaged reply and a
 missing reply indistinguishable. Keep that print.
 
+### ESP-SR mono needs two settings, and half of it aborts the boot
+
+`ESP_SR.begin()` defaults to stereo and an `"MN"` input format. This microphone is mono,
+and mono is **two** arguments:
+
+```cpp
+ESP_SR.begin(mic, nullptr, 0, SR_CHANNELS_MONO, SR_MODE_WAKEWORD, "M");
+//                             ^^^^^^^^^^^^^^^^                   ^^^
+```
+
+`SR_CHANNELS_MONO` sets the I2S channel count and `"M"` sets the AFE's feed format.
+`sr_start` then runs `assert(feed_channel >= i2s_rx_chan_num)`. Pass one without the
+other and that assert fires, which **aborts before `setup()` finishes** - so the symptom
+is a device that will not start at all, with no serial output to say why. Nothing returns
+an error and nothing logs.
+
+### ESP-SR turns itself off after every detection
+
+On a wake word, `esp32-hal-sr.c` calls `sr_set_mode(SR_MODE_OFF)` itself. Recognition
+does not resume on its own. Without an explicit `setMode(SR_MODE_WAKEWORD)` in the
+recovery path, **the box answers once and is then deaf** - identical from the outside to
+a dead microphone, a frozen peripheral and a wrong threshold, which is the whole family
+of failures the Debugging section of the spec exists to separate.
+
+The first "Hi ESP" proves nothing. The second one is the test.
+
+### Two readers on one I2SClass split the audio instead of failing
+
+ESP-SR's feed task reads the microphone through the same `I2SClass` the recording loop
+uses, and `ESP_SR.pause()` only sets event group bits - it is not synchronous. The feed
+task may already be parked inside a blocking `readBytes`, and it passes `portMAX_DELAY`,
+so it waits for a full chunk however long that takes.
+
+Two consequences, and neither announces itself:
+
+- **Drain the pause, do not trust it.** Wait out one in-flight chunk (~32ms) before reading. Otherwise both readers get alternating pieces and the recording is half a sentence with no error anywhere.
+- **The feed task leaves `setTimeout(portMAX_DELAY)` on the shared object.** Any later `readBytes` in your own code inherits it and blocks forever on a stalled microphone rather than returning short. Set the timeout back explicitly before recording.
+
+### A custom type in a function signature must be declared before the first function
+
+Arduino generates forward prototypes and inserts them immediately before the **first
+function definition in the sketch**. A type used in any signature has to be declared
+above that line, not merely above the function that uses it.
+
+The error names the wrong thing:
+
+```
+error: variable or field 'recordAndReportMic' declared void
+error: 'VoiceTrigger' was not declared in this scope
+```
+
+`VoiceTrigger` was defined 130 lines above `recordAndReportMic` and still failed, because
+`buttonPressed()` sits near the top of the file and the prototypes go in ahead of it.
+
+### arduino-cli reports the wrong maximum with a custom partition table
+
+A `partitions.csv` in the sketch folder overrides the board's partition scheme, and the
+build honours it - the emitted `.partitions.bin` is correct. **The size report does not.**
+It takes "Maximum is ..." from the board definition's `upload.maximum_size`, so with our
+table it called a binary 65% of 3,342,336 bytes when it was 90.3% of 2,424,832.
+
+A build that overflows the real app slot therefore compiles clean, reports two thirds
+full, produces a merged image, and fails at the box. `release-firmware.ps1` reads the app
+slot size out of `partitions.csv` and checks against that instead; do not trust the
+compiler's percentage on this project.
+
+### A partition change cannot ship over OTA, and the merged image does not carry the models
+
+Two separate traps that arrive together:
+
+- An over-the-air update writes an application into an app slot. It does not repartition flash. Anything that changes `partitions.csv` reaches the box over a USB cable or not at all.
+- `arduino-cli` builds the merged image from the bootloader, partition table, otadata and application. It knows nothing about the `model` partition and leaves that region as `0xFF` - and `flash-device.sh` writes the whole 8 MB at offset 0. So **every USB flash silently erased the speech models** until `release-firmware.ps1` started splicing `srmodels.bin` in at the model offset. The recovery path was the thing that broke the feature.
+
+The partition must be named exactly `model`: `sr_start()` calls
+`esp_srmodel_init("model")` and looks at nothing else.
+
 ## Reference
 
 Seeed documentation URL checked on 2026-08-27:

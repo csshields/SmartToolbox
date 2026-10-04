@@ -132,7 +132,7 @@ enum class Status {
 StatusFace face(canvas);
 face.begin();
 face.setStatus(Status::Working);
-face.showValue(3, Colour::Green);   // spatial cue, then the digit
+face.showValue(3, Colour::Green);   // the digit for the row
 face.update();                      // from loop(), non-blocking
 ```
 
@@ -169,7 +169,7 @@ includes and deletions.
 
 **Acceptance test: the same pictures with the same timings on real hardware.** Boot
 spinner, idle blink at its random 2-6s interval, thinking dots at 280ms with the eye
-swap at 2800ms, wave, a lookup result showing row for 2s then digit for 4s, sad,
+swap at 2800ms, wave, a lookup result showing the digit for 4s, sad,
 question mark, alert, and the 90-second stall. Flash it, watch it, then diff nothing.
 This is the phase that makes every later phase safe.
 
