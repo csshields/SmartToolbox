@@ -13,12 +13,25 @@ export type ToolRecord = {
 
 export type DrawerRecord = {
   id: number;
+  toolboxId: number;
+  toolboxName: string;
   name: string;
   label: string;
   rowNumber: number | null;
   createdAt: string;
   toolCount: number;
   tools: ToolRecord[];
+};
+
+export type ToolboxRecord = {
+  id: number;
+  name: string;
+  rowCount: number;
+  // The box the XIAO is mounted on. Exactly one toolbox can say so: the device
+  // lights rows on that box and on no other.
+  hasDevice: boolean;
+  drawerCount: number;
+  createdAt: string;
 };
 
 export type DeviceRecord = {
@@ -33,6 +46,11 @@ export type DeviceRecord = {
 
 export type ToolLocation = {
   drawerId: number;
+  toolboxId: number;
+  toolboxName: string;
+  // Whether this drawer is in the box the device is mounted on. A row number in
+  // any other box is real, but lighting it would point at the wrong toolbox.
+  onDevice: boolean;
   label: string;
   rowNumber: number | null;
   quantity: number;
@@ -112,12 +130,26 @@ database.exec(`
   PRAGMA foreign_keys = ON;
   PRAGMA journal_mode = WAL;
 
+  CREATE TABLE IF NOT EXISTS toolboxes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    row_count INTEGER NOT NULL DEFAULT 6 CHECK (row_count >= 1 AND row_count <= 8),
+    has_device INTEGER NOT NULL DEFAULT 0 CHECK (has_device IN (0, 1)),
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+
+  -- At most one box carries the device. Enforced here rather than trusted to
+  -- the code that moves it, which clears the old flag before setting the new.
+  CREATE UNIQUE INDEX IF NOT EXISTS idx_toolboxes_device ON toolboxes(has_device) WHERE has_device = 1;
+
   CREATE TABLE IF NOT EXISTS drawers (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE,
+    toolbox_id INTEGER NOT NULL,
+    name TEXT NOT NULL,
     label TEXT,
     row_number INTEGER,
-    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(toolbox_id) REFERENCES toolboxes(id) ON DELETE CASCADE
   );
 
   CREATE TABLE IF NOT EXISTS tools (
@@ -263,10 +295,95 @@ database.exec(`
       )
 `);
 
+// How many indicator rows a toolbox can have. The 8x8 matrix is a hard ceiling,
+// since a panel with eight rows cannot point at a ninth however big the box is.
+export const MAX_TOOLBOX_ROWS = 8;
+export const DEFAULT_TOOLBOX_ROWS = 6;
+
+// Every database has at least one toolbox, and the first one carries the device.
+// On an older database it inherits the row count that used to live in config,
+// so upgrading changes nothing about what the panel will light.
+if (!database.query("SELECT id FROM toolboxes LIMIT 1").get()) {
+  const legacy = database.query("SELECT value FROM config WHERE key = 'toolbox_row_count'").get() as { value: string } | null;
+  const legacyRows = Number(legacy?.value);
+  const rowCount = Number.isInteger(legacyRows) && legacyRows >= 1 && legacyRows <= MAX_TOOLBOX_ROWS
+    ? legacyRows
+    : DEFAULT_TOOLBOX_ROWS;
+
+  database.query("INSERT INTO toolboxes (name, row_count, has_device) VALUES ('Toolbox', ?1, 1)").run(rowCount);
+}
+
+// Drawers predating toolboxes had a globally unique name, which would stop two
+// boxes each having a "Drawer 1". SQLite cannot drop a UNIQUE constraint in
+// place, so the table is rebuilt: the documented copy, drop and rename, with
+// foreign keys off so that dropping the old table does not cascade into tools
+// and drawer_observations. Ids are copied as they are, so every reference to a
+// drawer still points at the same drawer afterwards.
+const drawerColumnsBeforeToolboxes = database.query("PRAGMA table_info(drawers)").all() as Array<{ name: string }>;
+
+if (!drawerColumnsBeforeToolboxes.some((column) => column.name === "toolbox_id")) {
+  const home = database.query("SELECT id FROM toolboxes ORDER BY has_device DESC, id ASC LIMIT 1").get() as { id: number };
+
+  // Counted before as well as after, because a database can already hold
+  // orphans - tools whose drawer was deleted while foreign keys were off. Those
+  // are not this rebuild's doing, and refusing to start over them would take the
+  // whole API down for rows that nothing can reach anyway.
+  const orphansBefore = database.query("PRAGMA foreign_key_check").all().length;
+
+  database.exec("PRAGMA foreign_keys = OFF");
+
+  try {
+    database.transaction(() => {
+      database.exec(`
+        CREATE TABLE drawers_rebuilt (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          toolbox_id INTEGER NOT NULL,
+          name TEXT NOT NULL,
+          label TEXT,
+          row_number INTEGER,
+          created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          FOREIGN KEY(toolbox_id) REFERENCES toolboxes(id) ON DELETE CASCADE
+        )
+      `);
+      database
+        .query(`
+          INSERT INTO drawers_rebuilt (id, toolbox_id, name, label, row_number, created_at)
+          SELECT id, ?1, name, label, row_number, created_at FROM drawers
+        `)
+        .run(home.id);
+      database.exec("DROP TABLE drawers");
+      database.exec("ALTER TABLE drawers_rebuilt RENAME TO drawers");
+
+      // Throwing here rolls the whole rebuild back, leaving the old table as it was.
+      const orphansAfter = database.query("PRAGMA foreign_key_check").all().length;
+      if (orphansAfter > orphansBefore) {
+        throw new Error(`Drawer rebuild broke ${orphansAfter - orphansBefore} reference(s); rolled back.`);
+      }
+    })();
+  } finally {
+    database.exec("PRAGMA foreign_keys = ON");
+  }
+
+  console.log(`[db] moved existing drawers into toolbox ${home.id}`);
+}
+
+// BINARY, matching the UNIQUE it replaces: a NOCASE index could refuse to build
+// over names that the old constraint happily allowed.
+database.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_drawers_toolbox_name ON drawers(toolbox_id, name)");
+
+const drawerFields = `
+  drawer.id, drawer.toolbox_id AS toolboxId, toolbox.name AS toolboxName, drawer.name,
+  COALESCE(drawer.label, drawer.name) AS label, drawer.row_number AS rowNumber, drawer.created_at AS createdAt
+`;
+
+// The device's box first, since that is the one the panel answers for. A drawer
+// with no row goes last rather than first, which is where SQLite puts NULLs -
+// otherwise a drawer just added without one jumps to the top of the list.
 const selectDrawers = database.query(`
-  SELECT id, name, COALESCE(label, name) AS label, row_number AS rowNumber, created_at AS createdAt
-  FROM drawers
-  ORDER BY row_number ASC, label COLLATE NOCASE ASC
+  SELECT ${drawerFields}
+  FROM drawers AS drawer
+  JOIN toolboxes AS toolbox ON toolbox.id = drawer.toolbox_id
+  ORDER BY toolbox.has_device DESC, toolbox.name ASC, drawer.row_number ASC NULLS LAST, label COLLATE NOCASE ASC
 `);
 
 const selectTools = database.query(`
@@ -276,27 +393,76 @@ const selectTools = database.query(`
 `);
 
 const selectDrawerById = database.query(`
-  SELECT id, name, COALESCE(label, name) AS label, row_number AS rowNumber, created_at AS createdAt
-  FROM drawers
-  WHERE id = ?1
+  SELECT ${drawerFields}
+  FROM drawers AS drawer
+  JOIN toolboxes AS toolbox ON toolbox.id = drawer.toolbox_id
+  WHERE drawer.id = ?1
 `);
 
+// Only the camera looks drawers up by label, and the camera is on the device's
+// box - so "1A" means that box's 1A, not whichever box happens to have one.
 const selectDrawerByLabel = database.query(`
-  SELECT id, name, COALESCE(label, name) AS label, row_number AS rowNumber, created_at AS createdAt
-  FROM drawers
-  WHERE COALESCE(label, name) = ?1 COLLATE NOCASE
+  SELECT ${drawerFields}
+  FROM drawers AS drawer
+  JOIN toolboxes AS toolbox ON toolbox.id = drawer.toolbox_id
+  WHERE toolbox.has_device = 1 AND COALESCE(drawer.label, drawer.name) = ?1 COLLATE NOCASE
 `);
 
 const selectDrawersAboveRow = database.query(`
   SELECT name, row_number AS rowNumber
   FROM drawers
-  WHERE row_number > ?1
+  WHERE toolbox_id = ?1 AND row_number > ?2
   ORDER BY row_number ASC
 `);
 
 const insertDrawer = database.query(`
-  INSERT INTO drawers (name, label, row_number)
-  VALUES (?1, ?2, ?3)
+  INSERT INTO drawers (toolbox_id, name, label, row_number)
+  VALUES (?1, ?2, ?3, ?4)
+`);
+
+const updateDrawerFields = database.query(`
+  UPDATE drawers SET name = ?2, label = ?3, row_number = ?4 WHERE id = ?1
+`);
+
+const selectToolboxes = database.query(`
+  SELECT toolbox.id, toolbox.name, toolbox.row_count AS rowCount, toolbox.has_device AS hasDevice,
+         toolbox.created_at AS createdAt, COUNT(drawer.id) AS drawerCount
+  FROM toolboxes AS toolbox
+  LEFT JOIN drawers AS drawer ON drawer.toolbox_id = toolbox.id
+  GROUP BY toolbox.id
+  ORDER BY toolbox.has_device DESC, toolbox.name ASC
+`);
+
+const selectToolboxById = database.query(`
+  SELECT id, name, row_count AS rowCount, has_device AS hasDevice, created_at AS createdAt,
+         (SELECT COUNT(*) FROM drawers WHERE toolbox_id = ?1) AS drawerCount
+  FROM toolboxes
+  WHERE id = ?1
+`);
+
+const selectDeviceToolboxId = database.query(`
+  SELECT id FROM toolboxes WHERE has_device = 1
+`);
+
+const insertToolbox = database.query(`
+  INSERT INTO toolboxes (name, row_count)
+  VALUES (?1, ?2)
+`);
+
+const updateToolboxFields = database.query(`
+  UPDATE toolboxes SET name = ?2, row_count = ?3 WHERE id = ?1
+`);
+
+const clearDeviceToolbox = database.query(`
+  UPDATE toolboxes SET has_device = 0 WHERE has_device = 1
+`);
+
+const markDeviceToolbox = database.query(`
+  UPDATE toolboxes SET has_device = 1 WHERE id = ?1
+`);
+
+const deleteToolboxById = database.query(`
+  DELETE FROM toolboxes WHERE id = ?1
 `);
 
 const upsertDeviceContact = database.query(`
@@ -407,18 +573,22 @@ const selectToolLocations = database.query(`
     WHERE tool_name = ?1 COLLATE NOCASE AND superseded_at IS NULL
   )
   SELECT drawer.id AS drawerId,
+         drawer.toolbox_id AS toolboxId,
+         toolbox.name AS toolboxName,
+         toolbox.has_device AS onDevice,
          COALESCE(drawer.label, drawer.name) AS label,
          drawer.row_number AS rowNumber,
          COALESCE(observation.quantity, tool.quantity) AS quantity,
          observation.confidence AS confidence,
          observation.observed_at AS observedAt
   FROM drawers AS drawer
+  JOIN toolboxes AS toolbox ON toolbox.id = drawer.toolbox_id
   LEFT JOIN tools AS tool
     ON tool.drawer_id = drawer.id AND tool.name = ?1 COLLATE NOCASE
   LEFT JOIN latest_observations AS observation
     ON observation.drawer_id = drawer.id AND observation.position = 1
   WHERE tool.id IS NOT NULL OR observation.drawer_id IS NOT NULL
-  ORDER BY drawer.row_number ASC, label COLLATE NOCASE ASC
+  ORDER BY toolbox.has_device DESC, toolbox.name ASC, drawer.row_number ASC, label COLLATE NOCASE ASC
 `);
 
 const selectCanonicalToolName = database.query(`
@@ -539,21 +709,203 @@ export function listDrawers(): DrawerRecord[] {
   });
 }
 
-export function createDrawer(name: string, location?: { label?: string; rowNumber?: number }) {
+// Without a toolboxId the drawer goes into the device's box, which is where
+// every drawer went before there was more than one.
+export function createDrawer(name: string, location?: { label?: string; rowNumber?: number; toolboxId?: number }) {
   const normalizedName = normalizeName(name, "Drawer name");
   const label = (location?.label ?? normalizedName).trim() || normalizedName;
-  const rowNumber = normalizeRowNumber(location?.rowNumber);
+  const toolbox = requireToolbox(location?.toolboxId ?? getDeviceToolboxId());
+  const rowNumber = normalizeRowNumber(location?.rowNumber, toolbox.rowCount);
 
   try {
-    const result = insertDrawer.run(normalizedName, label, rowNumber) as { lastInsertRowid: number | bigint };
+    const result = insertDrawer.run(toolbox.id, normalizedName, label, rowNumber) as { lastInsertRowid: number | bigint };
     return selectDrawerById.get(Number(result.lastInsertRowid)) as Omit<DrawerRecord, "toolCount" | "tools">;
   } catch (error) {
     if (error instanceof Error && error.message.includes("UNIQUE")) {
-      throw new Error("A drawer with that name already exists.");
+      throw new Error("A drawer with that name already exists in this toolbox.");
     }
 
     throw error;
   }
+}
+
+export class DrawerNotFoundError extends Error {}
+
+// Every field is optional and an omitted one keeps its value. An empty label
+// falls back to the name, as it does on create; a null rowNumber takes the
+// drawer off the matrix. Tools and observations hang off the drawer's id, so
+// none of this moves them - but the camera matches on label, so relabelling
+// changes which detections land here.
+export function updateDrawer(drawerId: number, changes: { name?: string; label?: string; rowNumber?: number | null }) {
+  const drawer = selectDrawerById.get(drawerId) as Omit<DrawerRecord, "toolCount" | "tools"> | null;
+
+  if (!drawer) {
+    throw new DrawerNotFoundError("Drawer not found.");
+  }
+
+  const name = changes.name === undefined ? drawer.name : normalizeName(changes.name, "Drawer name");
+  const label = changes.label === undefined ? drawer.label : changes.label.trim() || name;
+  const rowNumber = changes.rowNumber === undefined
+    ? drawer.rowNumber
+    : normalizeRowNumber(changes.rowNumber, requireToolbox(drawer.toolboxId).rowCount);
+
+  try {
+    updateDrawerFields.run(drawer.id, name, label, rowNumber);
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("UNIQUE")) {
+      throw new Error("A drawer with that name already exists in this toolbox.");
+    }
+
+    throw error;
+  }
+
+  return selectDrawerById.get(drawer.id) as Omit<DrawerRecord, "toolCount" | "tools">;
+}
+
+export class ToolboxNotFoundError extends Error {}
+
+function toToolboxRecord(row: Omit<ToolboxRecord, "hasDevice"> & { hasDevice: number }): ToolboxRecord {
+  return { ...row, hasDevice: row.hasDevice === 1 };
+}
+
+export function listToolboxes(): ToolboxRecord[] {
+  return (selectToolboxes.all() as Array<Omit<ToolboxRecord, "hasDevice"> & { hasDevice: number }>).map(toToolboxRecord);
+}
+
+export function getToolbox(toolboxId: number): ToolboxRecord | null {
+  const row = selectToolboxById.get(toolboxId) as (Omit<ToolboxRecord, "hasDevice"> & { hasDevice: number }) | null;
+  return row ? toToolboxRecord(row) : null;
+}
+
+function requireToolbox(toolboxId: number) {
+  const toolbox = Number.isInteger(toolboxId) ? getToolbox(toolboxId) : null;
+
+  if (!toolbox) {
+    throw new ToolboxNotFoundError("Toolbox not found.");
+  }
+
+  return toolbox;
+}
+
+// Throws only if the device's box has been unmarked some way the API refuses -
+// updateToolbox and deleteToolbox both keep exactly one box carrying it.
+export function getDeviceToolboxId(): number {
+  const row = selectDeviceToolboxId.get() as { id: number } | null;
+
+  if (!row) {
+    throw new ToolboxNotFoundError("No toolbox is marked as holding the device.");
+  }
+
+  return row.id;
+}
+
+function normalizeRowCount(rowCount: number) {
+  if (!Number.isInteger(rowCount) || rowCount < 1 || rowCount > MAX_TOOLBOX_ROWS) {
+    throw new Error(`Toolbox rows must be a whole number between 1 and ${MAX_TOOLBOX_ROWS}.`);
+  }
+
+  return rowCount;
+}
+
+// A generous ceiling, only there so a typo cannot create ten thousand drawers.
+export const MAX_DRAWERS_PER_TOOLBOX = 50;
+
+// Creates the box and its drawers in one transaction, so a failure part way
+// never leaves a half-built toolbox behind. Drawers are named "Drawer 1" to
+// "Drawer N", labelled "1" to "N", and given rows 1 to N for as many as the box
+// has rows - the rest are left without one. That is a starting point to rename
+// and relabel, not a claim about the physical layout: the real box shares row 1
+// between 1A, 1B and 1C, which no count could have guessed.
+export function createToolbox(name: string, layout: { drawerCount: number; rowCount?: number }) {
+  const normalizedName = normalizeName(name, "Toolbox name");
+  const drawerCount = layout.drawerCount;
+
+  if (!Number.isInteger(drawerCount) || drawerCount < 0 || drawerCount > MAX_DRAWERS_PER_TOOLBOX) {
+    throw new Error(`Drawer count must be a whole number between 0 and ${MAX_DRAWERS_PER_TOOLBOX}.`);
+  }
+
+  const rowCount = normalizeRowCount(layout.rowCount ?? Math.min(Math.max(drawerCount, 1), MAX_TOOLBOX_ROWS));
+
+  const build = database.transaction(() => {
+    const result = insertToolbox.run(normalizedName, rowCount) as { lastInsertRowid: number | bigint };
+    const toolboxId = Number(result.lastInsertRowid);
+
+    for (let number = 1; number <= drawerCount; number++) {
+      insertDrawer.run(toolboxId, `Drawer ${number}`, String(number), number <= rowCount ? number : null);
+    }
+
+    return toolboxId;
+  });
+
+  try {
+    return getToolbox(build()) as ToolboxRecord;
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("UNIQUE")) {
+      throw new Error("A toolbox with that name already exists.");
+    }
+
+    throw error;
+  }
+}
+
+// Every field is optional. hasDevice can only be set, never cleared: the device
+// is always on some box, so the way to move it off this one is to mark another.
+export function updateToolbox(toolboxId: number, changes: { name?: string; rowCount?: number; hasDevice?: boolean }) {
+  const toolbox = requireToolbox(toolboxId);
+  const name = changes.name === undefined ? toolbox.name : normalizeName(changes.name, "Toolbox name");
+  const rowCount = changes.rowCount === undefined ? toolbox.rowCount : normalizeRowCount(changes.rowCount);
+
+  if (changes.hasDevice === false && toolbox.hasDevice) {
+    throw new Error("The device has to be on some toolbox. Mark another toolbox as holding it instead.");
+  }
+
+  // Shrinking past a drawer that is already using a high row would strand it:
+  // the row would stay in the database and simply stop being indicatable. Refuse
+  // and name the drawers, rather than silently orphaning them.
+  const stranded = selectDrawersAboveRow.all(toolbox.id, rowCount) as Array<{ name: string; rowNumber: number }>;
+
+  if (stranded.length > 0) {
+    const named = stranded.map((drawer) => `${drawer.name} (row ${drawer.rowNumber})`).join(", ");
+    throw new Error(`Cannot reduce to ${rowCount} rows while these drawers use a higher row: ${named}.`);
+  }
+
+  const save = database.transaction(() => {
+    updateToolboxFields.run(toolbox.id, name, rowCount);
+
+    if (changes.hasDevice === true && !toolbox.hasDevice) {
+      clearDeviceToolbox.run();
+      markDeviceToolbox.run(toolbox.id);
+    }
+  });
+
+  try {
+    save();
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("UNIQUE")) {
+      throw new Error("A toolbox with that name already exists.");
+    }
+
+    throw error;
+  }
+
+  return getToolbox(toolbox.id) as ToolboxRecord;
+}
+
+// Cascades like deleteDrawer, one level further out: every drawer in the box,
+// their tools, and their observation history. The device's box is refused, so
+// there is always a box for the panel to answer for.
+export function deleteToolbox(toolboxId: number) {
+  const toolbox = getToolbox(toolboxId);
+
+  if (!toolbox) {
+    return false;
+  }
+
+  if (toolbox.hasDevice) {
+    throw new Error("This toolbox holds the device. Mark another toolbox as holding it before deleting this one.");
+  }
+
+  return deleteToolboxById.run(toolbox.id).changes > 0;
 }
 
 // Returns whether a row was actually removed, so the route can answer 404
@@ -728,50 +1080,12 @@ function getConfigValue(key: string, fallback: string) {
   return row?.value ?? fallback;
 }
 
-// How many indicator rows the toolbox in front of the panel actually has. Not a
-// constant, because a seven- or eight-drawer-row box is a perfectly reasonable
-// thing to own - but the 8x8 matrix is a hard ceiling, since a panel with eight
-// rows cannot point at a ninth however big the box is.
-export const MAX_TOOLBOX_ROWS = 8;
-export const DEFAULT_TOOLBOX_ROWS = 6;
-
-export function getToolboxRowCount(): number {
-  const stored = Number(getConfigValue("toolbox_row_count", String(DEFAULT_TOOLBOX_ROWS)));
-
-  return Number.isInteger(stored) && stored >= 1 && stored <= MAX_TOOLBOX_ROWS
-    ? stored
-    : DEFAULT_TOOLBOX_ROWS;
-}
-
-export function saveToolboxRowCount(rowCount: number) {
-  if (!Number.isInteger(rowCount) || rowCount < 1 || rowCount > MAX_TOOLBOX_ROWS) {
-    throw new Error(`Toolbox rows must be a whole number between 1 and ${MAX_TOOLBOX_ROWS}.`);
-  }
-
-  // Shrinking past a drawer that is already using a high row would strand it:
-  // the row would stay in the database and simply stop being indicatable. Refuse
-  // and name the drawers, rather than silently orphaning them.
-  const stranded = selectDrawersAboveRow.all(rowCount) as Array<{ name: string; rowNumber: number }>;
-
-  if (stranded.length > 0) {
-    const named = stranded.map((drawer) => `${drawer.name} (row ${drawer.rowNumber})`).join(", ");
-    throw new Error(`Cannot reduce to ${rowCount} rows while these drawers use a higher row: ${named}.`);
-  }
-
-  upsertConfigValue.run("toolbox_row_count", String(rowCount));
-
-  return getToolboxRowCount();
-}
-
-// A drawer's row has to be one the panel can actually light. The bound is read
-// at call time rather than captured, so changing the setting takes effect
-// without a restart.
-function normalizeRowNumber(rowNumber: number | undefined | null) {
+// A drawer's row has to be one its toolbox has. The count is the box's own, read
+// by the caller at call time, so changing it takes effect without a restart.
+function normalizeRowNumber(rowNumber: number | undefined | null, rowCount: number) {
   if (rowNumber === undefined || rowNumber === null) {
     return null;
   }
-
-  const rowCount = getToolboxRowCount();
 
   if (!Number.isInteger(rowNumber) || rowNumber < 1 || rowNumber > rowCount) {
     throw new Error(`Matrix row must be a whole number between 1 and ${rowCount}.`);
@@ -797,12 +1111,14 @@ export function saveTranscriptionSettings(settings: TranscriptionSettings) {
 
 // Which of several candidate drawers to point the user at.
 //
-// 1. A drawer with a row number beats one without. The device indicates a row
+// 1. A drawer in the device's box beats one anywhere else. The tool within
+//    reach is the useful answer, and it is the only one the panel can light.
+// 2. A drawer with a row number beats one without. The device indicates a row
 //    and nothing else, so a location it cannot show is useless as the primary.
-// 2. Then the highest confidence, matching how `rows` already collapses. A null
+// 3. Then the highest confidence, matching how `rows` already collapses. A null
 //    confidence means the camera has never seen the tool there, so it sorts
 //    last rather than counting as certainty.
-// 3. Then lowest row number, then lowest drawer id, purely so the answer is
+// 4. Then lowest row number, then lowest drawer id, purely so the answer is
 //    stable rather than dependent on SQLite's row order.
 function pickPrimaryLocation(locations: ToolLocation[]): ToolLocation | null {
   if (locations.length === 0) {
@@ -810,6 +1126,10 @@ function pickPrimaryLocation(locations: ToolLocation[]): ToolLocation | null {
   }
 
   return [...locations].sort((a, b) => {
+    if (a.onDevice !== b.onDevice) {
+      return a.onDevice ? -1 : 1;
+    }
+
     const aHasRow = a.rowNumber != null;
     const bHasRow = b.rowNumber != null;
 
@@ -1011,11 +1331,15 @@ export function resolveToolQuery(query: string): ToolQueryMatch | null {
 // ambiguous query gets the same treatment for every tool it matched, rather than
 // full detail for the winner and a bare name for the rest.
 function locateTool(tool: string): ToolMatch {
-  const drawers = selectToolLocations.all(tool) as ToolLocation[];
+  const drawers = (selectToolLocations.all(tool) as Array<Omit<ToolLocation, "onDevice"> & { onDevice: number }>)
+    .map((drawer) => ({ ...drawer, onDevice: drawer.onDevice === 1 }));
   const rowsByNumber = new Map<number, number | null>();
 
   for (const drawer of drawers) {
-    if (drawer.rowNumber == null) {
+    // `rows` is what the panel lights, so only the device's box contributes. Row
+    // 3 of another box is still in `drawers`, but lighting row 3 here would
+    // point at the wrong toolbox.
+    if (drawer.rowNumber == null || !drawer.onDevice) {
       continue;
     }
 

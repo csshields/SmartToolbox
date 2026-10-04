@@ -24,8 +24,8 @@ When a section's status changes, update the line in the same commit as the code.
 SmartToolbox is a monorepo containing three parts:
 - **API**: Bun web server and SQLite database running on a Raspberry Pi Zero 2
 - **Firmware**: Arduino sketch for the Seeed XIAO ESP32S3 microcontroller
-- **Dashboard**: a three-page web UI served by the API, used to manage drawers, tools,
-  and the device
+- **Dashboard**: a three-page web UI served by the API, used to manage toolboxes,
+  drawers, tools, and the device
 
 ## Project Structure
 
@@ -124,6 +124,35 @@ row entry carrying the highest confidence of the group (`findToolLocations` in
 Rows and drawers are stored as data, not hardcoded: a drawer row carries a `label`
 (`1A`, `3`) and a nullable `row_number`. The schema permits layouts other than the one
 above; the physical box is what fixes it at 6 rows and 8 drawers.
+
+### Toolboxes
+
+**Status: Implemented** - API and dashboard. The firmware half is in the sketch and
+compiles, but reaches the device only with the next firmware release; see below.
+
+Drawers belong to a **toolbox**, and there can be several - a chest, a cart, a shed.
+It is an inventory feature, not a second device: there is still one XIAO on one wire,
+and it is mounted on exactly one box, the one marked `has_device`. A lookup searches
+every box, and:
+
+- **The device's box wins.** `pickPrimaryLocation` ranks a drawer on the device's box
+  above any other, before row or confidence - the tool within reach is the useful answer.
+- **Only the device's box lights.** `rows` counts only that box, and each location
+  carries `onDevice`, `toolboxId` and `toolboxName`. Row 3 of the garage cart must not
+  light row 3 of the chest.
+- **A tool only elsewhere is still found.** The firmware takes its "found, no row"
+  path - the whole indicator band, three fast blinks - and the OLED reads
+  `Found elsewhere` with the box name and drawer label.
+
+Firmware from before this change reads `primaryLocation.rowNumber` regardless, so until
+the next release a tool that is *only* in another box lights that box's row number here.
+Nothing changes while there is one toolbox.
+
+Creating a toolbox takes a **drawer count** and creates `Drawer 1` to `Drawer N`,
+labelled `1` to `N`, with rows 1 to N for as many as the box has rows (default: the
+drawer count, capped at 8). That is a starting point to relabel, not a layout: no count
+could have guessed that 1A, 1B and 1C share row 1. The device's box cannot be deleted or
+unmarked; move the device to another box first, so the panel always answers for one.
 
 ## Development Guidelines
 
@@ -239,13 +268,26 @@ tracking is a Future Consideration, not a current gap to be filled in.
 ### Implemented Tables
 
 ```sql
+-- Toolboxes. Exactly one has has_device = 1: the box the XIAO is mounted on, the
+-- only one whose rows the device lights. row_count bounds its drawers' rows.
+CREATE TABLE IF NOT EXISTS toolboxes (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  row_count INTEGER NOT NULL DEFAULT 6 CHECK (row_count >= 1 AND row_count <= 8),
+  has_device INTEGER NOT NULL DEFAULT 0 CHECK (has_device IN (0, 1)),
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Drawers. `label` is what the OLED shows (1A, 3); `row_number` drives the matrix.
+-- Names are unique per toolbox (idx_drawers_toolbox_name), not globally.
 CREATE TABLE IF NOT EXISTS drawers (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  name TEXT NOT NULL UNIQUE,
+  toolbox_id INTEGER NOT NULL,
+  name TEXT NOT NULL,
   label TEXT,
   row_number INTEGER,
-  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY(toolbox_id) REFERENCES toolboxes(id) ON DELETE CASCADE
 );
 
 -- Known contents of a drawer, entered by hand via the dashboard.
@@ -313,12 +355,17 @@ CREATE TABLE IF NOT EXISTS config (
 -- NOCASE: tool names are one identity case-insensitively, which is how every
 -- read has always compared them. See the Tool Identity note below.
 CREATE UNIQUE INDEX IF NOT EXISTS idx_tools_drawer_name ON tools(drawer_id, name COLLATE NOCASE);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_toolboxes_device ON toolboxes(has_device) WHERE has_device = 1;
+-- BINARY, matching the UNIQUE(name) it replaced, so building it cannot fail on old data.
+CREATE UNIQUE INDEX IF NOT EXISTS idx_drawers_toolbox_name ON drawers(toolbox_id, name);
 CREATE INDEX IF NOT EXISTS idx_request_logs_created_at ON request_logs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_observations_tool_drawer
   ON drawer_observations(tool_name, drawer_id, id DESC);
 ```
 
 Config keys currently in use: `transcription_provider`, `transcription_nas_url`.
+`toolbox_row_count` is legacy: read once, to seed the first toolbox's `row_count` on
+upgrade, and never written again.
 
 ### Migrations
 
@@ -326,6 +373,19 @@ There is no migration framework. `db.ts` runs `CREATE TABLE IF NOT EXISTS`, then
 patches older databases in place by checking `PRAGMA table_info` and issuing
 `ALTER TABLE ... ADD COLUMN` for `label` and `row_number`. Follow that pattern when
 adding a column: additive, idempotent, safe to run on every boot.
+
+**Toolboxes needed a table rebuild**, the one exception. The old `drawers.name UNIQUE`
+would stop two boxes each having a `Drawer 1`, and SQLite cannot drop a constraint in
+place. When `drawers` has no `toolbox_id`, `db.ts` seeds a toolbox named `Toolbox`
+(holding the device, `row_count` from the legacy config key), then copies `drawers`
+into a new table with every drawer in that box, drops the old one and renames - with
+foreign keys off so the drop does not cascade into `tools` and `drawer_observations`.
+Ids are copied unchanged, so every reference still points at the same drawer. It runs
+in one transaction and rolls back if `PRAGMA foreign_key_check` finds *more* broken
+references than before: the dev database already held orphaned tools and observations
+from drawers deleted with foreign keys off, and refusing to start over rows nothing can
+reach would have taken the API down. Tested against an old-schema database in
+`db.test.ts`, and against a copy of the dev database.
 
 ### Planned Tables
 
@@ -362,9 +422,14 @@ removed, and the API now has no runtime dependencies at all.
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/health` | Liveness check. Returns `{"status":"Ok"}` |
-| GET | `/api/drawers` | All drawers with their tools and tool counts |
-| POST | `/api/drawers` | Create a drawer (`name`, optional `label`, `rowNumber`). 400 when `rowNumber` is outside the configured row count |
+| GET | `/api/drawers` | All drawers with their tools and tool counts, plus `toolboxId` and `toolboxName`. The device's box first, then by row, with drawers that have no row last |
+| POST | `/api/drawers` | Create a drawer (`name`, optional `label`, `rowNumber`, `toolboxId` - default the device's box). 400 when `rowNumber` is outside that toolbox's row count, 404 for an unknown toolbox, 409 for a name already in that toolbox |
+| GET | `/api/toolboxes` | Every toolbox with `rowCount`, `hasDevice` and `drawerCount`, plus `maxRowCount` (8) and `maxDrawerCount` (50) |
+| POST | `/api/toolboxes` | Create a toolbox and its drawers (`name`, `drawerCount` 0-50, optional `rowCount` 1-8). 409 on a duplicate name, case-insensitively |
+| PUT | `/api/toolboxes/:id` | Change `name`, `rowCount`, or set `hasDevice: true` to move the device here. 400 when shrinking would strand a drawer's row, or on `hasDevice: false`; 404, 409 as above |
+| DELETE | `/api/toolboxes/:id` | Delete a toolbox. **Cascades** to its drawers, their tools and observations. 409 for the device's box |
 | POST | `/api/drawers/:id/tools` | Add or update a tool in a drawer (upsert on name) |
+| PUT | `/api/drawers/:id` | Edit a drawer's `name`, `label` or `rowNumber`; omitted fields keep their value, an empty `label` falls back to the name, and `rowNumber: null` takes it off the matrix. Tools and observations stay with it. 400 for a row outside its toolbox, 404, 409 for a name already in that toolbox |
 | DELETE | `/api/drawers/:id` | Delete a drawer. **Cascades** to its tools *and* its `drawer_observations` history. 404 if the id does not exist |
 | DELETE | `/api/drawers/:id/tools/:toolId` | Delete one tool **and its observations** for that drawer, in one transaction. Scoped by drawer, so a mismatched pair is a 404 rather than deleting a tool in another drawer |
 | GET | `/api/tools/lookup?query=` | **Primary lookup.** Returns `primaryLocation` (the one location to act on), `hasMultipleLocations`, plus `drawers` and `rows` collapsed by certainty |
@@ -374,15 +439,13 @@ removed, and the API now has no runtime dependencies at all.
 | GET | `/api/devices` | Device status: last contact, firmware version, boot count, plus the latest firmware on disk and whether the serial listener is running. Also returns `pendingCommand` - `{command, queuedAt}` for a command queued but not yet collected, or `null` |
 | POST | `/api/devices/command` | Queue `check-firmware` or `reboot` for the device to collect on its next heartbeat. The Pi cannot push - see Device Commands |
 | GET | `/api/logs?limit=` | Recent request log (default 50, capped at 200). Includes serial traffic, logged with method `SERIAL` and path `serial:<endpoint>` |
-| GET | `/api/settings/toolbox` | Toolbox row count and the panel's ceiling |
-| PUT | `/api/settings/toolbox` | Set the row count. 400 outside 1-8, or when a drawer already uses a higher row |
 | GET | `/api/settings/transcription` | Current transcription provider settings |
 | PUT | `/api/settings/transcription` | Save provider and NAS URL |
 | POST | `/api/settings/transcription/test` | Probe the configured provider |
 
 Anything under `/api/` that does not match returns 404 JSON. Everything else falls
 through to static files from `api/public/`. An extensionless path is tried as
-`<path>.html` first, so `/drawers` and `/devices` resolve to their pages; `index.html`
+`<path>.html` first, so `/toolboxes` and `/devices` resolve to their pages; `index.html`
 remains the fallback for anything else.
 
 ### Deprecated
@@ -405,11 +468,13 @@ remains the fallback for anything else.
   "query": "where are my needle nose pliers",
   "matches": [ { "tool": "Needle-nose Pliers", "primaryLocation": { "...": "..." },
                  "hasMultipleLocations": false, "drawers": [], "rows": [] } ],
-  "primaryLocation": { "drawerId": 1, "label": "1A", "rowNumber": 1, "quantity": 2,
+  "primaryLocation": { "drawerId": 1, "toolboxId": 1, "toolboxName": "Toolbox",
+                       "onDevice": true, "label": "1A", "rowNumber": 1, "quantity": 2,
                        "confidence": 95, "observedAt": "2026-08-27 11:04:12" },
   "hasMultipleLocations": false,
   "drawers": [
-    { "drawerId": 1, "label": "1A", "rowNumber": 1, "quantity": 2,
+    { "drawerId": 1, "toolboxId": 1, "toolboxName": "Toolbox", "onDevice": true,
+      "label": "1A", "rowNumber": 1, "quantity": 2,
       "confidence": 95, "observedAt": "2026-08-27 11:04:12" }
   ],
   "rows": [ { "rowNumber": 1, "certainty": 95 } ]
@@ -465,8 +530,9 @@ for 'needle nose players'" is a diagnosis where the tool name alone hides the in
 half.
 
 `drawers` and `rows` remain for callers that want every candidate: `drawers` carries the
-exact labels, `rows` is collapsed so several matching drawers in one row produce a single
-entry at the highest confidence. `confidence` is null when the tool is known from manual
+exact labels in every toolbox, `rows` is collapsed so several matching drawers in one row
+produce a single entry at the highest confidence - and counts **only the device's box**,
+because it is what the panel lights. See Toolboxes under Physical Layout. `confidence` is null when the tool is known from manual
 entry but has never been observed by the camera.
 
 Not found returns `{"found": false, "message": "Tool not found."}` with HTTP 200 -
@@ -545,8 +611,8 @@ drawer for logging:
 
 ## Dashboard
 
-**Status: Implemented** - three pages under `api/public/` (`index.html`,
-`drawers.html`, `devices.html`), sharing `app.css` (the whole
+**Status: Implemented** - four pages under `api/public/` (`index.html`,
+`toolboxes.html`, `devices.html`, `ai-settings.html`), sharing `app.css` (the whole
 design, every colour a custom property on `:root` with a dark-mode override) and
 `app.js` (`escapeHtml`, `setStatus`, `startHealthIndicator`).
 Page-specific logic stays inline in each page. No build step, no framework, no
@@ -559,18 +625,17 @@ is usable at all while the firmware is unfinished.
 
 | Panel | Backed by |
 |---|---|
-| Stat tiles - drawers, tools, items on hand, drawers with a matrix row | `GET /api/drawers`, counted client-side |
-| Toolbox Inventory - tools within each drawer | `GET /api/drawers`, `POST /api/drawers/:id/tools`, `DELETE /api/drawers/:id/tools/:toolId` |
-| Transcription Settings | `GET`/`PUT /api/settings/transcription`, `POST .../test` |
+| Stat tiles - drawers, tools, items on hand, drawers with a light row (matrix row), for the toolbox picked below | `GET /api/drawers`, counted client-side |
+| Toolbox Inventory - one toolbox at a time, picked from the card's title; tools within each drawer. The stats above follow the same box | `GET /api/toolboxes`, `GET /api/drawers`, `POST /api/drawers/:id/tools`, `DELETE /api/drawers/:id/tools/:toolId` |
 | Recent Requests | `GET /api/logs?limit=40` |
 | API Quick Reference | nothing - static text for the endpoints the page does not call |
 
-**`drawers.html` - Drawers**, served at `/drawers`:
+**`toolboxes.html` - Toolboxes**, served at `/toolboxes` (it was `drawers.html` at `/drawers` until 2026-10-04):
 
 | Panel | Backed by |
 |---|---|
-| Add a drawer - name, optional label, optional matrix row | `POST /api/drawers` |
-| Drawers - table with tool counts and delete | `GET /api/drawers`, `DELETE /api/drawers/:id` |
+| Toolboxes - create with a drawer count; per box, save rows, move the device here, delete | `GET`/`POST /api/toolboxes`, `PUT`/`DELETE /api/toolboxes/:id` |
+| Drawers - one toolbox at a time, picked from the card's title; add (into that box), tool counts, edit in place, delete | `GET`/`POST /api/drawers`, `PUT`/`DELETE /api/drawers/:id` |
 
 **`devices.html` - Devices**, served at `/devices`:
 
@@ -579,6 +644,15 @@ is usable at all while the firmware is unfinished.
 | Stat tiles - firmware running, latest available, boots detected, last contact | `GET /api/devices` |
 | XIAO ESP32S3 - version, last contact, last endpoint, uptime, boots detected | `GET /api/devices` |
 | Device Activity - the device's serial requests | `GET /api/logs?limit=200`, filtered to `method = 'SERIAL'` |
+
+**`ai-settings.html` - AI Settings**, served at `/ai-settings`:
+
+| Panel | Backed by |
+|---|---|
+| Transcription - provider (NAS Whisper or OpenAI) and the NAS URL; save, test the connection | `GET`/`PUT /api/settings/transcription`, `POST .../test` |
+
+It moved off the Dashboard because it is set once and rarely touched, and it is the
+place any later model settings belong.
 
 The Devices page is **read-only, but "last contact" now means something.** The firmware
 heartbeats every 30 seconds, so a last contact older than about a minute means the
@@ -592,14 +666,13 @@ opened the port would be a lie.
 
 The split is deliberate: creating and destroying drawers is structural and rare, and
 sat awkwardly next to the per-drawer tool forms it kept re-rendering. The Dashboard now
-only ever adds and removes *tools*; drawer lifecycle lives on its own page. There is no
-edit: the API has no `PATCH /api/drawers/:id`, so a drawer's name, label, and row are
-fixed once created.
+only ever adds and removes *tools*; drawer lifecycle lives on its own page. A drawer's
+name, label and row are edited in place there, through `PUT /api/drawers/:id`.
 
 `app.js` sends the label and row number only when the fields are filled in, so `POST
 /api/drawers` still defaults the label to the name and leaves `row_number` null.
 
-`/drawers` resolves through `serveStaticFile`, which tries `<path>.html` for
+`/toolboxes` resolves through `serveStaticFile`, which tries `<path>.html` for
 extensionless requests before falling back to `index.html`. Adding a page means adding
 the file and a nav link - no route in `serve()`.
 
@@ -622,15 +695,18 @@ now sets `superseded_at` on the source drawer's observations in the same transac
 the move, but only when no same-named tool remains there (`tools` is unique on
 `(drawer_id, name)` under BINARY collation, so "Hammer" and "hammer" can share a drawer).
 
-**A drawer's row must be one the panel can light, and the bound is configurable.**
+**A drawer's row must be one its toolbox has, and the bound is configurable.**
 Six is a fact about the toolbox in front of the matrix, not about the software, so it
-lives in `config` as `toolbox_row_count` (default 6) rather than in the code. The API
+lives on the toolbox as `toolboxes.row_count` (default 6) rather than in the code - and
+each toolbox has its own. It lived in `config` as `toolbox_row_count` until toolboxes
+existed. The API
 rejected nothing before: a drawer could be created on row 99, the dashboard would show
 it, and the device would silently fall into its "no row assigned" branch and light the
 whole indicator band - saying *unknown* while the database said *row 99*.
 
-`normalizeRowNumber` reads the setting at call time, so raising the count takes effect
-without a restart, and the Drawers page takes the form's `max` from the same value.
+`normalizeRowNumber` is given the drawer's toolbox's count at call time, so raising it
+takes effect without a restart, and the Toolboxes page takes the form's `max` from the
+toolbox picked in it.
 `MAX_TOOLBOX_ROWS` is 8 because the panel is 8x8 - that ceiling *is* a property of the
 hardware. Lowering the count is refused while a drawer still uses a higher row, naming
 the drawers, rather than silently stranding them.
@@ -960,7 +1036,7 @@ Protocol, Firmware Architecture, Power Management, and Feature Specifications be
   by `api/src/db.test.ts`.
 - **Successful response**: `{"id":"req-001","success":true,"body":{...}}`
 - **Error response**: `{"id":"req-001","success":false,"error":{"code":"INVALID_REQUEST","message":"drawer_label is required"}}`
-- **Audio**: **Status: Implemented** 2026-08-29 (0.20.0), `api/src/voice.ts` and `sendVoiceAudio` in the sketch. Push-to-talk audio is carried on this same link as a single base64 line on a `voice/audio` request - raw 16 kHz 16-bit mono PCM, roughly 171 KB of base64 for four seconds. The recording runs for as long as the button is held (300 ms minimum, 10 s cap), so its length is not known when the transfer starts: the device sends samples plus `sampleRate`/`channels` and **the Pi prepends the WAV header**. An earlier draft of this document called for a separate chunked transfer protocol; that was reconsidered and rejected in `docs/PLAN-voice-lookup.md`, which records why (a chunked protocol needs reassembly state, partial-upload timeouts, and a resync path, where a single line needs only a retry - and the retry is pressing the button again). Raw binary framing was also rejected: the transport splits on newlines and PCM is full of `0x0A`. `SerialLineBuffer` has a maximum line length (`MAX_SERIAL_LINE_BYTES`, 600 KB) and the `[serial-debug]` echo truncates at 300 characters - both because a device that resets mid-line would otherwise grow the buffer until the process dies, and a mangled audio line landing in `service.log` in full would bury the lines that explain it. **Transcription is slow enough to need its own timeout:** measured against this NAS, one second of audio takes ~9.3s warm and the first call after an idle container exceeded 30s while the model loaded. The Pi allows 90s, the device 100s - the device deliberately longer, so it never abandons a request the Pi is still working on. The 2s `RESPONSE_TIMEOUT_MS` used for lookups would fire before Whisper had started.
+- **Audio**: **Status: Implemented** 2026-08-29 (0.20.0), `api/src/voice.ts` and `sendVoiceAudio` in the sketch. Since 0.28.0 the capture has two triggers - the button and the "Hi ESP" wake word - but only one transport, and nothing below changes with the trigger. Audio is carried on this same link as a single base64 line on a `voice/audio` request - raw 16 kHz 16-bit mono PCM, roughly 171 KB of base64 for four seconds. The recording runs for as long as the button is held (300 ms minimum, 10 s cap), so its length is not known when the transfer starts: the device sends samples plus `sampleRate`/`channels` and **the Pi prepends the WAV header**. An earlier draft of this document called for a separate chunked transfer protocol; that was reconsidered and rejected in `docs/PLAN-voice-lookup.md`, which records why (a chunked protocol needs reassembly state, partial-upload timeouts, and a resync path, where a single line needs only a retry - and the retry is pressing the button again). Raw binary framing was also rejected: the transport splits on newlines and PCM is full of `0x0A`. `SerialLineBuffer` has a maximum line length (`MAX_SERIAL_LINE_BYTES`, 600 KB) and the `[serial-debug]` echo truncates at 300 characters - both because a device that resets mid-line would otherwise grow the buffer until the process dies, and a mangled audio line landing in `service.log` in full would bury the lines that explain it. **Transcription is slow enough to need its own timeout:** measured against this NAS, one second of audio takes ~9.3s warm and the first call after an idle container exceeded 30s while the model loaded. The Pi allows 90s, the device 100s - the device deliberately longer, so it never abandons a request the Pi is still working on. The 2s `RESPONSE_TIMEOUT_MS` used for lookups would fire before Whisper had started.
 - **Connectivity**:
   - XIAO ESP32S3 writes/reads framed JSON messages over its USB serial connection
   - Pi Zero 2 process listens on the serial device and dispatches to the same handlers used for the HTTP API
@@ -1216,7 +1292,7 @@ listening state below is the one exception and is marked as such.
 | Idle | Face with a smile, blinking every 2-6s | Purple | Nothing happening |
 | Listening | An irregular 8-column wave, one step every 100ms | Ramped cyan/blue/purple/pink by row | Recording while the pad is held - see `docs/PLAN-mic-bringup.md` |
 | Thinking | Mismatched eyes - the left a row taller than the right - and a mouth cycling through 0-3 dots every 280ms | Purple | A lookup is in flight |
-| Found | The lit row for 2s, then the row digit for 4s | Green / orange by certainty | The tool is in that row |
+| Found | The row digit for 4s | Green / orange by certainty | The tool is in that row |
 | Found, no row | The whole indicator band | Green / orange by certainty | Known drawer, no row assigned |
 | Not found | Face with a frown | Red | Understood the word, the tool is in no drawer |
 | Not understood | Question mark | Orange | The Pi could not interpret the request |
@@ -1320,10 +1396,24 @@ The transcript half was proven by a person speaking to the box rather than by in
 needle nose pliers` resolves to `Needle-Nose Pliers` in row 2, a query that returned
 "not found" the day before.
 
-The wake word is the one part of the design below that is deliberately not being built.
-The pad is the trigger; a wake word means running a classifier continuously, which is a
-separate project that would reuse everything built here. Read step 1 of the Workflow
-below as superseded design, not as work outstanding.
+**The wake word shipped in 0.28.0 and is proven on hardware (2026-10-04).** Saying
+"Hi ESP" starts the same capture the button starts: a person said it at the box, it
+recorded its four-second window, and Whisper heard "screwdriver". It needs a partition
+change, so it arrives over a USB cable, never OTA. The audio is quiet (rms around 50), so
+if it stops firing from a distance, look at the microphone level before the code.
+
+Three things about it are worth knowing before reading the code:
+
+- **The phrase is fixed at "Hi ESP" and is not configurable**, whatever step 1 of the Workflow below says. The prebuilt esp-sr libraries in the pinned core compile exactly one wake word; every other phrase in the sdkconfig is switched off. Changing it means rebuilding `esp32-arduino-libs`, and a phrase of our own means commissioning Espressif. See Decision 1 in `docs/PLAN-onboard-commands.md`.
+- **The button is unchanged and stays.** Both triggers run the same capture through `recordAndReportMic`. The button is what still works when recognition does not, and the two are told apart on the OLED so that a failure of one is visible rather than silent.
+- **The recording window is fixed at four seconds** rather than ended by silence. A wake word has no release edge, and a silence threshold on audio that sits at 4-10% of full scale is the kind that ends a recording mid-word. See `WAKE_RECORD_MS` in the sketch.
+
+**The known risk is the microphone, and it is not small.** ESP-SR's WakeNet is fussier
+than Whisper is, and Whisper already mis-hears this audio. The plan's Phase 1 existed to
+measure whether this microphone drives WakeNet at all, and it was skipped in favour of
+building the feature - so that measurement is now the first thing the box will report,
+rather than something known in advance. If "Hi ESP" needs shouting, gain and DC-offset
+correction on the mic feed are the prerequisite: `docs/PLAN-mic-bringup.md` Step 1.
 
 Three things are thin rather than done. The audio sits at roughly 4-10% of full scale -
 the DC offset is not stripped and no gain is applied, so the margin is narrower than it
@@ -1937,7 +2027,8 @@ behaves identically whether it arrives over the wire or the network.
 
 - A drawer has an exact display `label` (such as `1A`, `1B`, `1C`, or `3`) and a `row_number`.
 - The Pi keeps the latest observation for each detected tool type and drawer, including quantity, confidence, model version, and timestamp.
-- `GET /api/tools/lookup?query=needle-nose%20pliers` returns exact `drawers` for the OLED and a `rows` list collapsed by `row_number` for the matrix. When several drawers in one row match, the row takes the highest available confidence. The `tools/lookup` serial endpoint returns the same payload.
+- `GET /api/tools/lookup?query=needle-nose%20pliers` returns exact `drawers` for the OLED and a `rows` list collapsed by `row_number` for the matrix. When several drawers in one row match, the row takes the highest available confidence. `rows` counts only the toolbox the device is mounted on; `drawers` covers every toolbox. The `tools/lookup` serial endpoint returns the same payload.
+- The camera's `drawerLabel` (serial `vision/observe`) is matched within the device's toolbox only, since that is where the camera is.
 - `POST /api/vision/observations` accepts a `drawerId`, `modelVersion`, and `detections` array. Each detection contains `label`, `confidence` (0-100), and optional `quantity`.
 - Tool identity is by type, not by individual physical instance. Multiple detections of a type in one drawer are represented by quantity.
 

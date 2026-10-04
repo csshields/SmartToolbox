@@ -15,8 +15,9 @@
             </a>
             <nav class="nav">
                 <a href="/" aria-current="page">Dashboard</a>
-                <a href="/drawers">Drawers</a>
+                <a href="/toolboxes">Toolboxes</a>
                 <a href="/devices">Devices</a>
+                <a href="/ai-settings">AI Settings</a>
             </nav>
             <div class="health">
                 <span id="healthDot" class="health-dot"></span>
@@ -28,7 +29,7 @@
     <main class="page">
         <div class="page-head">
             <h1>Dashboard</h1>
-            <p>What is in each drawer, where the audio goes, and what the API has been asked lately. Add or remove drawers themselves on the <a href="/drawers">Drawers</a> page.</p>
+            <p>What is in each drawer and what the API has been asked lately. Add or remove drawers themselves on the <a href="/toolboxes">Toolboxes</a> page.</p>
         </div>
 
         <section class="stats">
@@ -45,7 +46,7 @@
                 <div id="statQuantity" class="stat-value">—</div>
             </div>
             <div class="stat">
-                <div class="stat-label">Drawers with a matrix row</div>
+                <div class="stat-label">Drawers with a light row</div>
                 <div id="statRows" class="stat-value">—</div>
             </div>
         </section>
@@ -53,45 +54,14 @@
         <section class="card">
             <div class="card-head">
                 <div>
-                    <h2>Toolbox Inventory</h2>
-                    <p>Track what belongs in each drawer and keep the list persistent on the device.</p>
+                    <label class="visually-hidden" for="inventoryToolbox">Toolbox</label>
+                    <select id="inventoryToolbox" class="card-title-select"></select>
+                    <p>Track what belongs in each drawer of this toolbox.</p>
                 </div>
             </div>
             <div class="card-body">
                 <div id="inventoryStatus" class="status" aria-live="polite"></div>
                 <div id="drawerGrid" class="drawer-grid"></div>
-            </div>
-        </section>
-
-        <section class="card">
-            <div class="card-head">
-                <div>
-                    <h2>Transcription Settings</h2>
-                    <p>Choose where push-to-talk audio is transcribed. API keys remain on the Pi and are never shown here.</p>
-                </div>
-            </div>
-            <div class="card-body">
-                <form id="transcriptionSettingsForm">
-                    <div class="form-grid">
-                        <div class="field">
-                            <label for="transcriptionProvider">Provider</label>
-                            <select id="transcriptionProvider" name="provider">
-                                <option value="nas_whisper">NAS Whisper</option>
-                                <option value="openai">OpenAI</option>
-                            </select>
-                        </div>
-                        <div id="nasUrlField" class="field">
-                            <label for="nasUrl">NAS Whisper URL</label>
-                            <input id="nasUrl" name="nasUrl" type="url" placeholder="http://192.168.50.10:9000" required>
-                        </div>
-                    </div>
-                    <p id="transcriptionHint" class="field-hint" style="margin-top: 14px;"></p>
-                    <div class="form-actions" style="margin-top: 18px;">
-                        <button class="btn btn-primary" type="submit">Save settings</button>
-                        <button id="testTranscriptionButton" class="btn btn-secondary" type="button">Test connection</button>
-                    </div>
-                </form>
-                <div id="transcriptionStatus" class="status" aria-live="polite"></div>
             </div>
         </section>
 
@@ -132,15 +102,12 @@
         const logsStatus = document.getElementById('logsStatus');
         const requestTable = document.getElementById('requestTable');
         const refreshLogsButton = document.getElementById('refreshLogsButton');
-        const transcriptionSettingsForm = document.getElementById('transcriptionSettingsForm');
-        const transcriptionProvider = document.getElementById('transcriptionProvider');
-        const nasUrl = document.getElementById('nasUrl');
-        const nasUrlField = document.getElementById('nasUrlField');
-        const transcriptionHint = document.getElementById('transcriptionHint');
-        const transcriptionStatus = document.getElementById('transcriptionStatus');
-        const testTranscriptionButton = document.getElementById('testTranscriptionButton');
+        const inventoryToolbox = document.getElementById('inventoryToolbox');
 
-        // A drawer's label and matrix row are only worth showing when the label
+        let toolboxes = [];
+        let drawers = [];
+
+        // A drawer's label and light row are only worth showing when the label
         // differs from the name, or to say plainly that no row is set.
         function drawerTagsMarkup(drawer) {
             const tags = [];
@@ -150,8 +117,8 @@
             }
 
             tags.push(drawer.rowNumber != null
-                ? `<span class="chip accent">Row ${escapeHtml(drawer.rowNumber)}</span>`
-                : '<span class="chip">No matrix row</span>');
+                ? `<span class="chip accent">Light row ${escapeHtml(drawer.rowNumber)}</span>`
+                : '<span class="chip">No light row</span>');
 
             return `<div class="drawer-tags">${tags.join('')}</div>`;
         }
@@ -162,34 +129,6 @@
             document.getElementById('statTools').textContent = tools.length;
             document.getElementById('statQuantity').textContent = tools.reduce((total, tool) => total + tool.quantity, 0);
             document.getElementById('statRows').textContent = drawers.filter((drawer) => drawer.rowNumber != null).length;
-        }
-
-        function updateTranscriptionFields(openaiApiKeyConfigured = false) {
-            const usesNas = transcriptionProvider.value === 'nas_whisper';
-            nasUrlField.hidden = !usesNas;
-            nasUrl.required = usesNas;
-            transcriptionHint.textContent = usesNas
-                ? 'The Pi sends audio to the configured NAS Whisper service.'
-                : openaiApiKeyConfigured
-                    ? 'OpenAI is configured on the Pi. Its API key is not exposed to this page.'
-                    : 'OpenAI requires OPENAI_API_KEY to be configured on the Pi.';
-        }
-
-        async function loadTranscriptionSettings() {
-            try {
-                const response = await fetch('/api/settings/transcription');
-                if (!response.ok) {
-                    throw new Error('Unable to load transcription settings.');
-                }
-
-                const data = await response.json();
-                const settings = data.settings;
-                transcriptionProvider.value = settings.provider;
-                nasUrl.value = settings.nasUrl;
-                updateTranscriptionFields(settings.openaiApiKeyConfigured);
-            } catch (error) {
-                setStatus(transcriptionStatus, error.message, 'error');
-            }
         }
 
         function renderLogs(logs) {
@@ -233,12 +172,35 @@
             `;
         }
 
+        // Keeps the viewed box across a reload of the list, falling back to the
+        // first - the device's box.
+        function renderToolboxPicker() {
+            const selected = inventoryToolbox.value;
+
+            inventoryToolbox.innerHTML = toolboxes.map((toolbox) => `
+                <option value="${toolbox.id}">${escapeHtml(toolbox.name)}${toolbox.hasDevice ? ' (device)' : ''}</option>
+            `).join('');
+
+            if (toolboxes.some((toolbox) => String(toolbox.id) === selected)) {
+                inventoryToolbox.value = selected;
+            }
+        }
+
+        // The grid and the stats above it both describe the box being viewed.
+        function renderInventory() {
+            const shown = drawers.filter((drawer) => String(drawer.toolboxId) === inventoryToolbox.value);
+            renderDrawers(shown);
+            renderStats(shown);
+        }
+
+        inventoryToolbox.addEventListener('change', renderInventory);
+
         function renderDrawers(drawers) {
             if (!drawers.length) {
                 drawerGrid.innerHTML = `
                     <div class="empty">
-                        <h3>No drawers yet</h3>
-                        <p>Create your first drawer on the <a href="/drawers">Drawers</a> page, then add tools to it here.</p>
+                        <h3>No drawers in this toolbox</h3>
+                        <p>Add one on the <a href="/toolboxes">Toolboxes</a> page, then add tools to it here.</p>
                     </div>
                 `;
                 return;
@@ -320,16 +282,18 @@
 
         async function loadInventory() {
             try {
-                const response = await fetch('/api/drawers');
+                // Toolboxes come from their own list rather than from the
+                // drawers, so an empty box can still be picked.
+                const [toolboxResponse, drawerResponse] = await Promise.all([fetch('/api/toolboxes'), fetch('/api/drawers')]);
 
-                if (!response.ok) {
+                if (!toolboxResponse.ok || !drawerResponse.ok) {
                     throw new Error('Unable to load inventory.');
                 }
 
-                const data = await response.json();
-                const drawers = data.drawers ?? [];
-                renderDrawers(drawers);
-                renderStats(drawers);
+                toolboxes = (await toolboxResponse.json()).toolboxes ?? [];
+                drawers = (await drawerResponse.json()).drawers ?? [];
+                renderToolboxPicker();
+                renderInventory();
             } catch (error) {
                 setStatus(inventoryStatus, error.message, 'error');
             }
@@ -389,56 +353,9 @@
             loadLogs();
         });
 
-        transcriptionProvider.addEventListener('change', () => updateTranscriptionFields());
-
-        transcriptionSettingsForm.addEventListener('submit', async (event) => {
-            event.preventDefault();
-            const payload = { provider: transcriptionProvider.value, nasUrl: nasUrl.value };
-
-            try {
-                const response = await fetch('/api/settings/transcription', {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-                const data = await response.json();
-                if (!response.ok) {
-                    throw new Error(data.error || 'Unable to save transcription settings.');
-                }
-
-                transcriptionProvider.value = data.settings.provider;
-                nasUrl.value = data.settings.nasUrl;
-                updateTranscriptionFields(data.settings.openaiApiKeyConfigured);
-                setStatus(transcriptionStatus, 'Transcription settings saved.', 'success');
-                await loadLogs();
-            } catch (error) {
-                setStatus(transcriptionStatus, error.message, 'error');
-            }
-        });
-
-        testTranscriptionButton.addEventListener('click', async () => {
-            try {
-                const response = await fetch('/api/settings/transcription/test', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ provider: transcriptionProvider.value, nasUrl: nasUrl.value })
-                });
-                const data = await response.json();
-                if (!response.ok) {
-                    throw new Error(data.error || 'Unable to test transcription provider.');
-                }
-
-                setStatus(transcriptionStatus, data.message, 'success');
-                await loadLogs();
-            } catch (error) {
-                setStatus(transcriptionStatus, error.message, 'error');
-            }
-        });
-
         startHealthIndicator();
         loadInventory();
         loadLogs();
-        loadTranscriptionSettings();
     </script>
 </body>
 </html>

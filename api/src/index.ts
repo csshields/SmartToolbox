@@ -2,7 +2,7 @@ import { serve } from "bun";
 import { join } from "node:path";
 import { pcmToWav, parseVoiceAudioBody, transcribeAudio } from "./voice";
 import { collectDeviceCommand, DEVICE_COMMANDS, isDeviceCommand, peekDeviceCommand, queueDeviceCommand } from "./deviceCommands";
-import { addToolToDrawer, assignToolToDrawer, createDrawer, deleteDrawer, deleteTool, findDrawerByLabel, findToolDrawer, findToolLocations, getDeviceStatus, getToolboxRowCount, getTranscriptionSettings, MAX_TOOLBOX_ROWS, listDrawers, listRequestLogs, recordDeviceContact, recordDrawerObservations, recordRequestLog, saveToolboxRowCount, saveTranscriptionSettings, ToolNameConflictError } from "./db";
+import { addToolToDrawer, assignToolToDrawer, createDrawer, createToolbox, deleteDrawer, deleteTool, deleteToolbox, DrawerNotFoundError, findDrawerByLabel, findToolDrawer, findToolLocations, getDeviceStatus, getTranscriptionSettings, listDrawers, listRequestLogs, listToolboxes, MAX_DRAWERS_PER_TOOLBOX, MAX_TOOLBOX_ROWS, recordDeviceContact, recordDrawerObservations, recordRequestLog, saveTranscriptionSettings, ToolboxNotFoundError, ToolNameConflictError, updateDrawer, updateToolbox } from "./db";
 import { parseSerialRequest, serialError, serialSuccess, serializeSerialResponse, type SerialRequest, type SerialResponse } from "./serialProtocol";
 import { startSerialTransport } from "./serialTransport";
 import { FIRMWARE_DIR, findLatestFirmware, isUpdateAvailable } from "./firmware";
@@ -309,8 +309,8 @@ async function serveStaticFile(pathname: string) {
     return new Response(file);
   }
 
-  // Extensionless routes get the matching page, so the nav can link /drawers
-  // rather than /drawers.html. Without this the fallback below would answer
+  // Extensionless routes get the matching page, so the nav can link /toolboxes
+  // rather than /toolboxes.html. Without this the fallback below would answer
   // every dashboard page with index.html.
   if (!relativePath.includes(".")) {
     const page = Bun.file(join(process.cwd(), "public", `${relativePath}.html`));
@@ -365,8 +365,8 @@ serve({
 
     if (pathname === '/api/drawers' && req.method === 'POST') {
       try {
-        const body = await readJsonBody(req) as { name?: string; label?: string; rowNumber?: number };
-        const drawer = createDrawer(body.name ?? '', { label: body.label, rowNumber: body.rowNumber });
+        const body = await readJsonBody(req) as { name?: string; label?: string; rowNumber?: number; toolboxId?: number };
+        const drawer = createDrawer(body.name ?? '', { label: body.label, rowNumber: body.rowNumber, toolboxId: body.toolboxId });
         const response = jsonResponse({ drawer }, { status: 201 });
         writeRequestLog({
           method: req.method,
@@ -378,7 +378,9 @@ serve({
         return response;
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unable to create drawer.';
-        const status = message === 'A drawer with that name already exists.' ? 409 : 400;
+        const status = error instanceof ToolboxNotFoundError
+          ? 404
+          : message === 'A drawer with that name already exists in this toolbox.' ? 409 : 400;
         writeRequestLog({
           method: req.method,
           path: pathname,
@@ -445,35 +447,105 @@ serve({
       return jsonResponse({ logs: listRequestLogs(requestedLimit) });
     }
 
-    if (pathname === '/api/settings/toolbox' && req.method === 'GET') {
+    if (pathname === '/api/toolboxes' && req.method === 'GET') {
       return jsonResponse({
-        settings: { rowCount: getToolboxRowCount(), maxRowCount: MAX_TOOLBOX_ROWS },
+        toolboxes: listToolboxes(),
+        maxRowCount: MAX_TOOLBOX_ROWS,
+        maxDrawerCount: MAX_DRAWERS_PER_TOOLBOX,
       });
     }
 
-    if (pathname === '/api/settings/toolbox' && req.method === 'PUT') {
+    if (pathname === '/api/toolboxes' && req.method === 'POST') {
       try {
-        const body = await readJsonBody(req) as { rowCount?: number };
-        const rowCount = saveToolboxRowCount(Number(body.rowCount));
+        const body = await readJsonBody(req) as { name?: string; drawerCount?: number; rowCount?: number };
+        const toolbox = createToolbox(body.name ?? '', {
+          drawerCount: Number(body.drawerCount ?? 0),
+          rowCount: body.rowCount === undefined ? undefined : Number(body.rowCount),
+        });
+
+        writeRequestLog({
+          method: req.method,
+          path: pathname,
+          statusCode: 201,
+          result: 'Toolbox created',
+          details: `${toolbox.name}, ${toolbox.drawerCount} drawer(s)`,
+        });
+        return jsonResponse({ toolbox }, { status: 201 });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unable to create toolbox.';
+        const status = message === 'A toolbox with that name already exists.' ? 409 : 400;
+        writeRequestLog({
+          method: req.method,
+          path: pathname,
+          statusCode: status,
+          result: 'Toolbox create failed',
+          details: message,
+        });
+        return errorResponse(message, status);
+      }
+    }
+
+    const toolboxMatch = pathname.match(/^\/api\/toolboxes\/(\d+)$/);
+
+    if (toolboxMatch && req.method === 'PUT') {
+      try {
+        const body = await readJsonBody(req) as { name?: string; rowCount?: number; hasDevice?: boolean };
+        const toolbox = updateToolbox(Number(toolboxMatch[1]), {
+          name: body.name,
+          rowCount: body.rowCount === undefined ? undefined : Number(body.rowCount),
+          hasDevice: body.hasDevice,
+        });
 
         writeRequestLog({
           method: req.method,
           path: pathname,
           statusCode: 200,
-          result: 'Toolbox rows saved',
-          details: String(rowCount),
+          result: 'Toolbox saved',
+          details: `${toolbox.name}, ${toolbox.rowCount} row(s)${toolbox.hasDevice ? ', holds the device' : ''}`,
         });
-        return jsonResponse({ settings: { rowCount, maxRowCount: MAX_TOOLBOX_ROWS } });
+        return jsonResponse({ toolbox });
       } catch (error) {
-        const message = error instanceof Error ? error.message : 'Unable to save toolbox rows.';
+        const message = error instanceof Error ? error.message : 'Unable to save toolbox.';
+        const status = error instanceof ToolboxNotFoundError
+          ? 404
+          : message === 'A toolbox with that name already exists.' ? 409 : 400;
         writeRequestLog({
           method: req.method,
           path: pathname,
-          statusCode: 400,
-          result: 'Toolbox rows save failed',
+          statusCode: status,
+          result: 'Toolbox save failed',
           details: message,
         });
-        return errorResponse(message);
+        return errorResponse(message, status);
+      }
+    }
+
+    if (toolboxMatch && req.method === 'DELETE') {
+      try {
+        const removed = deleteToolbox(Number(toolboxMatch[1]));
+
+        writeRequestLog({
+          method: req.method,
+          path: pathname,
+          statusCode: removed ? 200 : 404,
+          result: removed ? 'Toolbox deleted' : 'Toolbox not found',
+          details: removed ? 'drawers, tools and observations cascaded' : '',
+        });
+
+        return removed
+          ? jsonResponse({ success: true })
+          : jsonResponse({ error: 'Toolbox not found.' }, { status: 404 });
+      } catch (error) {
+        // The only refusal is the device's own box.
+        const message = error instanceof Error ? error.message : 'Unable to delete toolbox.';
+        writeRequestLog({
+          method: req.method,
+          path: pathname,
+          statusCode: 409,
+          result: 'Toolbox delete refused',
+          details: message,
+        });
+        return errorResponse(message, 409);
       }
     }
 
@@ -773,6 +845,40 @@ serve({
     }
 
     const deleteDrawerMatch = pathname.match(/^\/api\/drawers\/(\d+)$/);
+
+    if (deleteDrawerMatch && req.method === 'PUT') {
+      try {
+        const body = await readJsonBody(req) as { name?: string; label?: string; rowNumber?: number | null };
+        const drawer = updateDrawer(Number(deleteDrawerMatch[1]), {
+          name: body.name,
+          label: body.label,
+          rowNumber: body.rowNumber === undefined || body.rowNumber === null ? body.rowNumber : Number(body.rowNumber),
+        });
+
+        writeRequestLog({
+          method: req.method,
+          path: pathname,
+          drawerNumber: drawer.id,
+          statusCode: 200,
+          result: 'Drawer saved',
+          details: drawer.name,
+        });
+        return jsonResponse({ drawer });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : 'Unable to save drawer.';
+        const status = error instanceof DrawerNotFoundError
+          ? 404
+          : message === 'A drawer with that name already exists in this toolbox.' ? 409 : 400;
+        writeRequestLog({
+          method: req.method,
+          path: pathname,
+          statusCode: status,
+          result: 'Drawer save failed',
+          details: message,
+        });
+        return errorResponse(message, status);
+      }
+    }
 
     if (deleteDrawerMatch && req.method === 'DELETE') {
       const drawerId = Number(deleteDrawerMatch[1]);

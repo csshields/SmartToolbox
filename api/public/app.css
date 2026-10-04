@@ -1,4 +1,4 @@
-/* Shared by index.html and drawers.html. Plain CSS, no build step: the pages
+/* Shared by every page in api/public. Plain CSS, no build step: the pages
    link this file rather than each carrying its own copy of the design.
 
    Every colour in this file comes from a custom property defined in the two
@@ -667,4 +667,82 @@ td.nowrap {
     .health-text {
         display: none;
     }
+}
+
+/* ---------- Toolboxes ---------- */
+
+/* A small action beside a table cell's value. Styled like .btn-delete, minus
+   the danger colouring, which belongs only to destructive actions. */
+.btn-inline {
+    background: transparent;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 5px 11px;
+    font: inherit;
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--text-muted);
+    cursor: pointer;
+}
+
+.btn-inline:hover,
+.btn-inline:focus-visible {
+    color: var(--accent);
+    border-color: var(--accent);
+    background: var(--accent-soft);
+}
+
+.row-count-input {
+    width: 4.5rem;
+    padding: 5px 8px;
+    margin-right: 6px;
+}
+
+/* A toolbox picker standing in for a card's h2, so it reads as the title. */
+.card-title-select {
+    width: auto;
+    max-width: 100%;
+    padding: 4px 32px 4px 10px;
+    font-size: 1.08rem;
+    font-weight: 650;
+    letter-spacing: -0.01em;
+}
+
+tr.editing input {
+    padding: 5px 8px;
+}
+
+tr.editing input[type="text"] {
+    min-width: 9rem;
+}
+
+.visually-hidden {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+}
+
+/* .btn sets its own display, which would otherwise beat the hidden attribute. */
+.btn[hidden] {
+    display: none;
+}
+
+.card-head-actions {
+    display: flex;
+    flex-shrink: 0;
+    gap: 10px;
+    white-space: nowrap;
+}
+
+.inline-add-form {
+    margin-bottom: 22px;
+    padding-bottom: 22px;
+    border-bottom: 1px solid var(--border);
+}
+
+.inline-add-form > .field-hint {
+    margin-bottom: 14px;
 }

@@ -1,4 +1,4 @@
-// Helpers shared by index.html and drawers.html. Page-specific logic stays
+// Helpers shared by every page in api/public. Page-specific logic stays
 // inline in each page; only what both need lives here.
 
 function escapeHtml(value) {
