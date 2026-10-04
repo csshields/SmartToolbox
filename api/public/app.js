@@ -26,12 +26,25 @@ function startHealthIndicator() {
     }
 
     fetch('/health')
-        .then((response) => {
+        .then(async (response) => {
             if (!response.ok) {
                 throw new Error('unhealthy');
             }
             dot.className = 'health-dot online';
             label.textContent = 'API online';
+
+            // A server with no box attached has its own database, so changes
+            // made here never reach the toolbox. Say so on every page.
+            const { local } = await response.json();
+
+            if (local && !document.getElementById('localBadge')) {
+                const badge = document.createElement('span');
+                badge.id = 'localBadge';
+                badge.className = 'local-badge';
+                badge.textContent = 'Local copy';
+                badge.title = 'This server is running on a development machine with its own database. Changes made here do not reach the toolbox - use the Pi\'s address for that.';
+                dot.parentElement.prepend(badge);
+            }
         })
         .catch(() => {
             dot.className = 'health-dot offline';

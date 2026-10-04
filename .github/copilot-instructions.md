@@ -421,7 +421,7 @@ removed, and the API now has no runtime dependencies at all.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/health` | Liveness check. Returns `{"status":"Ok"}` |
+| GET | `/health` | Liveness check. Returns `{"status":"Ok","local":false}` - `local` is true when the server has no serial device, i.e. a development copy with its own database. Every page shows a "Local copy" badge in its header when it is |
 | GET | `/api/drawers` | All drawers with their tools and tool counts, plus `toolboxId` and `toolboxName`. The device's box first, then by row, with drawers that have no row last |
 | POST | `/api/drawers` | Create a drawer (`name`, optional `label`, `rowNumber`, `toolboxId` - default the device's box). 400 when `rowNumber` is outside that toolbox's row count, 404 for an unknown toolbox, 409 for a name already in that toolbox |
 | GET | `/api/toolboxes` | Every toolbox with `rowCount`, `hasDevice` and `drawerCount`, plus `maxRowCount` (8) and `maxDrawerCount` (50) |

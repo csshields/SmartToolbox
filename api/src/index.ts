@@ -342,8 +342,11 @@ serve({
     console.log(`[${new Date().toISOString()}] ${req.method} ${pathname}`);
 
     // Handle API routes
+    // `local` tells the dashboard this server can never reach the box - no
+    // serial device, which off the Pi means a development copy with its own
+    // database. The pages badge it, so nobody edits it thinking it is live.
     if (pathname === '/health') {
-      return jsonResponse({ status: 'Ok' });
+      return jsonResponse({ status: 'Ok', local: !serialDevice });
     }
 
     if (pathname === '/query' && req.method === 'POST') {
