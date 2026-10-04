@@ -28,6 +28,9 @@
     --danger: #b42318;
     --danger-soft: #fef3f2;
     --danger-border: #fecdca;
+    --warn: #93370d;
+    --warn-soft: #fffaeb;
+    --warn-border: #fedf89;
 
     --shadow-color: rgba(16, 24, 40, 0.06);
     --shadow-color-strong: rgba(16, 24, 40, 0.09);
@@ -58,6 +61,9 @@
         --danger: #fda29b;
         --danger-soft: #2d1513;
         --danger-border: #5a2320;
+        --warn: #fec84b;
+        --warn-soft: #2b2110;
+        --warn-border: #5c4512;
 
         --shadow-color: rgba(0, 0, 0, 0.35);
         --shadow-color-strong: rgba(0, 0, 0, 0.5);
@@ -171,6 +177,18 @@ body {
 
 .health-dot.offline {
     background: var(--danger);
+}
+
+/* Shown by app.js when the server has no box attached - a development copy. */
+.local-badge {
+    margin-right: 6px;
+    padding: 3px 10px;
+    border: 1px solid var(--warn-border);
+    border-radius: 999px;
+    background: var(--warn-soft);
+    color: var(--warn);
+    font-weight: 650;
+    cursor: help;
 }
 
 /* ---------- Page scaffolding ---------- */
