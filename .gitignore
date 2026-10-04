@@ -39,3 +39,6 @@ api/firmware/
 # Reference screenshots. Like the datasheets above, these stay out of the repo.
 docs/*.png
 docs/*.PNG
+
+# Python bytecode from the CAD generator.
+__pycache__/

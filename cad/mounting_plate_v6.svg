@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-18 -18 264.6 112.2" width="1100">
+<style>
+ .plate{fill:#8d8d8d;stroke:#3a3a3a;stroke-width:.6}
+ .m2{fill:#fff;stroke:#3a3a3a;stroke-width:.3}
+ .pi{fill:#fff;stroke:#1d6f42;stroke-width:.7}
+ .exp{fill:#fff;stroke:#b3261e;stroke-width:.8}
+ .out{fill:none;stroke-width:.5;stroke-dasharray:2 1.5}
+ text{font:4px system-ui,sans-serif;fill:#222}
+ .k{font:3.3px system-ui,sans-serif}
+</style>
+<rect width="228.6" height="76.2" class="plate"/>
+<rect x="4.5" y="5.6000000000000085" width="30" height="65" class="out" stroke="#1d6f42"/>
+<rect x="52.0" y="16.85" width="58.0" height="42.5" class="out" stroke="#b3261e"/>
+<rect x="34.0" y="0" width="20.0" height="76.2" class="out" stroke="#6d28d9"/>
+<rect x="174.0" y="0" width="20.0" height="76.2" class="out" stroke="#6d28d9"/>
+<rect x="119.0" y="54.2" width="50.0" height="22.0" class="out" stroke="#1a56db"/>
+<circle cx="8.00" cy="67.10" r="1.60" class="pi"/>
+<circle cx="8.00" cy="9.10" r="1.60" class="pi"/>
+<circle cx="31.00" cy="67.10" r="1.60" class="pi"/>
+<circle cx="31.00" cy="9.10" r="1.60" class="pi"/>
+<circle cx="56.00" cy="55.60" r="1.70" class="exp"/>
+<circle cx="56.00" cy="20.60" r="1.70" class="exp"/>
+<circle cx="106.00" cy="55.60" r="1.70" class="exp"/>
+<circle cx="106.00" cy="20.60" r="1.70" class="exp"/>
+<circle cx="124.00" cy="71.20" r="1.10" class="m2"/>
+<circle cx="124.00" cy="61.20" r="1.10" class="m2"/>
+<circle cx="124.00" cy="51.20" r="1.10" class="m2"/>
+<circle cx="124.00" cy="41.20" r="1.10" class="m2"/>
+<circle cx="124.00" cy="31.20" r="1.10" class="m2"/>
+<circle cx="124.00" cy="21.20" r="1.10" class="m2"/>
+<circle cx="124.00" cy="11.20" r="1.10" class="m2"/>
+<circle cx="134.00" cy="71.20" r="1.10" class="m2"/>
+<circle cx="134.00" cy="61.20" r="1.10" class="m2"/>
+<circle cx="134.00" cy="51.20" r="1.10" class="m2"/>
+<circle cx="134.00" cy="41.20" r="1.10" class="m2"/>
+<circle cx="134.00" cy="31.20" r="1.10" class="m2"/>
+<circle cx="134.00" cy="21.20" r="1.10" class="m2"/>
+<circle cx="134.00" cy="11.20" r="1.10" class="m2"/>
+<circle cx="144.00" cy="71.20" r="1.10" class="m2"/>
+<circle cx="144.00" cy="61.20" r="1.10" class="m2"/>
+<circle cx="144.00" cy="51.20" r="1.10" class="m2"/>
+<circle cx="144.00" cy="41.20" r="1.10" class="m2"/>
+<circle cx="144.00" cy="31.20" r="1.10" class="m2"/>
+<circle cx="144.00" cy="21.20" r="1.10" class="m2"/>
+<circle cx="144.00" cy="11.20" r="1.10" class="m2"/>
+<circle cx="154.00" cy="71.20" r="1.10" class="m2"/>
+<circle cx="154.00" cy="61.20" r="1.10" class="m2"/>
+<circle cx="154.00" cy="51.20" r="1.10" class="m2"/>
+<circle cx="154.00" cy="41.20" r="1.10" class="m2"/>
+<circle cx="154.00" cy="31.20" r="1.10" class="m2"/>
+<circle cx="154.00" cy="21.20" r="1.10" class="m2"/>
+<circle cx="154.00" cy="11.20" r="1.10" class="m2"/>
+<circle cx="164.00" cy="71.20" r="1.10" class="m2"/>
+<circle cx="164.00" cy="61.20" r="1.10" class="m2"/>
+<circle cx="164.00" cy="51.20" r="1.10" class="m2"/>
+<circle cx="164.00" cy="41.20" r="1.10" class="m2"/>
+<circle cx="164.00" cy="31.20" r="1.10" class="m2"/>
+<circle cx="164.00" cy="21.20" r="1.10" class="m2"/>
+<circle cx="164.00" cy="11.20" r="1.10" class="m2"/>
+<circle cx="174.00" cy="71.20" r="1.10" class="m2"/>
+<circle cx="174.00" cy="61.20" r="1.10" class="m2"/>
+<circle cx="174.00" cy="51.20" r="1.10" class="m2"/>
+<circle cx="174.00" cy="41.20" r="1.10" class="m2"/>
+<circle cx="174.00" cy="31.20" r="1.10" class="m2"/>
+<circle cx="174.00" cy="21.20" r="1.10" class="m2"/>
+<circle cx="174.00" cy="11.20" r="1.10" class="m2"/>
+<circle cx="184.00" cy="71.20" r="1.10" class="m2"/>
+<circle cx="184.00" cy="61.20" r="1.10" class="m2"/>
+<circle cx="184.00" cy="51.20" r="1.10" class="m2"/>
+<circle cx="184.00" cy="41.20" r="1.10" class="m2"/>
+<circle cx="184.00" cy="31.20" r="1.10" class="m2"/>
+<circle cx="184.00" cy="21.20" r="1.10" class="m2"/>
+<circle cx="184.00" cy="11.20" r="1.10" class="m2"/>
+<circle cx="194.00" cy="71.20" r="1.10" class="m2"/>
+<circle cx="194.00" cy="61.20" r="1.10" class="m2"/>
+<circle cx="204.00" cy="71.20" r="1.10" class="m2"/>
+<circle cx="204.00" cy="61.20" r="1.10" class="m2"/>
+<circle cx="214.00" cy="71.20" r="1.10" class="m2"/>
+<circle cx="214.00" cy="61.20" r="1.10" class="m2"/>
+<circle cx="224.00" cy="71.20" r="1.10" class="m2"/>
+<circle cx="224.00" cy="61.20" r="1.10" class="m2"/>
+<circle cx="44.00" cy="51.20" r="1.10" class="m2"/>
+<circle cx="44.00" cy="31.20" r="1.10" class="m2"/>
+<text x="114.3" y="-7" text-anchor="middle">back plate v6 - 228.6 x 76.2 x 3.0 mm - bottom edge at the foot of this drawing</text>
+<text x="0" y="84.2" class="k" fill="#1d6f42">Pi Zero, 3.2 mm, unchanged</text>
+<text x="54.0" y="84.2" class="k" fill="#b3261e">expansion base, 50 x 35 holes at 3.4, board 58.0 x 42.5</text>
+<text x="119.0" y="84.2" class="k" fill="#1a56db">PIR bracket, slides along the grid</text>
+<text x="34.0" y="89.2" class="k" fill="#6d28d9">magnet bars, on the back face</text>
+<text x="228.6" y="89.2" text-anchor="end" class="k">grid 7 columns to 184; bottom two rows on to 224</text>
+</svg>

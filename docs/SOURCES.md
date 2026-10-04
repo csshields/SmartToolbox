@@ -2,7 +2,7 @@
 title: Vendor Documentation Sources
 scope: index of external datasheets and reference pages
 status: active
-updated: 2026-09-02
+updated: 2026-09-06
 ---
 
 # Vendor Documentation Sources
@@ -47,7 +47,21 @@ as strapping pins) and cross-reference it against Seeed's D-numbering.
 | Grove Vision AI V2 - connection methods | Confirms the module is an ordinary I2C peripheral at 0x62 and can be cabled to a Grove port rather than stacked on the expansion header | `https://wiki.seeedstudio.com/grove_vision_ai_v2a/` | 2026-09-02 | - (web) |
 | Adafruit NeoPixel (Arduino library) | WS2813 timing on the ESP32's RMT peripheral. Pinned at 1.15.5 in `sketch.yaml` | `https://github.com/adafruit/Adafruit_NeoPixel` | 2026-09-02 | - (web) |
 | SmartToolbox wiring photograph | The box as rebuilt on 2026-09-02, with every Grove port populated | taken locally | 2026-09-02 | `wiring-2026-09-02.jpg` |
+| Grove Base Hat for Raspberry Pi Zero (SKU 103030276) | Grove port list, BCM pin mapping (digital 5/16, PWM 12/13, UART 14/15), the 3.3V-only port voltage, and the onboard 12-bit ADC read over I2C. **Lists three analog ports where the product page advertises four** | `https://wiki.seeedstudio.com/Grove_Base_Hat_for_Raspberry_Pi_Zero/` | 2026-09-06 | - (web) |
+| Grove Base Hat for Pi Zero - product page | The SKU, and the advertised port count that disagrees with the wiki. Also the claim that this revision is the MM32 chip, which decides whether the ADC answers at 0x04 or 0x08 | `https://www.seeedstudio.com/Grove-Base-Hat-for-Raspberry-Pi-Zero.html` | 2026-09-06 | - (web) |
+| Grove System - size of Grove | The five standard Grove board footprints: 20x20, 20x40, 20x60, 40x40 and 40x60 mm. **The page itself gives no hole coordinates** - those are in the mechanical-drawing ZIP it links. The PIR is the 20x40 size, but its hole positions come from the Eagle file below, not from here | `https://wiki.seeedstudio.com/Grove_System/#size-of-grove` | 2026-09-06 | - (web) |
+| Grove PIR Motion Sensor v1.2 - Eagle files | Board outline and the three 2.2 mm mounting holes, read from the `.brd`: centred on the board's edges at (-10, -10), (-10, 10) and (20, 0) mm from the board centre, x towards the sensor end. The LHI778 element is at (13.3, 0) | `https://files.seeedstudio.com/wiki/Grove_PIR_Motion_Sensor/res/Grove%20PIR%20Motion%20Sensor_v1_2.zip`, linked from `https://wiki.seeedstudio.com/Grove-PIR_Motion_Sensor/` | 2026-09-27 | - (web) |
 | OV5647 camera sensor | Resolution modes, MIPI interface (used via the Vision AI V2, not driven directly) | vendor datasheet — source not yet identified | not verified | — |
+
+## Printed parts
+
+Models printed for this box that were drawn by someone else. Same rule as the
+datasheets: the files stay out of the repo and this table says where to get them
+again. Parts drawn for this project live in `cad/` instead, with their generator.
+
+| Model | Covers | URL | Checked | Local file |
+|---|---|---|---|---|
+| Foldable Holder for Grove Vision AI V2 Kit, by seeedstudio | The enclosure the Vision AI V2 and its OV5647 sit in. Three STLs: a 49.0 x 31.2 x 7.5 mm base, a cap that tilts on a screwed hinge, and a camera holder. Printed and in use. **Licensed CC BY-SA**, so any part that merges this geometry inherits that licence and its attribution requirement - one reason to bracket the enclosure rather than build it into the plate | `https://www.thingiverse.com/thing:6989378` | 2026-09-06, files in hand | `~/Downloads/3D Printed Foldable Holder for Grove Vision AI Module V2 Kit - 6989378/` |
 
 ## Examples
 https://github.com/HimaxWiseEyePlus/Seeed_Grove_Vision_AI_Module_V2
