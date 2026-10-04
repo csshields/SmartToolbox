@@ -121,4 +121,5 @@ word, can only be installed over USB.
 
 ## License
 
-[Add your license here]
+[MIT](LICENSE). The vendored Grove matrix driver in `firmware/smarttoolbox/` keeps
+Seeed's own MIT licence, alongside it.
