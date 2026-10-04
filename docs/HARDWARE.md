@@ -13,8 +13,10 @@ repeating any of this. The same status convention applies - see Document Convent
 the spec - and note the spelling difference it records: a section carries
 `**Status: ...**`, a component entry carries `**Status**: ...` with the asterisks closed.
 
-`docs/wiring-2026-09-02.jpg` is a photograph of the box as wired below. When the words
-and the photograph disagree, the photograph is older.
+Photographs of the box live in `docs/photos/`, dated, with an index there.
+`wiring-2026-09-02.jpg` shows it as wired below; `box-2026-10-04.jpg` is the latest
+build, mounted on the toolbox. When the words and a photograph disagree, check the
+photograph's date before trusting either.
 
 Firmware traps that are about *behaviour* rather than parts - touch sensor v2 semantics,
 the first ten `touchRead` calls after boot, upload settings - live in
