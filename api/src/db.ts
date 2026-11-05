@@ -704,7 +704,9 @@ const upsertConfigValue = database.query(`
 
 const defaultTranscriptionSettings: TranscriptionSettings = {
   provider: "nas_whisper",
-  nasUrl: "http://192.168.50.10:9000",
+  // From the environment so the NAS's address stays out of a public repo. A URL
+  // saved on the AI Settings page overrides it.
+  nasUrl: Bun.env.NAS_WHISPER_URL ?? "http://nas.local:9000",
 };
 
 function normalizeName(value: string, fieldName: string) {

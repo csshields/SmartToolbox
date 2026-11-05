@@ -120,7 +120,7 @@ being on the network.
      is the default; OpenAI is a fallback for when the NAS is down or its accuracy is
      not good enough. Whisper does not run on the Pi Zero 2 itself - 512MB is not
      enough RAM.
-   - Default: `http://192.168.50.10:9000` (Swagger docs at `/docs`)
+   - Default: `NAS_WHISPER_URL` from the environment (Swagger docs at `/docs` on the service)
    - Stored in the `config` table as `transcription_provider` (`nas_whisper` |
      `openai`) and `transcription_nas_url`, so both can change without a redeploy.
      Configurable from the dashboard's Transcription Settings panel.

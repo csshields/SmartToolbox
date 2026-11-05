@@ -549,6 +549,7 @@ redeploy and can be edited from the dashboard.
 | `PORT` | `3000` | `index.ts` |
 | `SERIAL_DEVICE` | `/dev/ttyACM0` on Linux, otherwise unset | `index.ts`. When unset, the serial listener does not start - this is why the server runs fine on Windows with no XIAO attached |
 | `OPENAI_API_KEY` | unset | Optional OpenAI transcription fallback |
+| `NAS_WHISPER_URL` | `http://nas.local:9000` | Default NAS Whisper address, until one is saved on the AI Settings page (the `transcription_nas_url` config key wins). Kept out of the code so the address is not in the public repo |
 | `DEVICE_KEY` | unset | Shared secret the XIAO sends as `X-Device-Key` on OTA update checks. **Fails closed**: while unset, `/api/firmware/latest` returns 503 and serves nothing. Must match `SECRET_DEVICE_KEY` in `firmware/arduino_secrets.h` |
 | `NODE_ENV` | unset | Set to `production` by the systemd unit |
 

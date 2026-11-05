@@ -74,8 +74,9 @@ the `voice/audio` serial endpoint. Provider selection, persistence and the reach
 test were already there (`/api/settings/transcription`); what was missing was an audio
 source, and the microphone now provides one.
 
-- **Default provider**: self-hosted Whisper on the NAS, `http://192.168.50.10:9000`
-  (Swagger docs at `/docs`). Stored in `config` as `transcription_nas_url`.
+- **Default provider**: self-hosted Whisper on the NAS, at `NAS_WHISPER_URL` from the
+  Pi's `.env` (Swagger docs at `/docs`). A URL saved on the AI Settings page is stored
+  in `config` as `transcription_nas_url` and wins over it.
 - **Fallback provider**: OpenAI, selected by setting `transcription_provider` to
   `openai`. Requires `OPENAI_API_KEY` in the environment.
 - **Reachability test**: `nas_whisper` probes `<nasUrl>/docs`; `openai` probes
