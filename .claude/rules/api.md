@@ -494,23 +494,31 @@ journald on the Pi; nothing in this repo rotates them.
 
 ## Error Handling
 
-All errors should return consistent format:
+**Status: Implemented** - `errorResponse` in `api/src/index.ts`.
 
-```json
-{
-  "success": false,
-  "error": "Error message",
-  "code": "ERROR_CODE"
-}
-```
+An HTTP error is `{"error": "Human-readable message."}` and nothing else - no `success`
+flag and no error code. An earlier version of this section specified both, and no route
+ever returned them. The serial protocol is different: its errors do carry a code (see
+`serial-protocol.md`).
 
-**HTTP Status Codes:**
-- 200: Success
-- 201: Created
-- 400: Bad Request
-- 401: Unauthorized
-- 404: Not Found
-- 500: Internal Server Error
+| Status | Used for |
+|---|---|
+| 200 | Success, including a lookup that found nothing (`{"found": false, ...}`) |
+| 201 | Created - toolbox, drawer, tool, observations; also a tool moved by `/api/tools/assign` |
+| 202 | A device command queued, not yet collected |
+| 204 | `/api/firmware/latest` when the device is already current |
+| 400 | Invalid input - the default for any error a route catches |
+| 401 | Bad `X-Device-Key` |
+| 404 | Unknown id, or an `/api/` path no route matches |
+| 409 | A name already taken, or deleting the device's toolbox |
+| 503 | `DEVICE_KEY` not configured |
+
+**Most routes choose 409 or 404 by matching the thrown error's message text** - for
+example `message === 'A toolbox with that name already exists.' ? 409 : 400`. Rewording
+an error message in `db.ts` therefore silently changes the status code to 400.
+
+There is no top-level error handler on `serve()`. An exception a route does not catch
+falls through to Bun's default 500 response, which is not JSON.
 
 ## Configuration
 
