@@ -5,12 +5,15 @@ scope: implementation plan, written 2026-09-02, restructured the same day when
   rather than a switch, and this is the capture trigger and the addressing that turns a
   detection into a row. The movement log itself already has a plan; this is the half
   that feeds it.
-status: PLANNED - nothing built, and restructured 2026-09-02 around having no per-drawer
+status: PLANNED - only storage built: `devices.drawer_active` and its two timestamps,
+  with `recordDrawerActivity` in `db.ts`, which nothing calls yet. Restructured 2026-09-02 around having no per-drawer
   sensor. **There is no longer a half of this that is independent of the SenseCraft
   model** blocking it since 2026-08-27 - the camera is now the only thing that can say
   which drawer is open, so it gates drawer identity and tool detection alike. Phase 0 is
   a photography session, not code, and it can still kill the plan. It now has to answer
   a second question first: can the camera tell which drawer is open at all.
+  **Phase 0 started 2026-10-04** - see its findings below. The stock 62-degree lens is
+  too narrow; a wider lens, or a camera on the Pi instead, is undecided.
 ---
 
 # Plan: the box knows which drawer is open, and what changed while it was
@@ -212,6 +215,60 @@ now fatal rather than partial: with no switch there is no Phase 1 left to keep f
 own sake.
 
 Do this before writing a line of firmware.
+
+#### Findings, 2026-10-04 - first look through the camera
+
+Run on the Husky two-drawer chest, not the six-row Craftsman this plan was written
+against. The Vision AI V2 was unplugged from the XIAO and connected to a laptop by its
+own USB-C, and SenseCraft AI's browser workspace showed the live preview - **no
+SenseCraft account was needed** for the preview.
+
+- **The camera can see into an open drawer, and the tools are recognisable.** Plier jaws
+  were clear at close range, with the drawer interior lit only by the room.
+- **The lens is far too narrow.** The OV5647 is the stock ~62-degree one from the kit.
+  From the cradle it saw one tool head. Covering one *small* Husky drawer needed the
+  camera held **about a foot above it, centred** - and the Craftsman's drawers are wider.
+  Width seen is roughly equal to height at this angle, so the Craftsman would need a
+  mast about two feet tall, which would be in the way of using the chest.
+- **Stacked drawers limit the view to what is pulled out.** From above, the camera sees
+  only the part of a drawer that sticks out past the chest's front; the drawers above
+  hide the rest. So the camera has to sit forward of the chest, looking down where the
+  drawers come out, rather than at the back of the lid. A half-open drawer shows half
+  its contents, which training will have to allow for.
+- **Speed is not a constraint.** The module's preloaded model ran at about 48 ms per
+  frame (6 preprocess, 48 inference) and reported no boxes, as expected with no model of
+  our own.
+- **Light is a likely problem.** The drawer interior was dim in a lit room; detection
+  degrades sharply in shadow, so a light aimed into the drawer may be needed.
+
+**Options on the table, not decided:**
+
+- **A. Keep the Vision AI V2, with a wider lens.** The candidate is a generic OV5647 with
+  a 160-degree fisheye lens (DORHEA, about $17 - the same sensor, and the
+  "OV5647-160" type is on Seeed's supported list, though this exact board is not
+  Seeed's). At that angle a short forward arm a few inches up should cover a drawer.
+  Still needs a trained SenseCraft model, and the training photos must come through the
+  same lens, since fisheye distortion changes how tools look near the edges.
+- **B. A camera on the Pi, and a general vision model instead of a trained one.** The Pi
+  Zero 2's camera connector is unused. On a drawer event the Pi takes a full-resolution
+  photo and sends it, with the list of known tools, to a vision model - the same shape as
+  voice going to Whisper. No training, and the photos are kept as a record. Costs a
+  network round trip of seconds rather than milliseconds, and possibly money per photo.
+  The same fisheye OV5647 comes with a Pi Zero cable, so one camera can try both.
+
+The next step is the same either way: fit the 160-degree camera, repeat the height test
+at roughly 3, 6 and 9 inches over the front of the drawers, then size a forward arm.
+
+**Settled the same day: the PIR cannot see a drawer.** It responds to moving warm
+things, so it fires on the hand and arm, not on the drawer moving, and it stays quiet
+for a drawer left open. Gloves and a hot garage both weaken it. That is consistent with
+this plan's use of it as a presence trigger, not as drawer state.
+
+**Worth revisiting: reed switches.** They were withdrawn above for the per-drawer wiring
+on an eight-drawer box. The Husky has two drawers, and the Pi's 40-pin header is free and
+already has `gpioget`/`gpiomon`, so two switches would wire straight to it with no
+expander. The camera stays the goal; a switch would only supply the exact open and close
+moments if the camera's stillness rule proves too loose.
 
 ### Phase 1 - the firmware can talk to the camera at all
 

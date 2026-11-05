@@ -61,7 +61,7 @@ lives in the section named beside it.
 | Push-to-talk button | Verified | The base's own button on D1, shipped in 0.24.0. Hold-to-talk confirmed end to end on 2026-09-02: press, speak, release, drawer on the screen and the row on the strip |
 | Microphone (PDM, on the Sense board) | Verified for Whisper and the wake word | Reported ready on the 0.24.0 boot and carries speech to Whisper. Since 0.28.0 it also feeds ESP-SR, and **"Hi ESP" fired on hardware on 2026-10-04.** **Known thin:** the audio sits at 4-10% of full scale (that capture's rms was 52) - enough for WakeNet up close, and the first suspect if it stops firing from further away. Detail and the DC-bias trap are under Microphone |
 | PIR motion sensor | Wired, no firmware | On the base's A0/D0 Grove port, so its signal is GPIO1. **Nothing in the firmware reads it.** No longer blocked, merely unwritten |
-| Grove Vision AI V2 link | Cabled, unused | Moved from the expansion header to a Grove I2C cable. No firmware has ever talked to it - there is no SSCMA include in the sketch and no such library in `sketch.yaml` |
+| Grove Vision AI V2 link | Cabled, unused; camera verified over USB | Moved from the expansion header to a Grove I2C cable. No firmware has ever talked to it - there is no SSCMA include in the sketch and no such library in `sketch.yaml`. On 2026-10-04 its camera gave a live preview in SenseCraft over the module's own USB-C, so the module and camera work; the stock 62-degree lens is too narrow for drawers |
 | SenseCraft model | Not deployed | **Blocks Feature 3.** Nothing to detect until a model is trained and flashed |
 | Camera (OV2640, on the Sense board) | Not initialised | Physically fitted and facing up. The sketch carries no camera driver. Tool identification is the Vision AI V2's job, not this camera's |
 | Grove I2C Hub | Removed | Out of the box. The base's two I2C ports made it unnecessary |
@@ -226,10 +226,14 @@ I2S.begin(I2S_MODE_PDM_RX, 16000, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO);
 ### Vision: Grove Vision AI Module (V2) + OV5647 Camera
 
 - **Resolution**: OV5647, up to 5MP (2592x1944)
+- **Lens**: the kit's stock lens, about **62 degrees**. Too narrow for drawers: on
+  2026-10-04 it needed to be held about a foot above one small Husky drawer to see all of
+  it. A 160-degree fisheye OV5647 is the candidate replacement, undecided - see Phase 0's
+  findings in `docs/PLAN-drawer-activity.md`.
 - **Connection**: Grove I2C cable to the base, address 0x62.
 - **Identification Method (default)**: on-device inference on the module's WiseEye2 MCU via a model deployed through **SenseCraft AI** (no-code; supports MobileNet V1/V2, EfficientNet-lite, YOLOv5/v8). Only the label and confidence are read - Seeed's hardware cannot serve a live frame and results over the link at the same time. A cloud vision model remains a fallback, but it needs raw frames pulled a different way: the module's own SD card or its Type-C port.
 - **Enclosure**: a printed three-part holder - base, tilting cap, camera holder - taken from Thingiverse rather than drawn here. Source and licence are under Printed parts in `docs/SOURCES.md`; it is CC BY-SA, so merging its geometry into a part of ours would carry that licence across. **It is superglued to the back plate.** The plate is on its sixth revision and will be reprinted again, and every reprint means breaking that bond or losing the enclosure, so a cradle bolting to the plate's 10 mm grid is the better fixing - see `cad/`.
-- **Status**: **connected and unused.** No model is deployed, and no firmware in this repo has ever addressed the module. Both have to change before Feature 3 means anything.
+- **Status**: **connected, unused by the firmware, and seen working on 2026-10-04.** With the Grove cable unplugged and its own USB-C in a laptop, SenseCraft AI's browser workspace showed a live preview (no account needed) and ran the module's preloaded model at about 48 ms a frame. No model of ours is deployed, and no firmware in this repo has ever addressed the module. Both have to change before Feature 3 means anything.
 
 ### Camera (OV2640, on board)
 
