@@ -47,6 +47,11 @@ export type DeviceRecord = {
   bootCount: number;
   uptimeMs: number | null;
   firstSeen: string;
+  // From the PIR under the matrix, which looks down at the drawers: someone is
+  // working at them. It cannot say which drawer - see PLAN-drawer-activity.md.
+  drawerActive: boolean;
+  drawerActivityStartedAt: string | null;
+  drawerActivityEndedAt: string | null;
 };
 
 export type ToolLocation = {
@@ -206,7 +211,10 @@ database.exec(`
     last_seen TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     boot_count INTEGER NOT NULL DEFAULT 0,
     uptime_ms INTEGER,
-    first_seen TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    first_seen TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    drawer_active INTEGER NOT NULL DEFAULT 0,
+    drawer_activity_started_at TEXT,
+    drawer_activity_ended_at TEXT
   );
 
   CREATE UNIQUE INDEX IF NOT EXISTS idx_tools_drawer_name ON tools(drawer_id, name COLLATE NOCASE);
@@ -218,6 +226,12 @@ const deviceColumns = database.query("PRAGMA table_info(devices)").all() as Arra
 
 if (deviceColumns.length > 0 && !deviceColumns.some((column) => column.name === "uptime_ms")) {
   database.exec("ALTER TABLE devices ADD COLUMN uptime_ms INTEGER");
+}
+
+if (deviceColumns.length > 0 && !deviceColumns.some((column) => column.name === "drawer_active")) {
+  database.exec("ALTER TABLE devices ADD COLUMN drawer_active INTEGER NOT NULL DEFAULT 0");
+  database.exec("ALTER TABLE devices ADD COLUMN drawer_activity_started_at TEXT");
+  database.exec("ALTER TABLE devices ADD COLUMN drawer_activity_ended_at TEXT");
 }
 
 const observationColumns = database.query("PRAGMA table_info(drawer_observations)").all() as Array<{ name: string }>;
@@ -497,9 +511,20 @@ const selectDevice = database.query(`
          last_seen AS lastSeen,
          boot_count AS bootCount,
          uptime_ms AS uptimeMs,
-         first_seen AS firstSeen
+         first_seen AS firstSeen,
+         drawer_active AS drawerActive,
+         drawer_activity_started_at AS drawerActivityStartedAt,
+         drawer_activity_ended_at AS drawerActivityEndedAt
   FROM devices
   WHERE id = ?1
+`);
+
+const startDrawerActivity = database.query(`
+  UPDATE devices SET drawer_active = 1, drawer_activity_started_at = CURRENT_TIMESTAMP WHERE id = ?1
+`);
+
+const endDrawerActivity = database.query(`
+  UPDATE devices SET drawer_active = 0, drawer_activity_ended_at = CURRENT_TIMESTAMP WHERE id = ?1
 `);
 
 const deleteDrawerById = database.query(`
@@ -1498,5 +1523,15 @@ export function recordDeviceContact(contact: {
 }
 
 export function getDeviceStatus(): DeviceRecord | null {
-  return selectDevice.get(DEVICE_ID) as DeviceRecord | null;
+  const row = selectDevice.get(DEVICE_ID) as (Omit<DeviceRecord, "drawerActive"> & { drawerActive: number }) | null;
+  return row ? { ...row, drawerActive: row.drawerActive === 1 } : null;
+}
+
+// The device reports the edges, not the level: activity starts on the first
+// motion and ends once the PIR has been quiet for a while, so a person working
+// at the drawers is one span rather than a flicker of retriggers. Returns false
+// when there is no device row to update, which handleSerialLine rules out by
+// recording the contact first.
+export function recordDrawerActivity(active: boolean) {
+  return (active ? startDrawerActivity : endDrawerActivity).run(DEVICE_ID).changes > 0;
 }

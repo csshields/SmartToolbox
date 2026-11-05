@@ -127,7 +127,13 @@ CREATE TABLE IF NOT EXISTS devices (
   last_endpoint TEXT NOT NULL DEFAULT '',
   last_seen TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   boot_count INTEGER NOT NULL DEFAULT 0,
-  first_seen TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  uptime_ms INTEGER,
+  first_seen TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  -- Someone is working at the drawers, from the PIR. Edges, not level: set on the
+  -- first motion, cleared once it has been quiet. Cannot say which drawer.
+  drawer_active INTEGER NOT NULL DEFAULT 0,
+  drawer_activity_started_at TEXT,
+  drawer_activity_ended_at TEXT
 );
 
 -- Mutable runtime settings. Deploy-time settings stay in the environment.
@@ -148,6 +154,10 @@ CREATE INDEX IF NOT EXISTS idx_observations_tool_drawer
   ON drawer_observations(tool_name, drawer_id, id DESC);
 ```
 
+`recordDrawerActivity` writes the drawer-activity columns and `GET /api/devices` returns
+them, but **nothing calls it yet** - there is no serial endpoint for the PIR. See
+`docs/PLAN-drawer-activity.md`.
+
 Config keys currently in use: `transcription_provider`, `transcription_nas_url`.
 `toolbox_row_count` is legacy: read once, to seed the first toolbox's `row_count` on
 upgrade, and never written again.
@@ -156,7 +166,8 @@ upgrade, and never written again.
 
 There is no migration framework. `db.ts` runs `CREATE TABLE IF NOT EXISTS`, then
 patches older databases in place by checking `PRAGMA table_info` and issuing
-`ALTER TABLE ... ADD COLUMN` for `label` and `row_number`. Follow that pattern when
+`ALTER TABLE ... ADD COLUMN` - `label` and `row_number` on `drawers`, `uptime_ms` and
+the three `drawer_activity` columns on `devices`. Follow that pattern when
 adding a column: additive, idempotent, safe to run on every boot.
 
 **Toolboxes needed a table rebuild**, the one exception. The old `drawers.name UNIQUE`
