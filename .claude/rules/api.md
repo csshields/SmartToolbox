@@ -545,7 +545,14 @@ were specified here previously but were never read by any code.
 
 ## Testing
 
-- [ ] Unit tests for database operations
-- [ ] Integration tests for API endpoints
-- [ ] Load testing for concurrent requests
-- [ ] Test database migrations
+**Status: Partial** - `bun test` from `api/`. The data layer is covered; the HTTP layer
+is not.
+
+- [x] Unit tests for database operations - `api/src/db.test.ts`
+- [x] Database migrations - `db.test.ts` builds an old-schema database and migrates it
+- [x] Serial framing and transport, device commands, firmware serving, voice - one
+      `*.test.ts` beside each module in `api/src/`
+- [ ] Integration tests for API endpoints - nothing starts the server or calls a route,
+      so status codes, request parsing and the 404 fallthrough in `index.ts` are untested
+
+Load testing is deliberately not planned: one device and one person on a home LAN.
