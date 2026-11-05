@@ -1,13 +1,15 @@
 ---
 name: spec-status
-description: Audit and correct the Status tags in .github/copilot-instructions.md, the component entries and bring-up table in docs/HARDWARE.md, and the status frontmatter in docs/PLAN-*.md against what the code actually does. Use after implementing, changing, or removing a feature, before committing a behaviour change, or when asked whether a documented endpoint, table, or command really exists.
+description: Audit and correct the Status tags in CLAUDE.md and .claude/rules/*.md, the component entries and bring-up table in docs/HARDWARE.md, and the status frontmatter in docs/PLAN-*.md against what the code actually does. Use after implementing, changing, or removing a feature, before committing a behaviour change, or when asked whether a documented endpoint, table, or command really exists.
 allowed-tools: [Read, Glob, Grep, Bash, Edit]
 ---
 
 # Keeping the status tags honest
 
-`.github/copilot-instructions.md` mixes what is built with what is only designed. Every
-major section carries a status line so the difference is never ambiguous:
+The spec lives in `CLAUDE.md` and `.claude/rules/*.md` (`api.md`, `dashboard.md`,
+`serial-protocol.md`, `firmware.md`, `features.md`). It mixes what is built with what is
+only designed, so every major section carries a status line to keep the difference
+unambiguous:
 
 - **Status: Implemented** - the code exists and runs. File references point at it.
 - **Status: Partial** - some of it runs; the section says which part.
@@ -24,6 +26,10 @@ component plus the Bring-Up Status table. It is a separate file as of 2026-09-02
 because the hardware facts used to be spread across four sections of the spec and had
 started contradicting each other.
 
+Until 2026-11-04 the spec was one file, `.github/copilot-instructions.md`. Plans and
+commit messages from before then refer to it by that name and by its section titles;
+the sections kept their titles when they moved.
+
 `docs/PLAN-*.md` carry the same idea as a `status:` field in their YAML frontmatter,
 written as prose rather than one of four values.
 
@@ -38,7 +44,7 @@ failure this convention is meant to prevent.
 Find every tag and check it against reality:
 
 ```bash
-grep -n '\*\*Status:'   .github/copilot-instructions.md docs/HARDWARE.md   # section tags
+grep -n '\*\*Status:'   CLAUDE.md .claude/rules/*.md docs/HARDWARE.md      # section tags
 grep -n '\*\*Status\*\*:' docs/HARDWARE.md                                 # component entries - different spelling
 grep -n '^status:' docs/PLAN-*.md docs/HARDWARE.md
 ```
@@ -57,10 +63,11 @@ initialised by this project's firmware" three versions after voice lookup shippe
   too - it is part of the claim. Each row summarises a component section further down
   that file; when a row changes, check that section has not been left saying the
   opposite. That is the exact failure the split was meant to end.
-- **The API Project and Firmware Project bullets** - runtime, framework, board. These
-  read as fixed facts and drift silently; `**Framework**: Hono` outlived the dependency.
-- **The two Development Priorities checklists**, which duplicate each other in wording
-  and membership and must both be updated for any change.
+- **The API Project and Firmware Project bullets** under Architecture in `CLAUDE.md` -
+  runtime, framework, board. These read as fixed facts and drift silently;
+  `**Framework**: Hono` outlived the dependency.
+- **The Roadmap checklist in `CLAUDE.md`**, and the **Libraries Required** and
+  **Testing** checklists in the rules files.
 
 For each one that the current work touches, confirm the claim rather than assuming it:
 
@@ -71,9 +78,10 @@ For each one that the current work touches, confirm the claim rather than assumi
 - A firmware behaviour is real if it is in `firmware/smarttoolbox/smarttoolbox.ino`,
   and *shipped* only if a release carrying it went to the device.
 
-Grep for the name before believing the prose. The spec is about 2,000 lines, the
-hardware doc another 350, and their planned sections are written as confidently as their
-implemented ones.
+Grep for the name before believing the prose. The spec is about 2,000 lines across the
+rules files, the hardware doc another 350, and their planned sections are written as
+confidently as their implemented ones. `features.md` is where most of the Planned design
+lives.
 
 ## Writing a good tag
 

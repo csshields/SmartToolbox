@@ -16,7 +16,7 @@ the URL was last confirmed. Download what you need into `docs/` and it stays loc
 Datasheets are large, binary, and never change; committing them once sets a precedent
 for the Vision AI V2, SSD1315, OV5647, and every part added later. A URL plus a
 checked-on date versions cleanly and matches the citation style already used in
-`.github/instructions/xiao-esp32s3-firmware.instructions.md`.
+`.claude/rules/firmware.md`.
 
 ## Chip and board
 
@@ -27,7 +27,7 @@ checked-on date versions cleanly and matches the citation style already used in
 
 **These two are not interchangeable.** The Espressif datasheet describes the chip; the
 Seeed wiki describes the board's silkscreen labels and wiring. Firmware guidance in
-`.github/instructions/xiao-esp32s3-firmware.instructions.md` depends on the board doc.
+`.claude/rules/firmware.md` depends on the board doc.
 Use the datasheet when you need per-GPIO capability (which pins do touch, I2C, or act
 as strapping pins) and cross-reference it against Seeed's D-numbering.
 

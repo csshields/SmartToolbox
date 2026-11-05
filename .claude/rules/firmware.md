@@ -1,10 +1,19 @@
 ---
-name: XIAO ESP32S3 Firmware
-applyTo: "firmware/**/*.ino"
-description: "Firmware guidance for the Seeed XIAO ESP32S3, including onboard LED polarity, touch GPIOs, upload settings, and hardware constraints."
+paths:
+  - "firmware/**"
 ---
 
-# XIAO ESP32S3 Firmware Guidance
+# XIAO ESP32S3 Firmware
+
+The board, its traps, and how the sketch is built. What is wired and on which pin is
+`docs/HARDWARE.md`; the serial protocol is `serial-protocol.md`; the features the sketch
+implements are `features.md`. Getting a build onto the device is the `firmware-release`
+skill.
+
+## Hardware traps
+
+These were each found on the bench, mostly the hard way. When a new one turns up, it
+belongs here rather than in a comment in the sketch.
 
 - Target board: `esp32:esp32:XIAO_ESP32S3`.
 - The installed ESP32 board definition maps `LED_BUILTIN` to GPIO21.
@@ -225,7 +234,7 @@ On a wake word, `esp32-hal-sr.c` calls `sr_set_mode(SR_MODE_OFF)` itself. Recogn
 does not resume on its own. Without an explicit `setMode(SR_MODE_WAKEWORD)` in the
 recovery path, **the box answers once and is then deaf** - identical from the outside to
 a dead microphone, a frozen peripheral and a wrong threshold, which is the whole family
-of failures the Debugging section of the spec exists to separate.
+of failures the `hardware-debug` skill exists to separate.
 
 The first "Hi ESP" proves nothing. The second one is the test.
 
@@ -285,3 +294,195 @@ Seeed documentation URL checked on 2026-08-27:
 `https://wiki.seeedstudio.com/xiao_esp32s3_getting_started/`
 
 The page identifies GPIO21 as `USER_LED`, documents active-low behavior, maps the exposed touch pads, and describes the factory touch-light program. The installed `XIAO_ESP32S3` board variant also maps `LED_BUILTIN` to GPIO21.
+
+## Conventions
+
+- Arduino sketches must be in a folder with the same name as the .ino file
+- Serial baud rate: 115200
+- Initialize hardware in `setup()`
+- Main logic in `loop()`
+
+## Power Management
+
+- Use deep sleep between readings
+- Wake on sensor interrupt or timer
+- Monitor battery level
+- No Wi-Fi power budgeting needed; the radio stays off in the MVP
+- The XIAO is USB-powered from the Pi in the current design, so battery life is not
+  yet a live constraint. Revisit if the toolbox is ever untethered.
+
+## Firmware Architecture
+
+```cpp
+void setup() {
+  // 1. Initialize USB serial (115200) and wait for the host
+  // 2. Initialize I2C peripherals (Grove Vision AI V2; OLED and matrix once wired)
+  // 3. Configure power management
+  // 4. Run self-test
+  // 5. Send the device/status boot request to the Pi
+}
+
+void loop() {
+  // 1. Check for sensor events
+  // 2. Capture data if triggered
+  // 3. Process data (compression, filtering)
+  // 4. Transmit via HTTP or queue
+  // 5. Enter low power state
+}
+```
+
+### Startup Readiness
+
+**Status: Implemented** - `startWaitingForPi` / `promoteToReady` /
+`pollWaitingRetry` / `pollWaitingLong` in `firmware/smarttoolbox/smarttoolbox.ino`.
+Running on hardware since 0.19.0, with promotion proven on every boot since; see
+`docs/PLAN-startup-readiness.md`. **Untested:** a whole-box cold start, and the
+90-second no-reply face.
+
+Both halves of the box boot from the same power and do not arrive together:
+
+| | time from power-on |
+|---|---|
+| XIAO starts asking for a firmware update | ~3.5s |
+| XIAO gives up on that check (25s Wi-Fi timeout) | ~30s |
+| **Pi finishes booting** (5.2s kernel + 31.4s userspace) | **36.6s** |
+| Pi's API accepts its first request | later still |
+
+The device used to say `Ready` for that whole window and mean nothing by it. A touch
+went into a void and painted `No response - Is the Pi service up?`, which is a question
+it is not entitled to ask while the Pi is merely booting, and the boot `device/status`
+went to a port nobody had open, so the dashboard showed no firmware version at all.
+
+The fast half waits. **No change to the Pi** - there is nothing it can do about a
+31-second userspace, and a device that copes is worth more than a server that hurries.
+
+- `setup()` ends in **WAITING**, not READY, and enters it **before** the OTA check.
+  That check blocks for up to `WIFI_CONNECT_TIMEOUT_MS`, so entering WAITING at the end
+  of `setup()` would put the spinner up at ~30s - six seconds before the Pi answers, in
+  the one case the state exists for.
+- While waiting, `device/status` goes out every **2 seconds** (`WAITING_RETRY_MS`),
+  deliberately without the `awaitingResponse` guard `pollDeviceStatus` uses: that guard
+  is right for a heartbeat and fatal here, where one unanswered request would wedge the
+  device in WAITING forever.
+- **Any parsed reply promotes**, success or error. This is about proving the wire works
+  end to end, not about the Pi liking the message.
+- Touches during WAITING do not record and do not send lookups. The guard sits at the
+  top of `onTouchStart`: a hold there is someone asking "is it on?", and the honest
+  answer is already on the screen. It used to sit *inside* the lookup path, so that
+  microphone bring-up stayed testable on a bench where nothing answered - `MIC_BRINGUP`
+  took the pad over entirely and recording never involved the Pi. That flag is gone: the
+  pad's one job is the voice lookup, which needs the Pi like any other.
+- **No timeout that gives up.** Past `WAITING_LONG_MS` (90s) the spinner stops and the
+  face drops, but the retry continues - a change of expression, not a failure state.
+  `pollWaitingLong` runs from `loop()`, deliberately not from `updateMatrix`: that
+  function returns early when no matrix is attached, and a box with no matrix is exactly
+  the one whose OLED needs to say something.
+
+**`handleIncomingLine` parses before it checks `awaitingResponse`, and that ordering is
+load-bearing.** `sendDeviceStatus` never claims the pending slot - by design, so a
+heartbeat cannot cancel a lookup someone is waiting on - so with the guard first, the
+Pi's reply to it was dropped before anything looked at the line. The handshake this
+whole path waits for could not arrive. Anything that reorders that function must keep
+the parse first.
+
+**`reportLastOtaResult` fires from `promoteToReady`, not from the first heartbeat.**
+Promotion is the moment a host is provably reading; the first heartbeat was an
+approximation of it that the 2-second waiting retry invalidates. See "Early boot output is written into a void"
+above for why the boot-time OTA log has to be held at all.
+
+## Code Organization
+
+- Use separate .h/.cpp files for each sensor module
+- Create utility functions for common operations
+- Implement non-blocking code (avoid delay())
+- Use state machine for complex logic
+
+## Development Workflow
+
+1. Test individual sensors first
+2. Add USB serial communication
+3. Integrate with API server
+4. Optimize power consumption
+5. Field testing
+
+## Libraries Required
+
+Add to Arduino Library Manager:
+- [x] ArduinoJson (7.4.3) - encoding and parsing the NDJSON serial messages. In use by
+      `firmware/smarttoolbox/smarttoolbox.ino` for the `tools/lookup` request and response.
+- [ ] Seeed_Arduino_SSCMA - I2C communication with the Grove Vision AI Module V2.
+      Needed for Feature 3 in `features.md`.
+- [x] U8g2 (2.35.30) - the OLED, which since 2026-09-02 is the expansion base's own
+      SSD1306 at the same address the Grove SSD1315 used. Same constructor, no code change.
+      In use by `firmware/smarttoolbox/smarttoolbox.ino` for lookup status.
+- [x] `Seeed_RGB_Led_Matrix` (1.0.0) - the Grove 8x8 RGB matrix. In use by
+      `firmware/smarttoolbox/smarttoolbox.ino` for the row indicator and the idle face.
+      The driver is frame-based, not pixel-addressed: `displayFrames` takes 64 bytes,
+      one **palette index** per pixel, and blank is `0xFF` - zeroing the buffer lights
+      the panel red.
+- [x] Adafruit NeoPixel (1.15.5) - the WS2813 strip, on GPIO44. **This entry used to say
+      the library would never be needed**, on the reasoning that the strip would hang off
+      the Pi and be driven over SPI from the Bun process. The 2026-09-02 rewire freed a
+      GPIO on the XIAO and reversed that decision; see the Row Indication decision in
+      `docs/HARDWARE.md`. FastLED remains unnecessary. The matrix is I2C and uses neither.
+
+## Matrix States
+
+**Status: Implemented** - `updateMatrix` in `firmware/smarttoolbox/smarttoolbox.ino`.
+Four modes: `MATRIX_WAITING`, `MATRIX_EYES`, `MATRIX_THINKING`, `MATRIX_RESULT`. The
+listening state below is the one exception and is marked as such.
+
+| State | Shown | Colour | Meaning |
+|---|---|---|---|
+| Waiting | A 16-cell ring with six lit, turning one step every 90ms | Purple, white leading cell | Powered on, the Pi has not answered yet |
+| Still waiting | The spinner stops; face with a frown | Purple | Past 90s with no reply - not an error, see Startup Readiness |
+| Idle | Face with a smile, blinking every 2-6s | Purple | Nothing happening |
+| Listening | An irregular 8-column wave, one step every 100ms | Ramped cyan/blue/purple/pink by row | Recording while the pad is held - see `docs/PLAN-mic-bringup.md` |
+| Thinking | Mismatched eyes - the left a row taller than the right - and a mouth cycling through 0-3 dots every 280ms | Purple | A lookup is in flight |
+| Found | The row digit for 4s | Green / orange by certainty | The tool is in that row |
+| Found, no row | The whole indicator band | Green / orange by certainty | Known drawer, no row assigned |
+| Not found | Face with a frown | Red | Understood the word, the tool is in no drawer |
+| Not understood | Question mark | Orange | The Pi could not interpret the request |
+| No response | A filled triangle with the exclamation mark knocked out | Red | The Pi never answered within the timeout |
+
+The waiting spinner is deliberately not a face. The idle smiley means "I am fine"
+everywhere else in the sketch, and during the boot window the box is not fine - it is
+early. Six of the ring's sixteen cells are lit so the gap is what reads; the leading
+cell is white because a uniform arc does not say which way it is turning.
+
+The alert triangle is filled with the exclamation mark left *unlit* rather than drawn.
+At 8x8 an outline triangle loses its shape and a drawn-on mark has nowhere to sit. It
+replaced a solid red band, which was the loudest thing the panel can do and the least
+specific - it said "bad" and nothing else, and read more like a hardware fault than a
+message.
+
+The digit gets twice the row's time: it is the half you have to read and carry to the
+box, and two seconds was gone before you had looked up. The faces and the alert band
+have no second phase and nothing to read, so they hold on `MATRIX_NOTICE_HOLD_MS`
+rather than inheriting the digit's.
+
+The thinking face's eyes are deliberately mismatched: asymmetry reads as quizzical
+where two matched eyes read as merely awake. Both eyes share a baseline so the tall
+one looks like it is widening, not like the face is sliding. Which eye is the tall
+one swaps every `MATRIX_THINK_SWAP_MS` (2.8s, an exact ten dot steps, so the two
+animations do not drift against each other) - a lookup that takes a while otherwise
+freezes into a single expression, and a frozen face reads as stuck rather than busy.
+Purple stays out of the result palette so the idle and thinking faces can never be
+read as an answer. The thinking face is held for exactly as long as `awaitingResponse`
+- every exit from it (answer, rejection, timeout) sets another mode, so there is no
+timer to fall out of sync.
+
+**The row indicator is on its way out.** Lighting matrix row N for toolbox row N caps at
+eight rows and is hard to read - see the Row Indication decision in
+`docs/HARDWARE.md`. The face states below are unaffected and are what the matrix keeps.
+
+**Not found and not understood are different answers and must look different.** All
+three failure paths used to draw the same red band, so "it isn't in any drawer", "I
+could not make sense of that", and "the Pi is not responding" were indistinguishable
+from across a workshop. The last of those is now a triangle rather than a band, so no
+two of them share a picture at all. The frown is the idle smile inverted, which reads as the box's
+own reaction; the question mark is deliberately *not* a face, because failing to
+understand the word is a different kind of statement from having no answer to it.
+
+Once voice lands, a failed transcription surfaces as a `success: false` response and so
+gets the question mark for free - that is the case it was drawn for.

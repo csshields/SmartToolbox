@@ -131,7 +131,7 @@ Invoke-RestMethod http://192.168.50.30:3000/api/devices
 
 1. Note the version the device reports now.
 2. `.\release-firmware.ps1 -Version <higher> -Push`
-3. Reset the board with the RTS pulse in the firmware instructions - **not** by
+3. Reset the board with the RTS pulse in `.claude/rules/firmware.md` - **not** by
    reflashing, which would install the build directly and prove nothing.
 4. Watch for `OTA GET ... -> 200`, `OTA writing N bytes`, `OTA wrote N` (counts must
    match), then `rst:0xc`.
@@ -149,5 +149,5 @@ own. Test deliberately by resetting the XIAO alone against a running Pi.
 ## Before you commit
 
 Bump the status tags in the same commit - see the `spec-status` skill. If the release
-changed hardware behaviour, `.github/instructions/xiao-esp32s3-firmware.instructions.md`
+changed hardware behaviour, `.claude/rules/firmware.md`
 is where the trap belongs, not a comment in the sketch.

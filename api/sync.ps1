@@ -3,7 +3,7 @@ param(
 	[switch]$InstallService,
 	[switch]$Status,
 	# Override when deploying to a different Pi. Defaults match the documented
-	# development box; see .github/copilot-instructions.md > Deployment.
+	# development box; see the deploy-api skill in .claude/skills/.
 	[string]$PiHost = "shields@192.168.50.30",
 	[string]$KeyPath = (Join-Path $env:USERPROFILE ".ssh\smarttoolbox_pi_ed25519")
 )

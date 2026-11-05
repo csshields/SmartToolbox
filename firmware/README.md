@@ -6,7 +6,7 @@ OLED, the 8x8 matrix and the LED strip.
 
 Pins, wiring and the state of every part are in [docs/HARDWARE.md](../docs/HARDWARE.md).
 The hardware traps worth knowing before changing anything are in
-[.github/instructions/xiao-esp32s3-firmware.instructions.md](../.github/instructions/xiao-esp32s3-firmware.instructions.md).
+[.claude/rules/firmware.md](../.claude/rules/firmware.md).
 
 ## Hardware
 

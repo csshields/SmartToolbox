@@ -129,7 +129,7 @@ Adafruit_NeoPixel strip(STRIP_LED_COUNT, STRIP_DATA_PIN, NEO_GRB + NEO_KHZ800);
 // drivers on one net. The pads are still on the board and still touch-capable,
 // but nothing here reads them, so the baselines, the trigger ratio and the
 // per-scan debug print went with the pad. What that machinery taught is recorded
-// in .github/instructions/xiao-esp32s3-firmware.instructions.md, which is where
+// in .claude/rules/firmware.md, which is where
 // the next person to reach for a pad will look.
 const uint8_t BUTTON_PIN = 2; // D1 on the XIAO ESP32S3.
 

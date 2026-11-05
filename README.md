@@ -113,8 +113,11 @@ word, can only be installed over USB.
 
 ## Documentation
 
-- [.github/copilot-instructions.md](.github/copilot-instructions.md) - the project spec:
-  architecture, database, every endpoint, the serial protocol, and debugging.
+- [CLAUDE.md](CLAUDE.md) and [.claude/rules/](.claude/rules/) - the project spec:
+  architecture, database, every endpoint, the serial protocol, and the firmware. The
+  rule files are split by area and each says which paths it covers.
+- [.claude/skills/](.claude/skills/) - procedures for deploying, releasing firmware,
+  and debugging the hardware.
 - [docs/HARDWARE.md](docs/HARDWARE.md) - every part, its pins, and whether it works.
 - [docs/](docs/) - implementation plans (`PLAN-*.md`), each with its current status.
 - [firmware/README.md](firmware/README.md) - firmware setup.

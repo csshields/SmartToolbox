@@ -8,9 +8,9 @@ updated: 2026-09-13
 # SmartToolbox Hardware
 
 Every part owned, whether it physically works, and which pin carries it.
-`.github/copilot-instructions.md` remains the project spec; it points here instead of
-repeating any of this. The same status convention applies - see Document Conventions in
-the spec - and note the spelling difference it records: a section carries
+The project spec (`CLAUDE.md` and `.claude/rules/`) points here instead of repeating any
+of this. The same status convention applies - see "The status-tag convention" in
+`CLAUDE.md` - and note the spelling difference: a section carries
 `**Status: ...**`, a component entry carries `**Status**: ...` with the asterisks closed.
 
 Photographs of the box live in `docs/photos/`, dated, with an index there.
@@ -20,8 +20,8 @@ photograph's date before trusting either.
 
 Firmware traps that are about *behaviour* rather than parts - touch sensor v2 semantics,
 the first ten `touchRead` calls after boot, upload settings - live in
-`.github/instructions/xiao-esp32s3-firmware.instructions.md`, which loads by file glob
-when a sketch is open. Which pin carries what is here; how it misbehaves is there.
+`.claude/rules/firmware.md`, which loads automatically when you work under
+`firmware/`. Which pin carries what is here; how it misbehaves is there.
 
 ## The 2026-09-02 rewire
 
@@ -211,7 +211,7 @@ I2S.begin(I2S_MODE_PDM_RX, 16000, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO);
 - **Two ways to read, and they are not interchangeable.** `recordWAV(seconds, &size)` returns a `ps_malloc`'d buffer with a WAV header already attached, but takes a fixed duration - fine for a bring-up, useless for hold-to-talk, where the length is not known when recording starts. That path reads in a loop instead and lets the Pi write the header. See `docs/PLAN-mic-bringup.md` and `docs/PLAN-voice-lookup.md`.
 - **Buffers go in PSRAM.** Four seconds of 16 kHz 16-bit mono is 128 KB against the XIAO's 320 KB of SRAM, of which this sketch already uses 49 KB.
 - **The mic rides on a positive DC bias.** Samples run roughly +981 to +2568 and never cross zero, so RMS must be taken about the mean - measuring raw samples reads the offset, not the sound. Corrected in 0.17.0. A DC-corrected RMS read 17 in a quiet room against 210 spoken into, on 2026-08-29.
-- **It feeds two consumers now, and they do not share.** Since 0.28.0 ESP-SR's feed task reads this same `I2SClass` continuously for the wake word, and the recording loop takes it back for the duration of a capture. Both traps that follow from that - draining the pause rather than trusting it, and the `portMAX_DELAY` the feed task leaves on the shared object - are in `.github/instructions/xiao-esp32s3-firmware.instructions.md`.
+- **It feeds two consumers now, and they do not share.** Since 0.28.0 ESP-SR's feed task reads this same `I2SClass` continuously for the wake word, and the recording loop takes it back for the duration of a capture. Both traps that follow from that - draining the pause rather than trusting it, and the `portMAX_DELAY` the feed task leaves on the shared object - are in `.claude/rules/firmware.md`.
 - **Status**: carrying speech since 0.20.0, voice lookup shipped in 0.22.0. Wake word written in 0.28.0 and **proven on hardware 2026-10-04**: "Hi ESP" started a capture that Whisper transcribed as "screwdriver". **Known thin:** the audio sits at 4-10% of full scale, with no gain applied and the DC offset not stripped. That was tolerable for Whisper and turned out to be enough for WakeNet at close range. It is still the weakness that makes the box mis-hear "screwdriver", and the first thing to look at if the wake word gets unreliable with distance.
 
 ### PIR motion sensor (Grove PIR Sensor, SKU 101020020)

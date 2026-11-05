@@ -10,9 +10,8 @@ Almost every failure in this project presents identically. Nearly every bug foun
 was found by making the system observable, not by inspection - so run the check that
 separates the causes before reading code.
 
-Full detail lives in the Debugging & Testing section of
-`.github/copilot-instructions.md` and in
-`.github/instructions/xiao-esp32s3-firmware.instructions.md`.
+Full detail on the board's traps lives in `.claude/rules/firmware.md`, and on the
+serial link in `.claude/rules/serial-protocol.md`.
 
 **What is actually wired, and on which pin, is `docs/HARDWARE.md`** - the Bring-Up
 Status table at the top of it answers "is this part even supposed to work yet" before
@@ -153,5 +152,5 @@ pulse RTS, not DTR. DTR alone does nothing. A successful reset prints
 ## Before moving on
 
 If the cause turned out to be a hardware trap rather than a logic bug, write it into
-`.github/instructions/xiao-esp32s3-firmware.instructions.md`. That file is why most of
+`.claude/rules/firmware.md`. That file is why most of
 these checks exist, and it only stays useful if it keeps growing.

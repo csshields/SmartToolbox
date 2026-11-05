@@ -15,7 +15,7 @@ status: partially complete - Features 1, 2 and 3 are done; 4 is not started
 > Feature 2 (touch-triggered lookup) took three hardware bugs beyond what is described
 > here - the S3's touch readings rise rather than fall, scanning all nine pads froze the
 > peripheral, and the startup baseline averaged unusable boot readings. All three are
-> recorded in `.github/instructions/xiao-esp32s3-firmware.instructions.md`.
+> recorded in `.claude/rules/firmware.md`.
 >
 > Also built the same day, and not part of this plan: Wi-Fi OTA updates, see
 > `PLAN-ota-updates.md`.
@@ -45,8 +45,8 @@ on ordering beyond the note above.
 
 ## Shared conventions
 
-Read `.github/copilot-instructions.md` first; it is the project spec and is current as
-of 2026-08-27.
+Read `CLAUDE.md` and the relevant files in `.claude/rules/` first; together they are
+the project spec.
 
 **Code style**
 - TypeScript strict mode is on (`api/tsconfig.json`). No `any` — the codebase casts
@@ -78,7 +78,7 @@ of 2026-08-27.
 - Deploy to the Pi: `cd api && .\sync.ps1`. Add `-Status` to see service status and the
   tail of both logs.
 
-**Documentation is part of done.** `.github/copilot-instructions.md` uses per-section
+**Documentation is part of done.** The spec (`CLAUDE.md`, `.claude/rules/`) uses per-section
 status tags (`**Status: Implemented | Partial | Planned | Blocked**`). Each feature
 below lists which tags and checklists to update. Update them in the same commit as the
 code — that convention is the whole point of the tags.
@@ -158,8 +158,8 @@ Default to the real `fs` implementation. Tests pass fake streams (`PassThrough`)
   appears in the log with no service restart.
 - `bun test` passes.
 - `README.md` "USB Serial Check" section: delete the restart-required paragraph.
-- `.github/copilot-instructions.md`: tick "Serial reconnect" in Phase 2 of Development
-  Priorities.
+- The spec: tick "Serial reconnect" in Phase 2 of Development Priorities (now the
+  Roadmap in `CLAUDE.md`).
 
 ---
 
@@ -220,7 +220,7 @@ merges them.
    `delay(50)`, which starves serial reads. Convert to a `millis()`-based poll
    interval, keeping the existing debounce (2 consecutive samples) and the
    startup-calibrated touch baselines — that calibration is deliberate, see
-   `.github/instructions/xiao-esp32s3-firmware.instructions.md`.
+   `.claude/rules/firmware.md`.
 3. **Map pads to tools.** A small array parallel to `TOUCH_PINS`, e.g. pad D0 →
    `"phillips screwdriver"`. Only map as many pads as you have seeded tools.
 4. **Send the request.** Monotonic id counter (`req-1`, `req-2`, ...):
