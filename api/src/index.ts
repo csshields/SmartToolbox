@@ -2,7 +2,7 @@ import { serve } from "bun";
 import { join } from "node:path";
 import { pcmToWav, parseVoiceAudioBody, transcribeAudio } from "./voice";
 import { collectDeviceCommand, DEVICE_COMMANDS, isDeviceCommand, peekDeviceCommand, queueDeviceCommand } from "./deviceCommands";
-import { addToolToDrawer, assignToolToDrawer, createDrawer, createToolbox, deleteDrawer, deleteTool, deleteToolbox, DrawerNotFoundError, findDrawerByLabel, findToolDrawer, findToolLocations, getDeviceStatus, getTranscriptionSettings, listDrawers, listRequestLogs, listToolboxes, MAX_DRAWERS_PER_TOOLBOX, MAX_TOOLBOX_ROWS, recordDeviceContact, recordDrawerObservations, recordRequestLog, saveTranscriptionSettings, ToolboxNotFoundError, ToolNameConflictError, updateDrawer, updateToolbox } from "./db";
+import { addToolToDrawer, assignToolToDrawer, ConflictError, createDrawer, createToolbox, deleteDrawer, deleteTool, deleteToolbox, findDrawerByLabel, findToolDrawer, findToolLocations, getDeviceStatus, getTranscriptionSettings, listDrawers, listRequestLogs, listToolboxes, MAX_DRAWERS_PER_TOOLBOX, MAX_TOOLBOX_ROWS, recordDeviceContact, recordDrawerObservations, NotFoundError, recordRequestLog, saveTranscriptionSettings, updateDrawer, updateToolbox } from "./db";
 import { parseSerialRequest, serialError, serialSuccess, serializeSerialResponse, type SerialRequest, type SerialResponse } from "./serialProtocol";
 import { startSerialTransport } from "./serialTransport";
 import { FIRMWARE_DIR, findLatestFirmware, isUpdateAvailable } from "./firmware";
@@ -26,6 +26,12 @@ function jsonResponse(data: unknown, init: ResponseInit = {}) {
 
 function errorResponse(message: string, status = 400) {
   return jsonResponse({ error: message }, { status });
+}
+
+function statusForError(error: unknown) {
+  if (error instanceof NotFoundError) return 404;
+  if (error instanceof ConflictError) return 409;
+  return 400;
 }
 
 function writeRequestLog(log: {
@@ -381,9 +387,7 @@ serve({
         return response;
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unable to create drawer.';
-        const status = error instanceof ToolboxNotFoundError
-          ? 404
-          : message === 'A drawer with that name already exists in this toolbox.' ? 409 : 400;
+        const status = statusForError(error);
         writeRequestLog({
           method: req.method,
           path: pathname,
@@ -476,7 +480,7 @@ serve({
         return jsonResponse({ toolbox }, { status: 201 });
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unable to create toolbox.';
-        const status = message === 'A toolbox with that name already exists.' ? 409 : 400;
+        const status = statusForError(error);
         writeRequestLog({
           method: req.method,
           path: pathname,
@@ -509,9 +513,7 @@ serve({
         return jsonResponse({ toolbox });
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unable to save toolbox.';
-        const status = error instanceof ToolboxNotFoundError
-          ? 404
-          : message === 'A toolbox with that name already exists.' ? 409 : 400;
+        const status = statusForError(error);
         writeRequestLog({
           method: req.method,
           path: pathname,
@@ -539,16 +541,16 @@ serve({
           ? jsonResponse({ success: true })
           : jsonResponse({ error: 'Toolbox not found.' }, { status: 404 });
       } catch (error) {
-        // The only refusal is the device's own box.
         const message = error instanceof Error ? error.message : 'Unable to delete toolbox.';
+        const status = statusForError(error);
         writeRequestLog({
           method: req.method,
           path: pathname,
-          statusCode: 409,
+          statusCode: status,
           result: 'Toolbox delete refused',
           details: message,
         });
-        return errorResponse(message, 409);
+        return errorResponse(message, status);
       }
     }
 
@@ -766,7 +768,7 @@ serve({
         return jsonResponse({ success: true, recorded }, { status: 201 });
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unable to record vision observations.';
-        const status = message === 'Drawer not found.' ? 404 : 400;
+        const status = statusForError(error);
         writeRequestLog({
           method: req.method,
           path: pathname,
@@ -807,11 +809,7 @@ serve({
         }, { status: 201 });
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unable to assign tool.';
-        const status = error instanceof ToolNameConflictError
-          ? 409
-          : message === 'Drawer not found.' || message === 'Tool not found.'
-            ? 404
-            : 400;
+        const status = statusForError(error);
         writeRequestLog({
           method: req.method,
           path: pathname,
@@ -869,9 +867,7 @@ serve({
         return jsonResponse({ drawer });
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unable to save drawer.';
-        const status = error instanceof DrawerNotFoundError
-          ? 404
-          : message === 'A drawer with that name already exists in this toolbox.' ? 409 : 400;
+        const status = statusForError(error);
         writeRequestLog({
           method: req.method,
           path: pathname,
@@ -924,7 +920,7 @@ serve({
         return jsonResponse({ tool }, { status: 201 });
       } catch (error) {
         const message = error instanceof Error ? error.message : 'Unable to save tool.';
-        const status = message === 'Drawer not found.' ? 404 : 400;
+        const status = statusForError(error);
         writeRequestLog({
           method: req.method,
           path: pathname,
@@ -948,6 +944,12 @@ serve({
     }
 
     return serveStaticFile(pathname);
+  },
+  // A route that does not catch would otherwise get Bun's default 500, which is
+  // HTML in development and not what a fetch() caller expects to parse.
+  error(error) {
+    console.error(`[api] unhandled error: ${error.stack ?? error.message}`);
+    return errorResponse('Internal server error.', 500);
   },
 });
 

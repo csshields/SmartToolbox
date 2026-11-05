@@ -507,18 +507,23 @@ ever returned them. The serial protocol is different: its errors do carry a code
 | 201 | Created - toolbox, drawer, tool, observations; also a tool moved by `/api/tools/assign` |
 | 202 | A device command queued, not yet collected |
 | 204 | `/api/firmware/latest` when the device is already current |
-| 400 | Invalid input - the default for any error a route catches |
+| 400 | Invalid input - any caught error that is not a `NotFoundError` or `ConflictError` |
+| 500 | An exception no route caught |
 | 401 | Bad `X-Device-Key` |
 | 404 | Unknown id, or an `/api/` path no route matches |
 | 409 | A name already taken, or deleting the device's toolbox |
 | 503 | `DEVICE_KEY` not configured |
 
-**Most routes choose 409 or 404 by matching the thrown error's message text** - for
-example `message === 'A toolbox with that name already exists.' ? 409 : 400`. Rewording
-an error message in `db.ts` therefore silently changes the status code to 400.
+**The status comes from the error's type, never its text.** `db.ts` throws
+`NotFoundError` or `ConflictError` (or a subclass - `DrawerNotFoundError`,
+`ToolboxNotFoundError`, `ToolNameConflictError`), and `statusForError` in `index.ts`
+maps them to 404 and 409; anything else a route catches is a 400. Routes used to match
+on the message, so rewording an error in `db.ts` silently turned a 409 into a 400. A new
+"not found" or "already exists" case needs the right class, not a particular sentence.
 
-There is no top-level error handler on `serve()`. An exception a route does not catch
-falls through to Bun's default 500 response, which is not JSON.
+An exception no route catches reaches the `error` handler on `serve()`, which logs the
+stack and returns `{"error": "Internal server error."}` with a 500 - JSON, like every
+other error, rather than Bun's default page.
 
 ## Configuration
 

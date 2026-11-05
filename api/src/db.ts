@@ -2,6 +2,11 @@ import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 
+// The HTTP layer maps these to 404 and 409 by type. It used to match on the
+// message text, so rewording an error here silently turned it into a 400.
+export class NotFoundError extends Error {}
+export class ConflictError extends Error {}
+
 export type ToolRecord = {
   id: number;
   drawerId: number;
@@ -722,14 +727,14 @@ export function createDrawer(name: string, location?: { label?: string; rowNumbe
     return selectDrawerById.get(Number(result.lastInsertRowid)) as Omit<DrawerRecord, "toolCount" | "tools">;
   } catch (error) {
     if (error instanceof Error && error.message.includes("UNIQUE")) {
-      throw new Error("A drawer with that name already exists in this toolbox.");
+      throw new ConflictError("A drawer with that name already exists in this toolbox.");
     }
 
     throw error;
   }
 }
 
-export class DrawerNotFoundError extends Error {}
+export class DrawerNotFoundError extends NotFoundError {}
 
 // Every field is optional and an omitted one keeps its value. An empty label
 // falls back to the name, as it does on create; a null rowNumber takes the
@@ -753,7 +758,7 @@ export function updateDrawer(drawerId: number, changes: { name?: string; label?:
     updateDrawerFields.run(drawer.id, name, label, rowNumber);
   } catch (error) {
     if (error instanceof Error && error.message.includes("UNIQUE")) {
-      throw new Error("A drawer with that name already exists in this toolbox.");
+      throw new ConflictError("A drawer with that name already exists in this toolbox.");
     }
 
     throw error;
@@ -762,7 +767,7 @@ export function updateDrawer(drawerId: number, changes: { name?: string; label?:
   return selectDrawerById.get(drawer.id) as Omit<DrawerRecord, "toolCount" | "tools">;
 }
 
-export class ToolboxNotFoundError extends Error {}
+export class ToolboxNotFoundError extends NotFoundError {}
 
 function toToolboxRecord(row: Omit<ToolboxRecord, "hasDevice"> & { hasDevice: number }): ToolboxRecord {
   return { ...row, hasDevice: row.hasDevice === 1 };
@@ -841,7 +846,7 @@ export function createToolbox(name: string, layout: { drawerCount: number; rowCo
     return getToolbox(build()) as ToolboxRecord;
   } catch (error) {
     if (error instanceof Error && error.message.includes("UNIQUE")) {
-      throw new Error("A toolbox with that name already exists.");
+      throw new ConflictError("A toolbox with that name already exists.");
     }
 
     throw error;
@@ -882,7 +887,7 @@ export function updateToolbox(toolboxId: number, changes: { name?: string; rowCo
     save();
   } catch (error) {
     if (error instanceof Error && error.message.includes("UNIQUE")) {
-      throw new Error("A toolbox with that name already exists.");
+      throw new ConflictError("A toolbox with that name already exists.");
     }
 
     throw error;
@@ -902,7 +907,7 @@ export function deleteToolbox(toolboxId: number) {
   }
 
   if (toolbox.hasDevice) {
-    throw new Error("This toolbox holds the device. Mark another toolbox as holding it before deleting this one.");
+    throw new ConflictError("This toolbox holds the device. Mark another toolbox as holding it before deleting this one.");
   }
 
   return deleteToolboxById.run(toolbox.id).changes > 0;
@@ -946,7 +951,7 @@ export function addToolToDrawer(drawerId: number, tool: { name: string; quantity
   const existingDrawer = selectDrawerById.get(drawerId) as Omit<DrawerRecord, "toolCount" | "tools"> | null;
 
   if (!existingDrawer) {
-    throw new Error("Drawer not found.");
+    throw new DrawerNotFoundError("Drawer not found.");
   }
 
   const normalizedToolName = normalizeName(tool.name, "Tool name");
@@ -979,7 +984,7 @@ export function findToolDrawer(toolName: string) {
   };
 }
 
-export class ToolNameConflictError extends Error {}
+export class ToolNameConflictError extends ConflictError {}
 
 // Moves an existing tool between drawers. Keyed on the tool's id, not its name:
 // a name is not unique across drawers, and the old name-based lookup took the
@@ -996,7 +1001,7 @@ export function assignToolToDrawer(drawerId: number, tool: { toolId: number; qua
   const existingDrawer = selectDrawerById.get(drawerId) as Omit<DrawerRecord, "toolCount" | "tools"> | null;
 
   if (!existingDrawer) {
-    throw new Error("Drawer not found.");
+    throw new DrawerNotFoundError("Drawer not found.");
   }
 
   if (!Number.isInteger(tool.toolId) || tool.toolId < 1) {
@@ -1006,7 +1011,7 @@ export function assignToolToDrawer(drawerId: number, tool: { toolId: number; qua
   const existingTool = selectToolById.get(tool.toolId) as ToolRecord | null;
 
   if (!existingTool) {
-    throw new Error("Tool not found.");
+    throw new NotFoundError("Tool not found.");
   }
 
   if (selectOtherToolNamed.get(drawerId, existingTool.name, existingTool.id)) {
@@ -1415,7 +1420,7 @@ export function recordDrawerObservations(observations: DrawerObservation[]) {
   // exist should write nothing, not everything before it.
   for (const observation of observations) {
     if (!selectDrawerById.get(observation.drawerId)) {
-      throw new Error("Drawer not found.");
+      throw new DrawerNotFoundError("Drawer not found.");
     }
   }
 
