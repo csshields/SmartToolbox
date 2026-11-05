@@ -226,14 +226,25 @@ I2S.begin(I2S_MODE_PDM_RX, 16000, I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_MONO);
 ### Vision: Grove Vision AI Module (V2) + OV5647 Camera
 
 - **Resolution**: OV5647, up to 5MP (2592x1944)
-- **Lens**: the kit's stock lens, about **62 degrees**. Too narrow for drawers: on
-  2026-10-04 it needed to be held about a foot above one small Husky drawer to see all of
-  it. A 160-degree fisheye OV5647 is the candidate replacement, undecided - see Phase 0's
-  findings in `docs/PLAN-drawer-activity.md`.
+- **Lens**: **a 160-degree fisheye OV5647 since 2026-11-04** (DORHEA, a generic Pi
+  camera board, not Seeed's), replacing the kit's stock ~62-degree one. It works with the
+  Vision AI V2 - SenseCraft's preview showed a clean picture - and covers a whole Husky
+  drawer from about 4 inches, where the stock lens needed a foot. Edges bow visibly
+  close up. See Phase 0's findings in `docs/PLAN-drawer-activity.md` and the
+  `fisheye-*-2026-11-04.jpg` photos.
 - **Connection**: Grove I2C cable to the base, address 0x62.
 - **Identification Method (default)**: on-device inference on the module's WiseEye2 MCU via a model deployed through **SenseCraft AI** (no-code; supports MobileNet V1/V2, EfficientNet-lite, YOLOv5/v8). Only the label and confidence are read - Seeed's hardware cannot serve a live frame and results over the link at the same time. A cloud vision model remains a fallback, but it needs raw frames pulled a different way: the module's own SD card or its Type-C port.
 - **Enclosure**: a printed three-part holder - base, tilting cap, camera holder - taken from Thingiverse rather than drawn here. Source and licence are under Printed parts in `docs/SOURCES.md`; it is CC BY-SA, so merging its geometry into a part of ours would carry that licence across. **It is superglued to the back plate.** The plate is on its sixth revision and will be reprinted again, and every reprint means breaking that bond or losing the enclosure, so a cradle bolting to the plate's 10 mm grid is the better fixing - see `cad/`.
-- **Status**: **connected, unused by the firmware, and seen working on 2026-10-04.** With the Grove cable unplugged and its own USB-C in a laptop, SenseCraft AI's browser workspace showed a live preview (no account needed) and ran the module's preloaded model at about 48 ms a frame. No model of ours is deployed, and no firmware in this repo has ever addressed the module. Both have to change before Feature 3 means anything.
+  **The new fisheye board does not fit this holder**, so the camera has no mount at all
+  as of 2026-11-04; it was hand-held for testing.
+- **Placement: the camera must sit on the toolbox's centreline.** Found 2026-11-04 - it
+  had to be held at the centre of the box to see the drawer. The cradle currently puts it
+  about 30 mm right of the plate's centre (cradle at x 125.15, roughly 37.7 mm wide,
+  against a plate centre of 114.3). The expansion board occupies x 56-114, so centring
+  the camera is a layout change to the plate, not just a new cradle. The new holder
+  should also carry a **white LED aimed with the lens** - see Camera illumination LED
+  under Displays.
+- **Status**: **connected, unused by the firmware, and seen working on 2026-10-04.** With the Grove cable unplugged and its own USB-C in a laptop, SenseCraft AI's browser workspace showed a live preview (no account needed; Chrome or Edge, at `https://sensecraft.seeed.cc/ai/device/local/36/`) and ran the module's preloaded model at about 48 ms a frame. No model of ours is deployed, and no firmware in this repo has ever addressed the module. Both have to change before Feature 3 means anything.
 
 ### Camera (OV2640, on board)
 
@@ -257,7 +268,26 @@ is a single shared indicator for drawers 1A, 1B and 1C. Its address is discovere
 and confirmed against the VID, so a missing panel degrades rather than hangs. Superseded
 in the long run by the strip - see the Row Indication decision.
 
-**Camera illumination LED**: planned, not owned, not wired.
+**Camera illumination LED**: planned, not owned, not wired. **Wanted in the new camera
+holder** (2026-11-04): the fisheye tests showed the drawer floor dim and shadowed, and a
+light beside the lens, aimed with it, removes the shadow the camera itself would see.
+Every Grove port on the base is already taken, so it has three ways to be driven:
+
+- **The end of the WS2813 strip**, a few pixels run up to the holder and set white. No
+  new pin, but white is the strip's heaviest load, so it waits on the strip's own 5V
+  supply.
+- **A Pi GPIO** switching a white LED through a transistor, from the Pi's free 40-pin
+  header. Natural if the camera moves to the Pi (option B in
+  `docs/PLAN-drawer-activity.md`).
+- **Always on**, a white LED and resistor straight off 5V. No control and no code, but
+  lit all day.
+- **The PIR's port, if the PIR goes.** It may not stay (2026-11-04). Dropping it frees
+  GPIO1 on the A0/D0 Grove port, which could switch the LED through a transistor from the
+  XIAO directly. The cost is elsewhere: the PIR is the capture trigger in
+  `docs/PLAN-drawer-activity.md`, so without it something else has to decide when the
+  camera looks.
+
+Undecided. Whichever it is, it should only need to be on while the camera is looking.
 
 ## Pin Mappings
 

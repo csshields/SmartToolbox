@@ -118,6 +118,7 @@ word, can only be installed over USB.
   rule files are split by area and each says which paths it covers.
 - [.claude/skills/](.claude/skills/) - procedures for deploying, releasing firmware,
   and debugging the hardware.
+- [docs/LESSONS.md](docs/LESSONS.md) - what building this taught, in one place. Start here if you are building your own.
 - [docs/HARDWARE.md](docs/HARDWARE.md) - every part, its pins, and whether it works.
 - [docs/](docs/) - implementation plans (`PLAN-*.md`), each with its current status.
 - [firmware/README.md](firmware/README.md) - firmware setup.

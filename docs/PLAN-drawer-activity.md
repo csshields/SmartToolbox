@@ -12,8 +12,10 @@ status: PLANNED - only storage built: `devices.drawer_active` and its two timest
   which drawer is open, so it gates drawer identity and tool detection alike. Phase 0 is
   a photography session, not code, and it can still kill the plan. It now has to answer
   a second question first: can the camera tell which drawer is open at all.
-  **Phase 0 started 2026-10-04** - see its findings below. The stock 62-degree lens is
-  too narrow; a wider lens, or a camera on the Pi instead, is undecided.
+  **Phase 0 started 2026-10-04** - see its findings below. The stock 62-degree lens was
+  too narrow; **the 160-degree fisheye fitted 2026-11-04 covers a drawer from about 4
+  inches**, so option A is viable on coverage. A vs B is still undecided, and the camera
+  needs a centred mount before the next round of photographs.
 ---
 
 # Plan: the box knows which drawer is open, and what changed while it was
@@ -269,6 +271,39 @@ on an eight-drawer box. The Husky has two drawers, and the Pi's 40-pin header is
 already has `gpioget`/`gpiomon`, so two switches would wire straight to it with no
 expander. The camera stays the goal; a switch would only supply the exact open and close
 moments if the camera's stillness rule proves too loose.
+
+#### Findings, 2026-11-04 - the 160-degree fisheye
+
+The DORHEA fisheye OV5647 fitted to the Vision AI V2, previewed in SenseCraft the same
+way, and hand-held over the front of an open Husky drawer at 2, 3 and 4 inches. Photos are
+`docs/photos/fisheye-{2,3,4}in-2026-11-04.jpg`.
+
+- **The non-Seeed board works with the module.** A clean picture with the board's own
+  ribbon; no driver or setting changed.
+- **Coverage is solved.** At 2 inches the drawer interior fills the frame; at 4 inches
+  the whole drawer front is in view with margin. The stock lens needed about 12 inches
+  for the same drawer, so the two-foot mast is off the table - a short forward arm will
+  do.
+- **Tools stay recognisable** at every height - the red-handled strippers and the
+  yellow-handled pliers are distinct - though jaw detail fades by 4 inches.
+- **Fisheye distortion is visible but tolerable.** The drawer's edges bow at 2 inches;
+  tools near the centre look normal. Training photos for option A must still come
+  through this lens.
+- **Every frame is soft.** Some is hand shake. Recheck focus once the camera is mounted,
+  and turn the lens if it is still soft at the working height.
+- **Light was adequate in a lit room at these heights**, though the drawer floor is
+  dim at 2 inches. The earlier concern about a light stands, and **the new camera
+  holder should carry an LED aimed with the lens** to fill the shadows; options for
+  driving it are under Camera illumination LED in `docs/HARDWARE.md`.
+- **The camera has to be on the box's centreline.** It only saw the drawer properly held
+  at the centre. The current cradle sits about 30 mm right of the plate's centre, and the
+  new board does not fit the existing holder anyway - see the Vision entry in
+  `docs/HARDWARE.md`. **A centred mount is the next hardware step**, and it is a plate
+  layout change, because the expansion board occupies the space at the centre.
+
+Not yet done: the 6 and 9 inch heights, the second drawer, a second round of photographs
+in different light, and checking that a person at the box does not block the shot.
+These are better done once the camera is mounted, so the position is the real one.
 
 ### Phase 1 - the firmware can talk to the camera at all
 

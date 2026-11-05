@@ -23,6 +23,10 @@ a change to `db.ts` that alters what the device displays, for instance.
 - **`docs/HARDWARE.md`** is the hardware record: every part owned, whether it
   physically works (the Bring-Up Status table), and which pin carries it. Read it
   before wiring anything or before assuming a component is live.
+- **`docs/LESSONS.md`** is the one place for lessons learned, written for the owner and
+  for other tinkerers. When work turns up a lesson worth knowing before you start - a
+  part that was wrong for the job, a trap that cost hours - add a short dated entry there
+  linking to the detail, as well as recording the detail where it belongs.
 - **`docs/PLAN-*.md`** are implementation plans, each with a `status:` field in its
   frontmatter saying whether it is still active. Plans written before 2026-11-04 refer
   to the spec as `.github/copilot-instructions.md`; its sections kept their titles when
